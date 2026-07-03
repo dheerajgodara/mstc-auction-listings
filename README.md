@@ -10,7 +10,7 @@ Live site: https://lightcyan-camel-979846.hostingersite.com/auctions/
 ## What it does
 
 - **Scraper** (`scraper/`): Fetches MSTC listing API, enriches with HTML detail pages and PDF catalogues, applies 20-day retention, writes `web/public/data/auctions.json`.
-- **Website** (`web/`): Next.js static export — search, filters, date filters (IST), pagination, expandable lots with full four-section catalogue text.
+- **Website** (`web/`): Next.js static export — client-side data load from `data/auctions-data.js` (JSON fallback), search, filters, watchlist, CSV export, pagination, expandable lots.
 
 Each lot preserves **structured fields** plus raw PDF sections:
 
@@ -262,6 +262,21 @@ PYTHONPATH=. python -m scraper.rollback_deploy \
   --deploy
 ```
 
+### Public data on Hostinger
+
+The UI loads auction data **client-side** after the HTML shell loads:
+
+1. Primary: `/auctions/data/auctions-data.js` (`window.__AUCTIONS_EXPORT__`) — Hostinger-safe
+2. Fallback: `/auctions/data/auctions.json` (may return HTTP 403 on some Hostinger plans)
+3. `web/public/.htaccess` adds JSON MIME/CORS hints where Apache allows
+
+`pnpm run build:prod` runs `prepare-public-data.mjs` to emit `out/data/auctions-data.js`.  
+`pnpm run verify-build` checks index HTML size (warn >500KB, fail >2MB) and confirms data is not embedded in HTML.
+
+### GitHub Actions artifacts
+
+See [docs/GITHUB_ACTIONS_ARTIFACTS.md](docs/GITHUB_ACTIONS_ARTIFACTS.md) for how to read `final_report.md`, `latest.json`, and logs after a workflow run, and when to enable `deploy=true`.
+
 ### GitHub Actions (recommended primary scheduler)
 
 Workflow: `.github/workflows/refresh-and-deploy.yml`
@@ -285,8 +300,9 @@ Required repository secrets:
 | `OPENROUTER_API_KEY` | Optional AI fallback |
 | `OPENROUTER_MODEL` | Optional |
 | `OPENROUTER_FALLBACK_MODELS` | Optional |
+| `NOTIFY_WEBHOOK_URL` | Optional JSON webhook for failure alerts |
 
-**Failure behavior:** live site remains on the last successful deploy. Failed runs write `work/runs/{run_id}/reports/final_report.md` with errors.
+**Failure behavior:** live site remains on the last successful deploy. Failed runs write `work/runs/{run_id}/reports/final_report.md` with errors. Optional `NOTIFY_WEBHOOK_URL` sends a failure summary without failing the pipeline if the webhook errors.
 
 **Hostinger cron:** not recommended for this pipeline (scraping + build needs ~2 hours and Python/Node tooling). Use GitHub Actions instead.
 
@@ -326,7 +342,7 @@ AI is never called in tests and does not overwrite high-confidence parser values
 
 ## Known limitations
 
-- **eAuction.gov.in** public listing works via `FrontEndEauctionByDate` closing-date tabs (no captcha). Captcha applies only to Advanced Search / custom date search. Detail pages (`component=view`) are accessible without login.
+- **eAuction.gov.in** coverage is from public **ByDate** tabs only (near-term visible window, typically ~1–2 weeks). Advanced Search / captcha paths are **not** used. Detail pages (`component=view`) are accessible without login.
 - **GeM Forward** works via direct transport from some networks; use `--transport ssh` on Hostinger if blocked.
 - **OpenRouter** is optional; set `OPENROUTER_API_KEY` for low-confidence extraction smoke tests only.
 - Document download budget (`--max-docs-per-run`) caps new downloads per run; use `hydrate_documents` to continue.

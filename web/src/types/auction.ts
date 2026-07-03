@@ -127,6 +127,18 @@ export interface AuctionRecord {
   status?: string;
   errors?: string[];
   total_lots?: number | null;
+  material_type?: string | null;
+  estimated_market_value?: number | null;
+  valuation_status?:
+    | "unknown"
+    | "under_market"
+    | "fair"
+    | "over_market"
+    | "not_applicable"
+    | null;
+  valuation_confidence?: string | null;
+  valuation_notes?: string | null;
+  benchmark_source?: string | null;
 }
 
 export interface AuctionsExport {

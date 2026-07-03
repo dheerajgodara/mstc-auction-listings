@@ -1,4 +1,5 @@
 import type { AuctionRecord } from "@/types/auction";
+import { sortByOpportunity } from "@/lib/opportunity-score";
 
 const IST = "Asia/Kolkata";
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -10,7 +11,8 @@ export type SortOption =
   | "closing_asc"
   | "opening_asc"
   | "price_asc"
-  | "price_desc";
+  | "price_desc"
+  | "best_opportunities";
 
 export interface ClosingUrgency {
   label: string;
@@ -239,10 +241,22 @@ export function sortAuctions(
         if (pb == null) return -1;
         return pb - pa || parseAuctionMs(a.closing) - parseAuctionMs(b.closing);
       }
+      case "best_opportunities":
+        return 0;
       default:
         return 0;
     }
   });
+}
+
+export function applySortOption(
+  list: AuctionRecord[],
+  sort: SortOption,
+): AuctionRecord[] {
+  if (sort === "best_opportunities") {
+    return sortByOpportunity(list);
+  }
+  return sortAuctions(list, sort);
 }
 
 /** Lightweight self-checks for IST date filtering (no test runner required). */

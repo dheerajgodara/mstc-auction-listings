@@ -7,6 +7,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const webRoot = path.resolve(__dirname, "..");
 const outDir = path.join(webRoot, "out");
 
+const INDEX_WARN_BYTES = 500_000;
+const INDEX_FAIL_BYTES = 2_000_000;
+
 const checks = [];
 
 function ok(label, pass, detail = "") {
@@ -15,16 +18,56 @@ function ok(label, pass, detail = "") {
   console.log(`${mark}  ${label}${detail ? ` — ${detail}` : ""}`);
 }
 
+function warn(label, detail = "") {
+  console.log(`WARN ${label}${detail ? ` — ${detail}` : ""}`);
+}
+
 if (!fs.existsSync(outDir)) {
-  console.error("out/ directory not found. Run npm run build first.");
+  console.error("out/ directory not found. Run pnpm run build:prod first.");
   process.exit(1);
 }
 
-ok("index.html exists", fs.existsSync(path.join(outDir, "index.html")));
+const indexPath = path.join(outDir, "index.html");
+ok("index.html exists", fs.existsSync(indexPath));
+
+if (fs.existsSync(indexPath)) {
+  const indexBytes = fs.statSync(indexPath).size;
+  ok("index.html size recorded", true, `${indexBytes} bytes`);
+  if (indexBytes > INDEX_FAIL_BYTES) {
+    ok("index.html under fail threshold", false, `>${INDEX_FAIL_BYTES} bytes`);
+  } else {
+    ok("index.html under fail threshold", true, `limit ${INDEX_FAIL_BYTES}`);
+  }
+  if (indexBytes > INDEX_WARN_BYTES) {
+    warn("index.html large", `${indexBytes} bytes (warn > ${INDEX_WARN_BYTES})`);
+  }
+  const indexHtml = fs.readFileSync(indexPath, "utf8");
+  const embeddedAuctions = indexHtml.includes('"auctions":[') || indexHtml.includes('"auctions" : [');
+  ok(
+    "index.html does not embed full auctions JSON",
+    !embeddedAuctions,
+    embeddedAuctions ? "found embedded auctions array" : "shell only",
+  );
+}
+
 ok(
   "data/auctions.json exists",
   fs.existsSync(path.join(outDir, "data", "auctions.json")),
 );
+
+const dataJsPath = path.join(outDir, "data", "auctions-data.js");
+ok(
+  "data/auctions-data.js exists (Hostinger-safe loader)",
+  fs.existsSync(dataJsPath),
+);
+
+if (fs.existsSync(dataJsPath)) {
+  const jsBody = fs.readFileSync(dataJsPath, "utf8");
+  ok(
+    "auctions-data.js exports __AUCTIONS_EXPORT__",
+    jsBody.includes("window.__AUCTIONS_EXPORT__"),
+  );
+}
 
 const pdfDir = path.join(outDir, "pdfs");
 const pdfCount = fs.existsSync(pdfDir)
@@ -46,24 +89,22 @@ if (fs.existsSync(jsonPath)) {
     badPdf.length ? `${badPdf.length} still absolute` : "all relative or base-path safe",
   );
 
-  const badDocs = JSON.stringify(data).includes('"/docs/');
-  const badThumbs = JSON.stringify(data).includes('"/thumbs/');
-  ok("no absolute /docs/ links in JSON", !badDocs);
-  ok("no absolute /thumbs/ links in JSON", !badThumbs);
+  const serialized = JSON.stringify(data);
+  ok("no absolute /docs/ links in JSON", !serialized.includes('"/docs/'));
+  ok("no absolute /thumbs/ links in JSON", !serialized.includes('"/thumbs/'));
 }
 
-const indexHtml = fs.readFileSync(path.join(outDir, "index.html"), "utf8");
+if (fs.existsSync(indexPath)) {
+  const indexHtml = fs.readFileSync(indexPath, "utf8");
+  ok("index.html has no bare href=\"/pdfs/", !indexHtml.includes('href="/pdfs/'));
+  ok("index.html has no bare src=\"/thumbs/", !indexHtml.includes('src="/thumbs/'));
+  ok("index.html has no bare href=\"/docs/", !indexHtml.includes('href="/docs/'));
+}
+
 ok(
-  "index.html has no bare href=\"/pdfs/",
-  !indexHtml.includes('href="/pdfs/'),
-);
-ok(
-  "index.html has no bare src=\"/thumbs/",
-  !indexHtml.includes('src="/thumbs/'),
-);
-ok(
-  "index.html has no bare href=\"/docs/",
-  !indexHtml.includes('href="/docs/'),
+  ".htaccess copied to output (JSON MIME hint)",
+  fs.existsSync(path.join(outDir, ".htaccess")),
+  "optional on Hostinger",
 );
 
 const failed = checks.filter((c) => !c.pass);

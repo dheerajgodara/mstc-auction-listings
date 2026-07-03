@@ -1,19 +1,28 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Calendar, Clock, Filter, Search, X } from "lucide-react";
+import { Calendar, Clock, Download, Filter, Search, Star, X } from "lucide-react";
 import { AuctionCard } from "@/components/auction-card";
 import { PaginationBar } from "@/components/pagination-bar";
 import { Chip, Input, Select } from "@/components/ui/primitives";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import {
   type DatePreset,
+  applySortOption,
   isActiveOrUpcoming,
   isDateFilterActive,
   matchesClosingDateFilter,
-  sortAuctions,
   type SortOption,
 } from "@/lib/auction-filters";
+import { auctionsToCsv, downloadCsv } from "@/lib/export-csv";
+import { rankAuctionsBySearch } from "@/lib/search";
+import {
+  deleteSavedSearch,
+  loadSavedSearches,
+  type SavedSearch,
+  upsertSavedSearch,
+} from "@/lib/saved-searches";
+import { isWatched, loadWatchlist, toggleWatchlist } from "@/lib/watchlist";
 import { formatDateTime } from "@/lib/utils";
 import type { AssetCategory, AuctionRecord, AuctionSource, EmdParseStatus } from "@/types/auction";
 import { cn } from "@/lib/utils";
@@ -81,26 +90,6 @@ const DATE_PRESET_LABELS: Record<DatePreset, string> = {
   next7: "Next 7 days",
   custom: "Custom range",
 };
-
-function matchesQuery(auction: AuctionRecord, q: string): boolean {
-  if (!q.trim()) return true;
-  const needle = q.toLowerCase();
-  const hay = [
-    auction.search_text,
-    auction.seller,
-    auction.location,
-    auction.state,
-    auction.region,
-    auction.item_summary,
-    ...auction.lots.map(
-      (l) => `${l.item_title} ${l.item_description ?? ""} ${l.location ?? ""}`,
-    ),
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return hay.includes(needle);
-}
 
 function PillButton({
   active,
@@ -174,6 +163,14 @@ export function AuctionListings({
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const [watchlist, setWatchlist] = useState<Set<string>>(() => new Set());
+  const [watchlistOnly, setWatchlistOnly] = useState(false);
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
+
+  useEffect(() => {
+    setWatchlist(loadWatchlist());
+    setSavedSearches(loadSavedSearches());
+  }, []);
 
   const totalCount = total ?? auctions.length;
 
@@ -192,7 +189,7 @@ export function AuctionListings({
 
   const filtered = useMemo(() => {
     return auctions.filter((a) => {
-      if (!matchesQuery(a, debouncedQuery)) return false;
+      if (watchlistOnly && !watchlist.has(a.id)) return false;
       if (!includeClosed && !isActiveOrUpcoming(a.closing)) return false;
       const auctionSource = a.source ?? "mstc";
       if (sourceFilter !== "All" && auctionSource !== sourceFilter) return false;
@@ -224,7 +221,8 @@ export function AuctionListings({
     });
   }, [
     auctions,
-    debouncedQuery,
+    watchlistOnly,
+    watchlist,
     includeClosed,
     sourceFilter,
     assetCategory,
@@ -239,10 +237,12 @@ export function AuctionListings({
     customTo,
   ]);
 
-  const sorted = useMemo(
-    () => sortAuctions(filtered, sortBy),
-    [filtered, sortBy],
-  );
+  const sorted = useMemo(() => {
+    const base = debouncedQuery.trim()
+      ? rankAuctionsBySearch(filtered, debouncedQuery)
+      : filtered;
+    return applySortOption(base, sortBy);
+  }, [filtered, debouncedQuery, sortBy]);
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const safePage = Math.min(page, totalPages);
@@ -269,6 +269,7 @@ export function AuctionListings({
     customTo,
     sortBy,
     includeClosed,
+    watchlistOnly,
     pageSize,
   ]);
 
@@ -290,6 +291,69 @@ export function AuctionListings({
     setCustomFrom("");
     setCustomTo("");
     setIncludeClosed(true);
+    setWatchlistOnly(false);
+  };
+
+  const handleToggleWatch = (id: string) => {
+    setWatchlist(toggleWatchlist(id));
+  };
+
+  const handleExportVisible = () => {
+    downloadCsv(
+      `auctions-visible-${new Date().toISOString().slice(0, 10)}.csv`,
+      auctionsToCsv(sorted),
+    );
+  };
+
+  const handleExportWatchlist = () => {
+    const saved = auctions.filter((a) => watchlist.has(a.id));
+    downloadCsv(
+      `auctions-watchlist-${new Date().toISOString().slice(0, 10)}.csv`,
+      auctionsToCsv(saved),
+    );
+  };
+
+  const handleSaveCurrentSearch = () => {
+    const name = query.trim() || `Search ${new Date().toLocaleString("en-IN")}`;
+    const entry: SavedSearch = {
+      id: `ss_${Date.now()}`,
+      name,
+      createdAt: new Date().toISOString(),
+      query,
+      sourceFilter,
+      assetCategory,
+      stateFilter,
+      regionFilter,
+      lotType,
+      confidence,
+      priceStatus,
+      emdStatus,
+      datePreset,
+      customFrom,
+      customTo,
+      sortBy,
+      includeClosed,
+      watchlistOnly,
+    };
+    setSavedSearches(upsertSavedSearch(entry));
+  };
+
+  const applySavedSearch = (saved: SavedSearch) => {
+    setQuery(saved.query);
+    setSourceFilter(saved.sourceFilter as (typeof SOURCES)[number]);
+    setAssetCategory(saved.assetCategory as (typeof ASSET_CATEGORIES)[number]);
+    setStateFilter(saved.stateFilter);
+    setRegionFilter(saved.regionFilter);
+    setLotType(saved.lotType as (typeof LOT_TYPES)[number]);
+    setConfidence(saved.confidence as (typeof CONFIDENCE)[number]);
+    setPriceStatus(saved.priceStatus as (typeof PRICE_STATUS)[number]);
+    setEmdStatus(saved.emdStatus as (typeof EMD_STATUS)[number]);
+    setDatePreset(saved.datePreset);
+    setCustomFrom(saved.customFrom);
+    setCustomTo(saved.customTo);
+    setSortBy(saved.sortBy);
+    setIncludeClosed(saved.includeClosed);
+    setWatchlistOnly(saved.watchlistOnly);
   };
 
   const activeChips = useMemo(() => {
@@ -410,7 +474,8 @@ export function AuctionListings({
               Government Auction Listings
             </h1>
             <p className="max-w-2xl text-sm text-slate-600">
-              Government auction opportunities from MSTC and other sources
+              Government auction opportunities from MSTC, GeM Forward, and eAuction.gov.in
+              (public ByDate tabs — near-term visible window).
             </p>
           </div>
           {generatedAt && (
@@ -444,7 +509,23 @@ export function AuctionListings({
               <option value="opening_asc">Opening soonest</option>
               <option value="price_asc">Price low → high</option>
               <option value="price_desc">Price high → low</option>
+              <option value="best_opportunities">Best opportunities</option>
             </Select>
+            <button
+              type="button"
+              onClick={handleExportVisible}
+              className="btn-glass inline-flex h-9 items-center gap-1.5 px-3 text-sm"
+            >
+              <Download className="h-4 w-4" />
+              Export CSV
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveCurrentSearch}
+              className="btn-glass inline-flex h-9 items-center gap-1.5 px-3 text-sm"
+            >
+              Save search
+            </button>
             <button
               type="button"
               onClick={() => setFiltersOpen((v) => !v)}
@@ -651,6 +732,49 @@ export function AuctionListings({
                 />
                 Include recently closed auctions
               </label>
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={watchlistOnly}
+                  onChange={(e) => setWatchlistOnly(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-400/50"
+                />
+                <Star className="h-4 w-4 text-amber-600" />
+                Watchlist only ({watchlist.size})
+              </label>
+              {watchlist.size > 0 && (
+                <button
+                  type="button"
+                  onClick={handleExportWatchlist}
+                  className="text-xs font-medium text-cyan-800 hover:underline"
+                >
+                  Export watchlist CSV
+                </button>
+              )}
+              {savedSearches.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2 sm:col-span-2">
+                  <span className="text-xs font-medium text-slate-600">Saved:</span>
+                  {savedSearches.slice(0, 5).map((s) => (
+                    <span key={s.id} className="inline-flex items-center gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => applySavedSearch(s)}
+                        className="rounded-full border border-violet-200/80 bg-violet-50/90 px-2.5 py-1 text-xs text-violet-900 hover:bg-violet-100"
+                      >
+                        {s.name}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSavedSearches(deleteSavedSearch(s.id))}
+                        className="rounded px-1 text-[10px] text-slate-500 hover:text-rose-700"
+                        aria-label={`Delete saved search ${s.name}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -676,7 +800,13 @@ export function AuctionListings({
           </div>
         ) : (
           paginated.map((auction, i) => (
-            <AuctionCard key={auction.id} auction={auction} index={i} />
+            <AuctionCard
+              key={auction.id}
+              auction={auction}
+              index={i}
+              watched={isWatched(auction.id, watchlist)}
+              onToggleWatch={handleToggleWatch}
+            />
           ))
         )}
 

@@ -1,7 +1,5 @@
 import type { Metadata } from "next";
-import { AuctionListings } from "@/components/auction-listings";
-import type { AuctionsExport } from "@/types/auction";
-import auctionsData from "../../public/data/auctions.json";
+import { AuctionListingsApp } from "@/components/auction-listings-app";
 
 export const metadata: Metadata = {
   title: "Government Auction Listings | MSTC",
@@ -9,8 +7,6 @@ export const metadata: Metadata = {
 };
 
 export default function HomePage() {
-  const data = auctionsData as AuctionsExport;
-
   return (
     <div className="page-bg">
       <div
@@ -30,11 +26,7 @@ export default function HomePage() {
         aria-hidden
       />
       <main className="relative min-h-screen px-4 py-4 sm:px-6">
-        <AuctionListings
-          auctions={data.auctions}
-          generatedAt={data.generated_at}
-          total={data.count}
-        />
+        <AuctionListingsApp />
       </main>
     </div>
   );

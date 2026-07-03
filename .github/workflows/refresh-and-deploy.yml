@@ -93,7 +93,8 @@ jobs:
           name: refresh-run-${{ github.run_id }}
           path: |
             work/runs/latest.json
-            work/runs/*/reports/
+            work/runs/*/reports/final_report.md
+            work/runs/*/reports/final_report.json
             work/runs/*/logs/
           if-no-files-found: ignore
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,7 @@ from scraper.refresh_reports import (
     update_latest_run,
     write_final_reports,
 )
+from scraper.notify import send_failure_notification
 from scraper.safety_gates import SafetyGateConfig, run_safety_gates
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -237,6 +239,14 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
         payload["total_auctions"] = export.count
         payload["total_lots"] = export.stats.get("total_lots_in_export")
         payload["by_source"] = export.stats.get("by_source")
+        doc_stats = export.stats.get("documents") or {}
+        failed_by_reason = doc_stats.get("failed_by_reason") or {}
+        payload["document_recovery"] = {
+            "failed_total": int(doc_stats.get("failed", 0) or 0),
+            "too_small": int(failed_by_reason.get("too_small", 0) or 0),
+            "failed_by_reason": failed_by_reason,
+            "failed_by_doc_type": doc_stats.get("failed_by_doc_type") or {},
+        }
 
         # 3-4. QA + safety gates
         gate_config = SafetyGateConfig(
@@ -344,6 +354,7 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
                 "passed": http_result.passed,
                 "index_status": http_result.index_status,
                 "json_status": http_result.json_status,
+                "data_js_status": http_result.data_js_status,
                 "pdf_status": http_result.pdf_status,
                 "thumb_status": http_result.thumb_status,
                 "live_count_hint": http_result.live_count_hint,
@@ -462,6 +473,17 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("Refresh completed successfully: %s", result.run_id)
         return 0
     logger.error("Refresh failed: %s", result.errors)
+    if config.notify_only_on_failure or os.environ.get("NOTIFY_WEBHOOK_URL"):
+        send_failure_notification(
+            summary=f"Refresh run {result.run_id} failed: {'; '.join(result.errors[:5])}",
+            payload={
+                "run_id": result.run_id,
+                "status": result.status,
+                "errors": result.errors,
+                "warnings": result.warnings,
+                "report_paths": result.report_paths,
+            },
+        )
     return 1
 
 

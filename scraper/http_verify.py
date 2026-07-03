@@ -18,6 +18,7 @@ class HttpVerifyResult:
     warnings: list[str] = field(default_factory=list)
     index_status: int | None = None
     json_status: int | None = None
+    data_js_status: int | None = None
     pdf_status: int | None = None
     thumb_status: int | None = None
     live_count_hint: int | None = None
@@ -70,30 +71,44 @@ def verify_live_site(
     site = (base_url or SITE_BASE_URL or "https://lightcyan-camel-979846.hostingersite.com/auctions").rstrip("/")
     index_url = f"{site}/"
     json_url = f"{site}/data/auctions.json"
+    data_js_url = f"{site}/data/auctions-data.js"
 
     index_status, index_body = _http_status(index_url)
     checked["index"] = index_url
     if index_status != 200:
         errors.append(f"index returned HTTP {index_status}")
 
-    json_status, json_body = _http_status(json_url)
+    json_status, _json_body = _http_status(json_url)
     checked["json"] = json_url
     if json_status == 403:
-        warnings.append("live JSON endpoint returned 403 (known Hostinger restriction; data is baked into HTML)")
+        warnings.append(
+            "live JSON endpoint returned 403 (Hostinger may block .json; UI loads auctions-data.js client-side)"
+        )
     elif json_status != 200:
         warnings.append(f"live JSON returned HTTP {json_status}")
+
+    data_js_status, data_js_body = _http_status(data_js_url)
+    checked["data_js"] = data_js_url
+    if data_js_status != 200:
+        warnings.append(f"live auctions-data.js returned HTTP {data_js_status}")
+    elif b"__AUCTIONS_EXPORT__" not in data_js_body:
+        warnings.append("live auctions-data.js missing __AUCTIONS_EXPORT__ global")
 
     live_count_hint = None
     if index_status == 200:
         html = index_body.decode("utf-8", errors="replace")
         if expected_count is not None and str(expected_count) in html:
             live_count_hint = expected_count
-        else:
+        elif data_js_status == 200:
+            m = re.search(r'"count"\s*:\s*(\d+)', data_js_body.decode("utf-8", errors="replace"))
+            if m:
+                live_count_hint = int(m.group(1))
+        if live_count_hint is None:
             m = re.search(r'"count"\s*:\s*(\d+)', html)
             if m:
                 live_count_hint = int(m.group(1))
             elif expected_count is not None:
-                warnings.append(f"could not confirm expected count {expected_count} in live HTML")
+                warnings.append(f"could not confirm expected count {expected_count} on live site")
 
     pdf_rel, thumb_rel = _pick_sample_urls(candidate_json)
     pdf_status = thumb_status = None
@@ -119,6 +134,7 @@ def verify_live_site(
         warnings=warnings,
         index_status=index_status,
         json_status=json_status,
+        data_js_status=data_js_status,
         pdf_status=pdf_status,
         thumb_status=thumb_status,
         live_count_hint=live_count_hint,

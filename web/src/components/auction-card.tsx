@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   Calendar,
   Clock,
@@ -7,6 +8,7 @@ import {
   FileText,
   IndianRupee,
   MapPin,
+  Star,
   User,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, Chip } from "@/components/ui/primitives";
@@ -28,6 +30,8 @@ import {
   formatInr,
   resolvePublicUrl,
 } from "@/lib/utils";
+import { isLongSummary, truncateSummary } from "@/lib/text-summary";
+import { valuationBadgeLabel } from "@/lib/valuation";
 import type { AuctionRecord, AuctionSource } from "@/types/auction";
 
 const SOURCE_LABELS: Record<AuctionSource, string> = {
@@ -94,14 +98,30 @@ function AuctionWarnings({ warnings }: { warnings?: string[] }) {
   );
 }
 
+function gemDocumentLabel(url: string, index: number, total: number): string {
+  const lower = url.toLowerCase();
+  if (lower.includes("rule")) return total > 1 ? `GeM rules ${index + 1}` : "GeM rules";
+  if (lower.includes("notice") || lower.includes("brief")) {
+    return total > 1 ? `GeM notice ${index + 1}` : "GeM notice";
+  }
+  return total > 1 ? `GeM document ${index + 1}` : "GeM document";
+}
+
 export function AuctionCard({
   auction,
   index,
+  watched = false,
+  onToggleWatch,
 }: {
   auction: AuctionRecord;
   index: number;
+  watched?: boolean;
+  onToggleWatch?: (id: string) => void;
 }) {
-  const itemDetails = auction.item_summary || "—";
+  const [showFullNotice, setShowFullNotice] = useState(false);
+  const fullSummary = auction.item_summary || "—";
+  const longNotice = isLongSummary(fullSummary);
+  const cardSummary = showFullNotice ? fullSummary : truncateSummary(fullSummary, 160);
   const displayLocation =
     auction.location || auction.lots[0]?.location || auction.state || "—";
   const pdfHref = resolvePublicUrl(auction.pdf_url);
@@ -110,6 +130,7 @@ export function AuctionCard({
     : resolvePublicUrl(auction.detail_url ?? undefined);
   const urgency = getClosingUrgency(auction.closing);
   const categoryLabel = formatCategory(auction.asset_category);
+  const valuationLabel = valuationBadgeLabel(auction);
 
   return (
     <FadeIn delay={Math.min(index * 0.02, 0.25)}>
@@ -122,6 +143,16 @@ export function AuctionCard({
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 flex-1 space-y-2">
               <div className="flex flex-wrap items-center gap-1.5">
+                {onToggleWatch && (
+                  <button
+                    type="button"
+                    onClick={() => onToggleWatch(auction.id)}
+                    className="rounded-full border border-amber-200/80 bg-amber-50/90 p-1 text-amber-700 hover:bg-amber-100"
+                    aria-label={watched ? "Remove from watchlist" : "Save to watchlist"}
+                  >
+                    <Star className={`h-3.5 w-3.5 ${watched ? "fill-amber-500" : ""}`} />
+                  </button>
+                )}
                 <Chip className="border-slate-200/80 bg-slate-50/90 text-slate-800">
                   {sourceBadgeLabel(auction.source)}
                 </Chip>
@@ -154,10 +185,28 @@ export function AuctionCard({
                 {urgency && (
                   <Chip className={urgency.chipClass}>{urgency.label}</Chip>
                 )}
+                {valuationLabel && (
+                  <Chip className="border-violet-200/80 bg-violet-50/90 text-violet-900">
+                    {valuationLabel}
+                  </Chip>
+                )}
               </div>
-              <h2 className="text-lg font-semibold leading-snug text-slate-900">
-                {itemDetails}
+              <h2
+                className={`text-lg font-semibold leading-snug text-slate-900 ${
+                  showFullNotice ? "" : "line-clamp-2"
+                }`}
+              >
+                {cardSummary}
               </h2>
+              {longNotice && (
+                <button
+                  type="button"
+                  onClick={() => setShowFullNotice((v) => !v)}
+                  className="text-xs font-medium text-cyan-800 hover:underline"
+                >
+                  {showFullNotice ? "Hide full notice text" : "Show full notice text"}
+                </button>
+              )}
             </div>
             <div className="shrink-0 rounded-xl border border-cyan-200/60 bg-gradient-to-br from-cyan-50/90 to-sky-50/90 px-4 py-2 text-right">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-cyan-700/80">
@@ -250,7 +299,9 @@ export function AuctionCard({
                   className="btn-glass inline-flex items-center gap-2 text-xs"
                 >
                   <FileText className="h-3.5 w-3.5" />
-                  Document {auction.document_urls!.length > 1 ? i + 1 : ""}
+                  {auction.source === "gem_forward"
+                    ? gemDocumentLabel(url, i, auction.document_urls!.length)
+                    : `Document ${auction.document_urls!.length > 1 ? i + 1 : ""}`.trim()}
                 </a>
               ))}
             </div>

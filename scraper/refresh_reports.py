@@ -30,11 +30,15 @@ def write_final_reports(
 
 
 def render_final_report_md(payload: dict[str, Any]) -> str:
+    deploy = payload.get("deploy") or {}
+    deployed = deploy.get("deployed")
     lines = [
         "# Refresh Run Report",
         "",
         f"- **Run ID:** {payload.get('run_id')}",
         f"- **Status:** {payload.get('status')}",
+        f"- **Deploy requested:** {payload.get('deploy_requested')}",
+        f"- **Deployed:** {deployed if deployed is not None else 'n/a'}",
         f"- **Started:** {payload.get('started_at')}",
         f"- **Finished:** {payload.get('finished_at')}",
         f"- **Min closing date:** {payload.get('min_closing_date')}",
@@ -45,9 +49,28 @@ def render_final_report_md(payload: dict[str, Any]) -> str:
         f"- Total lots: {payload.get('total_lots')}",
         f"- By source: {payload.get('by_source')}",
         "",
-        "## Pipeline",
-        "",
     ]
+
+    doc_recovery = payload.get("document_recovery") or {}
+    if doc_recovery:
+        lines.extend(["## Document recovery", ""])
+        lines.append(f"- Failed downloads (total): {doc_recovery.get('failed_total', 0)}")
+        too_small = doc_recovery.get("too_small", 0)
+        if too_small:
+            lines.append(f"- **too_small** (HTML error pages): {too_small}")
+        by_reason = doc_recovery.get("failed_by_reason") or {}
+        if by_reason:
+            lines.append(f"- By reason: {by_reason}")
+        by_type = doc_recovery.get("failed_by_doc_type") or {}
+        if by_type:
+            lines.append(f"- By doc type: {by_type}")
+        lines.append(
+            "- Note: document download failures do not fail auction extraction; "
+            "auctions remain listed with available metadata."
+        )
+        lines.append("")
+
+    lines.extend(["## Pipeline", ""])
     for step in ("batch_scrape", "merge", "qa", "safety_gates", "promotion", "build", "predeploy", "deploy", "http_verify"):
         step_data = payload.get(step) or {}
         if step_data:

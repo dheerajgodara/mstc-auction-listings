@@ -16,6 +16,25 @@ def _count_files(directory: Path) -> int:
     return sum(1 for p in directory.rglob("*") if p.is_file())
 
 
+def _local_build_metrics(repo_root: Path) -> dict:
+    out_index = repo_root / "web" / "out" / "index.html"
+    out_data_js = repo_root / "web" / "out" / "data" / "auctions-data.js"
+    out_json = repo_root / "web" / "out" / "data" / "auctions.json"
+    metrics: dict = {
+        "index_html_bytes": None,
+        "auctions_data_js_bytes": None,
+        "auctions_json_bytes": None,
+        "local_build_present": out_index.is_file(),
+    }
+    if out_index.is_file():
+        metrics["index_html_bytes"] = out_index.stat().st_size
+    if out_data_js.is_file():
+        metrics["auctions_data_js_bytes"] = out_data_js.stat().st_size
+    if out_json.is_file():
+        metrics["auctions_json_bytes"] = out_json.stat().st_size
+    return metrics
+
+
 def build_status_report(
     *,
     repo_root: Path,
@@ -29,7 +48,15 @@ def build_status_report(
         latest_success = json.loads(success_path.read_text(encoding="utf-8"))
 
     production = load_production_summary(production_json)
+    if production_json.is_file():
+        try:
+            raw = json.loads(production_json.read_text(encoding="utf-8"))
+            production["generated_at"] = raw.get("generated_at")
+        except json.JSONDecodeError:
+            pass
+
     warnings: list[str] = []
+    local_build = _local_build_metrics(repo_root)
 
     report = {
         "production": production,
@@ -38,6 +65,7 @@ def build_status_report(
             "docs": _count_files(repo_root / "web" / "public" / "docs"),
             "thumbs": _count_files(repo_root / "web" / "public" / "thumbs"),
         },
+        "local_build": local_build,
         "last_run": latest,
         "last_successful_deploy": latest_success,
         "warnings": warnings,
@@ -48,6 +76,11 @@ def build_status_report(
         warnings.append("production JSON has suspiciously low count")
     if latest and latest.get("status") == "failed":
         warnings.append(f"last refresh run failed: {latest.get('run_id')}")
+    if local_build.get("index_html_bytes") and local_build["index_html_bytes"] > 500_000:
+        warnings.append(
+            f"local index.html is large ({local_build['index_html_bytes']} bytes); "
+            "expected client-side data loading shell"
+        )
 
     if check_live:
         http = verify_live_site(
@@ -59,13 +92,17 @@ def build_status_report(
             "passed": http.passed,
             "index_status": http.index_status,
             "json_status": http.json_status,
+            "data_js_status": http.data_js_status,
             "live_count_hint": http.live_count_hint,
+            "checked_urls": http.checked_urls,
             "errors": http.errors,
             "warnings": http.warnings,
         }
         warnings.extend(http.warnings)
         if http.index_status != 200:
             warnings.append(f"live index HTTP {http.index_status}")
+        if http.data_js_status not in (None, 200):
+            warnings.append(f"live auctions-data.js HTTP {http.data_js_status}")
 
     report["warnings"] = warnings
     return report
@@ -82,9 +119,19 @@ def print_status_report(report: dict) -> None:
     assets = report.get("assets", {})
     print(f"Assets — PDFs: {assets.get('pdfs')} docs: {assets.get('docs')} thumbs: {assets.get('thumbs')}")
 
+    local = report.get("local_build") or {}
+    if local.get("local_build_present"):
+        print(f"Local index.html: {local.get('index_html_bytes')} bytes")
+        if local.get("auctions_data_js_bytes") is not None:
+            print(f"Local auctions-data.js: {local.get('auctions_data_js_bytes')} bytes")
+
     last = report.get("last_run")
     if last:
-        print(f"Last run: {last.get('run_id')} status={last.get('status')} finished={last.get('finished_at')}")
+        deploy = last.get("deploy") or {}
+        print(
+            f"Last run: {last.get('run_id')} status={last.get('status')} "
+            f"deployed={deploy.get('deployed')} finished={last.get('finished_at')}"
+        )
     else:
         print("Last run: (none recorded)")
 
@@ -98,6 +145,8 @@ def print_status_report(report: dict) -> None:
     live = report.get("live_http")
     if live:
         print(f"Live index HTTP: {live.get('index_status')}")
+        print(f"Live JSON HTTP: {live.get('json_status')}")
+        print(f"Live auctions-data.js HTTP: {live.get('data_js_status')}")
         if live.get("live_count_hint") is not None:
             print(f"Live count hint: {live.get('live_count_hint')}")
 
