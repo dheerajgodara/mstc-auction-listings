@@ -299,6 +299,9 @@ See batch pipeline commands above (`batch_run`, `merge_batches`, `qa_summary`, `
 - Do not commit private keys or `.env` files (only `.env.example` is tracked).
 - Deployment logs never print secrets.
 - Locally `HOSTINGER_SSH_KEY` is a **file path**. In GitHub Actions, `HOSTINGER_SSH_KEY` is the **full private key text**.
+- Store `HOSTINGER_SSH_KEY` (private key) and `OPENROUTER_API_KEY` only in GitHub Actions secrets or local environment variables — never in the repo.
+- The public deploy key (`.github/hostinger_deploy_key.pub`) is safe to commit.
+- Keys used during initial setup should be rotated after deployment verification.
 
 ## Tests
 
