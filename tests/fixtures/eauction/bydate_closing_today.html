@@ -1,0 +1,868 @@
+<head>
+	<base target="_self">
+	<title>eAuction India</title>
+</head>
+<!-- BEGIN: HEADER -->
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<!-- Application: null -->
+<!-- Page: FrontEndEauctionByDate -->
+<!-- Generated: Fri Jul 03 02:24:39 IST 2026 -->
+<html>
+<head>
+<meta name="generator" content="Tapestry Application Framework, version 4.1.6-SNAPSHOT" />
+<meta http-equiv="Content-Type" content="text/html;charset=UTF-8" />
+<title>eProcurement System</title>
+<script type="text/javascript">djConfig = {"baseRelativePath":"/eAuction/app?service=asset&path=%2Fdojo-0.4.3-custom-4.1.6%2F","preventBackButtonFix":false,"parseWidgets":false} </script>
+
+<script type="text/javascript" src="/eAuction/app?service=asset&path=%2Fdojo-0.4.3-custom-4.1.6%2Fdojo.js"></script><script type="text/javascript" src="/eAuction/app?service=asset&path=%2Fdojo-0.4.3-custom-4.1.6%2Fdojo2.js"></script>
+<script type="text/javascript">
+dojo.registerModulePath("tapestry", "/eAuction/app?service=asset&path=%2Ftapestry-4.1.6%2F");
+</script>
+<script type="text/javascript" src="/eAuction/app?service=asset&path=%2Ftapestry-4.1.6%2Fcore.js"></script>
+<script type="text/javascript">
+dojo.require("tapestry.namespace");
+tapestry.requestEncoding='UTF-8';
+</script>
+<link rel="stylesheet" type="text/css" href="/eAuction/css/style.css" />
+</head>
+<head profile="http://gmpg.org/xfn/11">
+	<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+	<meta name="apple-mobile-web-app-capable" content="yes">
+	<meta name="apple-mobile-web-app-status-bar-style" content="black">
+	<meta name="mobile-web-app-capable" content="yes">
+	<meta name="HandheldFriendly" content="true">
+	<title>eAuction India</title>
+	<meta name="description" content="Central Public eProcurement Portal">
+	<meta name="robots" content="index, follow">
+	<meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+	<meta name="bingbot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+	<meta property="og:locale" content="en_US">
+	<meta property="og:type" content="website">
+	<meta property="og:title" content="Central Public eProcurement Portal">
+	<meta property="og:description" content="Central Public eProcurement Portal">
+	<meta property="og:url" content="">
+	<meta property="og:site_name" content="Central Public eProcurement Portal">
+	<meta property="og:image" content="">
+	<meta property="og:image:width" content="500">
+	<meta property="og:image:height" content="500">
+	<link rel="shortcut icon" href="/static/img/logo.a77331c.png" type="image/png" />
+	<link href="includes/dialog/dialog_box.css" rel="stylesheet" type="text/css">
+	<!-- <script language="JavaScript" type="text/JavaScript" src="js/jquery-3.5.1.min.js"></script> -->
+	<script language="JavaScript" type="text/JavaScript" src="js/jquery.min.js"></script>
+	<script language="JavaScript" type="text/JavaScript" src="includes/evaluator.js"></script>
+	<script language="javascript" src="includes/MessageDigest.js" ></script>
+	<script language="JavaScript" type="text/JavaScript" src="includes/dialog/dialog_box.js"></script>
+
+	<script language="JavaScript" type="text/JavaScript" src="js/css-vars-ponyfill.js"></script>
+	<link rel="stylesheet" type="text/css" href="css/bootstrap.min.css">
+
+	<!-- Custom Css and Scripts from here on -->
+<!-- 	<link rel="stylesheet" type="text/css" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+ -->	
+ 	<link data-polyfil rel="stylesheet" type="text/css" href="css/style.css">
+	<link data-polyfil rel="stylesheet" type="text/css" href="css/responsive.css">
+	<script type="text/javascript">
+		cssVars({
+			include: 'link[data-polyfil]',
+			// Don't treat all browsers as legacy
+			onlyLegacy: true,
+			watch: true
+		});
+
+		$(document).ready(function(){
+			$('form').each(function(){
+				$(this).find('input').each(function(){
+					if($(this).prop('id')){
+						window[$(this).prop('id')] = document.getElementById($(this).prop('id'));
+					}
+				});
+				$(this).find('select').each(function(){
+					if($(this).prop('id')){
+						window[$(this).prop('id')] = document.getElementById($(this).prop('id'));
+					}
+				});
+				$(this).find('textarea').each(function(){
+					if($(this).prop('id')){
+						window[$(this).prop('id')] = document.getElementById($(this).prop('id'));
+					}
+				});
+			});
+		});
+		
+		var isIE = window.navigator.userAgent.match(/MSIE|Trident/) !== null;
+		var isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
+
+		if(isIE){
+			var fa = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css';
+		}
+		else{
+			var fa = 'css/font-awesome.min.css';
+		}
+		var fontAwesome = document.createElement('link');
+		fontAwesome.href = fa;
+		fontAwesome.rel = 'stylesheet';
+		fontAwesome.type = 'text/css';
+		document.head.appendChild(fontAwesome);
+	</script>
+</head>
+
+
+<body id="Body">
+<script type="text/javascript"><!--
+dojo.require("tapestry.event");
+// --></script>	
+		
+	<header id="header" class="container-fluid">
+	<div class="row">
+		<div class="container-fluid header-main">
+			<div class="header-flex">
+				<div class="header-burger-menu"><i class="fa fa-reorder"></i></div>
+				<div class="logo-container">
+					<!-- <div class="ashoka-logo mr-2" jwcid="@GenericLink" href="ognl:newHomeUrl">
+						<img id="logo" src="images/ashoka-logo.png">
+					</div>
+					<div class="logo-image-container text-center">
+						<a id="logo-container-link" jwcid="@GenericLink" href="ognl:newHomeUrl">
+							<img id="logo" src="images/logo.png">
+						</a>
+					</div> -->
+					<div class="logo-image-container text-center">
+						<a id="GenericLink" class="ashoka-logo mr-2" href="https://eauction.gov.in/eauction">
+							<img id="logo" src="images/ashoka-logo.png">
+						</a>
+						<a id="logo-container-link" href="https://eauction.gov.in/eauction">
+							<img id="logo" src="images/logo.png">
+						</a>
+					</div>
+					<div class="logo-text-container col-md-9">
+						<div class="logo-big-text">eAuction India</div>
+						<div class="logo-small-text">A secure, transparent platform for conducting Electronic Auctions by Government</div>
+					</div>
+				</div>
+				<div class="header-main-right">
+					<div class="row" style="justify-content: flex-end;">
+						<div class="container-fluid header-top">
+
+							<span class="info header-phone">
+								<i class="fa fa-phone"></i>
+								<span id="phoneNumbers">
+								</span>
+								<span id="more_phone_numbers" style="cursor: pointer;">...</span>
+							</span>
+
+							<!-- <span style="font-size: 20px;"> | </span> -->
+							<span class="info header-email email"><i class="fa fa-envelope"></i>support-eauction[at]nic[dot]in / eproc-support[at]nic[dot]in</span>
+							<!-- <span style="font-size: 20px;"> | </span> -->
+							<span class="info header-text-size">
+								<span id="t-icon-A-plus" class="t-icon-A-plus">A+</span>
+								<span id="t-icon-A-normal" class="t-icon-A-normal">A</span>
+								<span id="t-icon-A-minus" class="t-icon-A-minus">A-</span>
+							</span>
+						</div>
+				
+						<div class="header-search-container">
+							<span class="info-group">
+								<a id="GenericLink_1" title="Home" class="info" href="https://eauction.gov.in/eauction"><i class="fa fa-home" style="font-size: 20px;"></i>Home</a>
+								<a id="PageLink" title="Auction Status" class="info" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=FrontEndEauctionStatus&amp;service=page"><i class="fa fa-line-chart"></i>Auction Status</a>
+								<a id="PageLink_0" title="Auction Search" class="info" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=FrontEndEauctionAdvancedSearch&amp;service=page"><i class="fa fa-search"></i>Auction Search</a>
+							</span>
+							<span class="info-group">
+								<a class="info" href="#" title = "Department Onboarding" ><i class="fa fa-handshake-o"></i>Department Onboarding</a>
+								<a id="PageLink_1" title="Bidder Enrollment" class="info" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=CorporateTenderer_Registration&amp;service=page"><i class="fa fa-list-alt"></i>Bidder Enrollment</a>
+							</span>
+							<a id="PageLink_2" title="Login" class="btn btn-primary" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=Home&amp;service=page"><i class="fa fa-user"></i>Login</a>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+</header>
+<div style="overflow: hidden; position: fixed; width: 100%; z-index: 999; height: 100vh; left: 0; top: 40px; pointer-events: none;">
+	<div id="floaty-container">
+		<div class="floaty">
+			<a id="GenericLink_2" class="floaty-link-box" href="https://eauction.gov.in/eauction">
+				<div class="floaty-links-icon"><i class="fa fa-home"></i></div>
+				<div class="floaty-links-text">Home</div>
+			</a>
+			<div class="floaty-link-box" data-toggle="modal" data-target="#myModal1" onclick="startvideoLink()">
+				<div class="floaty-links-icon"><i class="fa fa-film"></i></div>
+				<div class="floaty-links-text">eAuction Movie</div>
+			</div> 
+			<a id="PageLink_3" class="floaty-link-box" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=FrontEndEauctionLatest&amp;service=page">
+				<div class="floaty-links-icon"><i class="fa fa-gavel"></i></div>
+				<div class="floaty-links-text">Active Auctions</div>
+			</a>
+			<a id="PageLink_4" class="floaty-link-box" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=FrontEndEauctionCorrigendums&amp;service=page">
+				<div class="floaty-links-icon"><i class="fa fa-exchange"></i></div>
+				<div class="floaty-links-text">Corrigendum</div>
+			</a>
+			<a id="PageLink_5" class="floaty-link-box" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=FrontEndEauctionByDate&amp;service=page">
+				<div class="floaty-links-icon"><i class="fa fa-calendar"></i></div>
+				<div class="floaty-links-text">Auctions By Closing Date</div>
+			</a>
+			<a id="PageLink_6" class="floaty-link-box" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=FrontEndEauctionResults&amp;service=page">
+				<div class="floaty-links-icon"><i class="fa fa-thumbs-up"></i></div>
+				<div class="floaty-links-text">Results of Auction</div>
+			</a>
+			<a id="PageLink_7" class="floaty-link-box" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=EauctionsByValue&amp;service=page">
+				<div class="floaty-links-icon"><i class="fa fa-inr"></i></div>
+				<div class="floaty-links-text">Auctions By Value</div>
+			</a>
+			<a id="PageLink_8" class="floaty-link-box" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=FrontEndEauctionByOrganisation&amp;service=page">
+				<div class="floaty-links-icon"><i class="fa fa-building"></i></div>
+				<div class="floaty-links-text">Auctions By Org</div>
+			</a>
+			<a id="PageLink_9" class="floaty-link-box" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=FrontEndEauctionByProductCategory&amp;service=page">
+				<div class="floaty-links-icon"><i class="fa fa-shopping-cart"></i></div>
+				<div class="floaty-links-text">Auctions By Prod Category</div>
+			</a>
+			<a id="PageLink_10" class="floaty-link-box" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=FrontEndEauctionArchive&amp;service=page">
+				<div class="floaty-links-icon"><i class="fa fa-recycle"></i></div>
+				<div class="floaty-links-text">Cancelled / Reauctioned</div>
+			</a>
+			<a id="PageLink_11" class="floaty-link-box" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=FAQFrontEnd&amp;service=page">
+				<div class="floaty-links-icon"><i class="fa fa-question-circle"></i></div>
+				<div class="floaty-links-text">FAQ</div>
+			</a>
+			<a id="PageLink_12" class="floaty-link-box" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=StandardBiddingDocuments&amp;service=page">
+				<div class="floaty-links-icon"><i class="fa fa-cloud-download"></i></div>
+				<div class="floaty-links-text">Downloads</div>
+			</a>
+			<div class="floaty-link-box">
+				<div class="floaty-links-icon"><i class="fa fa-bar-chart"></i></div>
+					<a href="https://gepnicreports.gov.in/eprocreports/eauction/">
+						<div class="floaty-links-text">MIS Reports</div>
+					</a>
+			</div>																	
+		</div>
+	</div>
+</div>
+ <div class="modal fade" id="myModal1" data-backdrop="static" tabindex="-1"  aria-hidden="true">
+  <div class="modal-dialog" role="document">
+  	
+    <div class="modal-content">
+      <button type="button" class="close" data-dismiss="modal" aria-label="Close" onclick="stopvideoLink()">
+         <span aria-hidden="true">&times;</span>
+       </button>
+      <div class="modal-body">
+        <video id='myVideoQuickLink' width="100%" height="100%" src="E_Auction.mp4" class='eauctionVideo' controls></video>
+      </div>
+      
+    </div>
+  </div>
+</div> 
+<script type="text/javascript" src="js/bootstrap.min.js"></script>
+
+<script type="text/javascript">
+function startvideoLink(){
+	var vid = document.getElementById("myVideoQuickLink");	
+	vid.currentTime = 0;
+	$("#myVideoQuickLink").trigger('play')
+}
+function stopvideoLink(){
+	$("#myVideoQuickLink").trigger('pause')
+}
+</script>
+<script>
+	$(document).ready(function(){
+		var isIE = window.navigator.userAgent.match(/MSIE|Trident/) !== null;
+		var isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
+
+		if(isIE){
+			document.getElementsByTagName('body')[0].classList.add('ie');
+			theKid = document.createElement("div");
+			theKid.classList.add('slope');
+			document.querySelector('.header-search-container').appendChild(theKid);
+		}
+		
+		var changeDelta = 2;
+		document.getElementById('t-icon-A-plus').addEventListener('click', function(){
+			changeTextSize('plus', changeDelta);
+		})
+		document.getElementById('t-icon-A-normal').addEventListener('click', function(){
+			changeTextSize('normal', changeDelta);
+		})
+		document.getElementById('t-icon-A-minus').addEventListener('click', function(){
+			changeTextSize('minus', changeDelta);
+		});
+
+		var zoom=1,
+		zoomPercentage=100,
+		zoomCount=0;
+
+		function changeTextSize(changeType, changeDelta){
+			var delta = 0.04;
+			if('minus' == changeType){
+				if(zoom>1){
+					zoom -= delta;
+				}
+				if(zoomCount>0){
+					zoomCount--;
+				}
+			}
+			else if('plus' == changeType){
+				if(zoom<1.20){
+					zoom += delta;
+				}
+				if(zoomCount<4){
+					zoomCount++;
+				}
+			}
+			else{
+				zoom = 1;
+				zoomCount = 0;
+			}
+			zoomPercentage = 100 + (zoomCount*10);
+			if(isFirefox || isIE){
+				$('*:not(.fixed-font-size)').each(function(){
+					var k =  parseInt($(this).attr('data-font-size')); 
+					var redSize = ((k*zoomPercentage)/100) ; //here, you can give the percentage( now it is reduced to 90%)
+					$(this).css('font-size',redSize);
+				});
+			}
+			else{
+				$('body').css({'zoom':zoom});
+			}
+
+			setTimeout(function(){
+				setStickyTop();
+			}, 2000);
+		}
+		window.addEventListener("scroll", function(e){
+			var scrollTop = (window.pageYOffset !== undefined) ? window.pageYOffset : (document.documentElement || document.body.parentNode || document.body).scrollTop;
+
+			if(scrollTop >= document.querySelector('#header .header-top').clientHeight){
+				document.getElementById('header').classList.add('sticking');
+			}
+			else{
+				document.getElementById('header').classList.remove('sticking');
+			}
+		});
+
+		setTimeout(function(){
+			setStickyTop();
+		});
+
+		function setStickyTop(){
+			if(window.innerWidth >= 768){
+				var fixedHeight = (-1) * (document.querySelector('#header .header-top').clientHeight)+'px';
+				document.querySelector('#header').style.top = fixedHeight;
+
+				var offSetOfAnnouncementQuickLinks;
+				var offSetOfQuickLinks;
+				window.addEventListener("scroll", function(e){
+					var scrollTop = (window.pageYOffset !== undefined) ? window.pageYOffset : (document.documentElement || document.body.parentNode || document.body).scrollTop;
+
+					if(scrollTop >= document.querySelector('#header .header-top').clientHeight){
+						document.getElementById('header').classList.add('sticking');
+						if(isIE){
+							document.querySelector('#header').style.top = fixedHeight;
+							$('body').css({'paddingTop': $('#header').outerHeight()});
+						}
+					}
+					else{
+						document.getElementById('header').classList.remove('sticking');
+						if(isIE){
+							$('body').css({'paddingTop': ''});
+							document.querySelector('#header').style.top = '0px';
+						}
+					}
+				});
+			}
+			else{
+				var bodyPaddingSet = false;
+				window.addEventListener("scroll", function(e){
+					if(!bodyPaddingSet){
+						document.getElementsByTagName('body')[0].style.paddingTop = document.getElementById('header').clientHeight+'px';
+						bodyPaddingSet = true;
+					}
+				});
+			}
+		}
+
+		function fadeOutEffect() {
+			var fadeTarget = document.getElementById("err-id");
+			var fadeEffect = setInterval(function () {
+				if (!fadeTarget.style.opacity) {
+					fadeTarget.style.opacity = 1;
+				}
+				if (fadeTarget.style.opacity > 0) {
+					fadeTarget.style.opacity -= 0.1;
+				} else {
+					clearInterval(fadeEffect);
+				}
+			}, 200);
+		}
+		setStickyTop();
+
+		$('*:not(.fixed-font-size)').each(function(){
+			var k =  parseInt($(this).css('font-size'));
+			$(this).attr('data-font-size', k);
+		});
+
+		var phoneNumbersAll = ['0120-4001 002', '0120-4001 005', '0120-6277 787'];
+		var phoneNumbersTrim = ['0120-4001 002'];
+		function renderPhoneNumbers(phArr){
+			var eachPh = '';
+			phArr.map(function(x, i){
+				if(phArr.length==1 || i!=(phArr.length-1)){
+					eachPh += '<span class="header-phone phone" style="font-size:12px;">'+x+'</span><span style="font-size: 20px;"> / </span>';
+				}
+				else{
+					eachPh += '<span class="header-phone phone" style="font-size:12px;">'+x+'</span>';
+				}
+			});
+			$('#phoneNumbers').html(eachPh);
+		}
+
+		renderPhoneNumbers(phoneNumbersTrim);
+
+		$('#more_phone_numbers').click(function(){
+			renderPhoneNumbers(phoneNumbersAll);
+			$(this).hide();
+		});
+
+	});
+</script>
+<style>
+.input-group>.go-btn>.btn {
+    background-color: #ffffff00 !important;
+    border: 1px solid #ced4da !important;
+    border-left: 0px !important;
+    position: relative;
+}
+.btn-primary{
+	color: #fff!important;
+}
+.homeIcon{
+	padding: 0px 10px 0px 0px !important;
+}
+.homeIcon:hover{
+    background: none!important;
+}
+.homeIcon:hover i{
+    color: var(--default-brand-color)!important;
+}
+
+.header-phone::after{
+	content: "";
+    position: absolute;
+    width: 1px;
+    height: 50%;
+    top: 30%;
+    right: 0px;
+    background-color: #dddddd;
+}
+.header-email::after{
+	content: "";
+    position: absolute;
+    width: 1px;
+    height: 70%;
+    top: 15%;
+    right: 0px;
+    background-color: #dddddd;
+}
+</style>
+		
+	<div id="content">
+	<!-- Page content starts here -->
+		
+<section id="tenders" class="container mt-3 mb-4">
+	<ol class="breadcrumb pull-right">
+		<li><a id="GenericLink_0" class="text-info" href="https://eauction.gov.in/eauction">Home</a></li>
+		<li><a href="javascript:void();" class="active">Auction Closing Today</a></li>
+	</ol>
+	
+	<form method="post" action="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1" id="ListAuctionsbyDate">
+<div style="display:none;" id="ListAuctionsbyDatehidden"><input type="hidden" name="formids" value="typeSearch,closingTodayTab,closingWeekTab,closingTwoWeekTab,closingByDateTab,If_0,If_1_0,iterRows_0,If_2_0" />
+<input type="hidden" name="seedids" value="ZH4sIAAAAAAAAAF2QzQqCUBCFddGbuFRQ+18mQQQuooKW4s9gl2yueG+BPUH0LL1a79CoFWObO+ebGeYezvNlDG6GYT7Mu62guooULNcu47wpqTyXEgF1q1HHAqEirUApIbFRJT0HSAJZZe1ojXRFW569O0JRUCOQWd3t7GUZxNhdWAFVkYYCT7RbyFw6vw+coun2diKPeEOmwm70lZHLgS9F/t8Fnw+HHEYcxhwmHKYcZhzmPRN9Sz1PXmNiC0hRfWIJhdKLS6opTZXUy1hT7G93w3JGkwEAAA==" />
+<input type="hidden" name="component" value="ListAuctionsbyDate" />
+<input type="hidden" name="page" value="FrontEndEauctionByDate" />
+<input type="hidden" name="service" value="direct" />
+<input type="hidden" name="session" value="T" />
+<input type="hidden" name="submitmode" value="" />
+<input type="hidden" name="submitname" value="" />
+<input type="hidden" name="If_0" value="F" />
+<input type="hidden" name="If_1_0" value="T" />
+<input type="hidden" name="iterRows_0" value="VZH4sIAAAAAAAAAK2SzWsTQRjG36QG28bGmCpUUFgU4kGyCa3GghRsm5Z+bGoxKihIme5ONhM2M5Pd2TT1IFZBDz0oftyEiniz/4MePdST9KyIV3sVPDmzmbTpvXuafeY3z7zzvO/2H0gEPhRc1jIpsU0XcxOj0BaEURNTQcS6OaP/73CbNQh1LRKIvQdPn7z6Uv4Qh7QFaQ1MeyzAJSSwkGodtVA+FMTLK+W6BRlNlXBg+4SrpYBMh/MQdfMV4Ut3Sab2SYGIFzThEcQtOKnVWeLhJdTAWh7Q8ryjhaQWepju0ZscU1WNkmMWnNbycrjqkaCGnZ69E3rvLvLCrk3SZr5PXEydsCFguKf0KcY8jKisvb8qy6uQh90zceLspxGhFoveOBBgO/TxDLU12BdQdth0ngrsYl/CgyH3GHKwM7Wu6GOyvK6yX3Kbyz5m1GkzaHrmbdLAgUANnh3Z/RqrfMZxiM1DgiLKgrYPqQhU7TGVQ62+EVu8J872AbT5Wj9AbOvSp+832iA/AWWcm+ykYbCqIZ1XsW8gYdxCdRc5RglzJtTOIqFrUi6RFgkUPFuaLhvK3iiM5QrXcqOF0eLQ4FH7cQFDarVSnlsZuzJ+tShg8QgviMbveCeT7IUsRJn0iud2tjpBqQacinJV7TP1THwz/Me77/7tyfzvQ6KlxqnNIzZ1wEZDsfn75c6Liz8kuNAFfUgfQEuhesez7bfnk29+bsZVq9S1EDvzWsDIdN0iDbpQtKs1b05wftluLTcnJyYOF6VnKvPr/ce/G8/HO0PRuUs9aVjZcf4fnnNnJBYEAAA=" />
+<input type="hidden" name="iterRows_0" value="VZH4sIAAAAAAAAAMWTzU/UQBjGZxeJ4CquizGYaNLEhAumi/iBH+HQZbtupdvibgE1UVLasczSnZZ2CsWDAU30wEFj5GaiMR45+B/I0YMeOUuIV7maeHKmnYXlL6DpoX3m977zTN+nm39AdxiAYcdbEjGyRAf6IjQjiyAPixATRFZEmb9P+ZbXQthRUUj2Hr988W6r9jkL8irIc2Dc9UJYNgkkVG2aS2YxIsgtMuWOCgqcKsPQCpDPHgkopJxrYqfYIAHtTsm+fZKYyA0XwXOQVcFprlaQCzWzBbncy2XF5kKOCx1Mu1T3IWZumJxRwVkuT0ZzLgrnod2xdpKvTZtu1G6Ts7wgQA7EdtQioL/DesnzXGhi6r3nKbXXQM/aNVlk73+NBFW95Iy9IbSiAMrY4mBXiL3DTRVMoAMDCp+IfNczbWiXVhh9jNprK/uWY5/OscCqxXDRFQ3UgiExW/7gwPb3TOMbzIKMArqxib0wDkBfArLxiKzDfHMtM/GQnO8CIPaXewDIfBy9/WQ1BvQiIJalqXFD0TWhotcFoyoLDUmVBb0iGLI0IcwoRrVcl2Y0oSYZcl2RVKEkq7qmaHfpLRi6UJJUVao3qlI1rSzLk7rB6tOHsjKtNFj7A+6yUCmP145wa5+AUyPDIzdma9XZq9duXR89Qi/JH3A8Hcvg7vxWMpZO8cLG11RkGTiTjJYlSOSx/CkEq9sf/u3RCDwC3Uss0bGfsH0HbJLL9d9vf7y59IuC99pgAPIHkBa15mDwanPjYu79znqWpYVtCzLnhggYmDMkTavdrxvNKWWhGQ85Dxau2MtjY4dN8VgXdj99+bv2+maay3QvdqR+2i7r+/8BCnnNzpkEAAA=" />
+<input type="hidden" name="iterRows_0" value="VZH4sIAAAAAAAAAM2TT08UMRjGu4tEcAniwgEPJo0mepslqxCNIdEF1NVdRNY/QGJId6bMFjttaTuwcDCiiR44aIieNGqMJ8NnUI4m6pGzxniVq4nxYDvbheUbMKeZZ359+/R9n278Bu1KgoGQL3qM+F6IhYdR7GvCmYeZJnrZG3Pft4TPI8LCElF6++6jh+ub5Xdp0FMCPQ4YoVzhUaSxNuo8WkS5WBOas8r5Esg6ahQrXxJhXzXINjiKWJiraGmqG7J7h9SIULUA7oN0CRx26iVC8TiKsJM7nVwMnJBxQgvTXHpdYGbdWDlVAn1OnoirlKgaDlr+dbl/txGNm2UyPpeShJgFcaRBb4v1AucUI2a8d8wZexWy0lyTJsFONxK0xJMzdirsxxKPMd+BbYrxvUWLTOMQSwMfigXlKMBBYdnSB4y9prJjuS7MHLN2tacWqHeTRFhpFImT/VufU5VPOA1SRdDOEOOqLkF3AtrxeLZCbX41dW1aH20DoC6WOgBIvbl4GVyoA/No8DLPAjiCKIVlxFCIIxMMOMclNP2UyHYJIkOUETGOzQ4+hoT5NA7MOOEVrgTRiJokGRXqGoZKYJ/MERxAyXmkrFxAMqihCJm3mnHGYAWZbyZiCSdiWUUtgNnN9FphWEXKJBGs7z9TQoOu/EB+aPZOYXZw6PTg/m5hcsEONqZ+6uPxzWTqLeLrL5kPDdFG7EiSHBtQz6X+G5QPtl793TYJmwHti/bC1EXCdu+ySezXfj37+vTEdwNebYIS9OxC43FUxfLxxotjmec/1tI2jHZbkOr7p0F/ebIYzKycmTw3nRsKl+hUXMvX790YHt5ryt2a7M+37/+sPjnbiH1jL3ukXlOuTYj/PvFHefgEAAA=" />
+<input type="hidden" name="iterRows_0" value="VZH4sIAAAAAAAAAFWSz08TQRTHXwtEEEUsxGCMyaiJnthuqihoSCztYhemW2wLCSaGLNuhDOwvdmexcDCiiR44aIzeTDTGI3+DcvSgR84a41UOXkz04sx2CmVPu9/5vDff97678wu6wgDUureuuNRS6sRXiBlZjHquQlxG2Yaiye9Z3/Ic6tYxDdn+/SePX+4W3yehH0O/BHK2F5K8yQjj6oq5bqYjRu20UG5hSEkqT0IroL54ZZBqcrbp1tMVFvDunOw7IJlJ7XANHkISwympTlKbGKZDpNwjZb0mhV4ptDGt0pJPXOFGyAkMg1KeiRZtGi6TWtvZCXk2Z9pRq02v5QUBrRO3FjkMBtqsT3ieTUyXe+9e4vYqdLNVk6S1g23EKPbiGXtCYkUB0VxLgh2h6x1tqruM1EnA4eORb3tmjdQmNgTdye21lAPLDZ/nmBLVSrhmK1XqkJCZjn95aO9zovKJJCGhQ5drul7YCKAvBkU8iuiwvLKVmJ5nZzsAGv6DboDE2+Fzzu0G8IfBzZKhoTmtoOewhooFdTR7JzOi3kDZKpouaHk0U8J6TkOVaraqlww0WSqjMv/UMEYMxvL6TKmiV9GIqqrpYaQbubJW1IxqFqO5LJ7VUIYfxEWtK2Sxz+BkRs1cXygWFq7y6msMBqdmMRIaarMU/yDHmq6vfLy4G7tuFy/8/tccRazodDy5WLAiU/uKgkd7b/7u8w3dg651EXjDj9m+QzaObfvniy/PL33j4FQLDKD/EDIiZ5EET3den+999X07KZYproXEGZPBUHk0nN9cXR1birK+Zak5ulqmxt3x8aOmZOqpH+8+/Nl6NtqMrXmXGGmAt+v0/f+lLSuZuAMAAA==" />
+<input type="hidden" name="If_2_0" value="F" />
+</div>
+		<div class="card shadow-sm cardBox">
+			<h5 class="card-header">Search Auction Closing Today</h5>
+			<div class="card-body">
+				<div class="col-md-12 row pb-3">
+					<div class="col-md-6">
+						<label for="placeholder-input"> Search By</label>
+					
+						<select name="typeSearch" id="typeSearch" onChange="enableClickEvent();" class="form-control form-control-sm">
+<option value="0" selected="selected">Bid Submission Closing</option>
+<option value="1">Auction Closing</option>
+</select>					
+					</div>
+					
+				</div>
+			</div>
+		</div>
+	
+		<div class="card shadow-sm mt-4">
+			<h5 class="card-header">Auction Closing Today</h5>			
+			<div class="card-body">
+				<div  id='cssmenu'>
+					<ul class="nav nav-tabs" id="myTab" role="tablist">
+							<li class="nav-item">
+								<a href="javascript:tapestry.form.submit('ListAuctionsbyDate', 'closingTodayTab');" id="closingTodayTab" aria-selected="true" data-toggle="tab" role="tab" aria-controls="closingTab1" class="active">Closing Today</a>
+							</li>
+						
+							<li class="nav-item">
+								<a href="javascript:tapestry.form.submit('ListAuctionsbyDate', 'closingWeekTab');" id="closingWeekTab" aria-selected="false" data-toggle="tab" role="tab" aria-controls="closingTab2">Closing within 7 days</a>
+							</li>
+						
+							<li class="nav-item">
+								<a href="javascript:tapestry.form.submit('ListAuctionsbyDate', 'closingTwoWeekTab');" id="closingTwoWeekTab" aria-selected="false" data-toggle="tab" role="tab" aria-controls="closingTab3">Closing within 14 days</a>
+							</li>
+												
+							<li class="nav-item">
+								<a href="javascript:tapestry.form.submit('ListAuctionsbyDate', 'closingByDateTab');" id="closingByDateTab" aria-selected="false" data-toggle="tab" role="tab" aria-controls="closingTab4">Closing by Date</a>
+							</li>
+					</ul>
+				</div>
+				
+				<div class="tab-content tabcontentOutLine" id="auctionClosingTab">					
+					<div class="tab-pane fade show active">
+						
+				
+				
+
+<table border="0" bgColor="#f7f7f7" cellpadding="0" width="100%" cellspacing="1" id="table" class="table table-bordered">
+	
+						<thead class="thead-dark">
+							<tr class="list_header">
+							<td width="5%">S.No</td>
+							<td width="15%">Auction ID</td>
+							<td width="20%">Title</td>
+							<td width="20%">Publish Date</td>
+							<td width="20%">Closing Date</td>
+							<td width="10%" nowrap="nowrap">View</td>
+						</tr>
+					</thead>
+					<tbody class="bg-light">
+						<span id="If_1_0">
+							
+
+
+	<tr class="even" id="informal">
+		
+								<td align="left">1.</td> 
+								<td align="left">2026_MH_34856</td>
+								<td align="left">e-Auction of Timber at Rajgad Depot of Kinwat Division FDCM Date 03-07-2026</td>
+								<td align="left">01-Jul-2026 02:00 PM</td>	
+								<td align="left">03-Jul-2026 09:30 AM</td>
+								<td align="center">
+									<a id="view" onClick="return popup(this, 'width=700,height=550,resizable=yes,scrollbars=yes');" title="View Auction Document" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?component=view&amp;page=FrontEndEauctionByDate&amp;service=direct&amp;session=T&amp;sp=SCjLimnJ6cfhlHtpp%2BcvPqA%3D%3D">
+										<i class="fa fa-search"></i>
+									</a>
+								</td>								
+							
+	</tr>
+
+	<tr class="odd" id="informal_0">
+		
+								<td align="left">2.</td> 
+								<td align="left">2026_MH_34957</td>
+								<td align="left">EAUCTION FOR THE SALE OF TEAK WITHDRAWN MATERIAL BELONINGING TO BALLARSHAH SALE DEPOT OF DEPOT DIVISION BALLARSHAH, FDCM</td>
+								<td align="left">01-Jul-2026 01:00 PM</td>	
+								<td align="left">03-Jul-2026 01:00 PM</td>
+								<td align="center">
+									<a id="view_0" onClick="return popup(this, 'width=700,height=550,resizable=yes,scrollbars=yes');" title="View Auction Document" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?component=view&amp;page=FrontEndEauctionByDate&amp;service=direct&amp;session=T&amp;sp=SbTANNMQRTjUIkjx%2BgXk1dw%3D%3D">
+										<i class="fa fa-search"></i>
+									</a>
+								</td>								
+							
+	</tr>
+
+	<tr class="even" id="informal_1">
+		
+								<td align="left">3.</td> 
+								<td align="left">2026_WB_5635</td>
+								<td align="left">2nd Call Management for Operation and Maintenance including Hospitality in the specified rooms in Bardhaman Bhavan Sadhanpur Purba Bardhaman on lease basis</td>
+								<td align="left">15-Jun-2026 05:00 PM</td>	
+								<td align="left">03-Jul-2026 05:00 PM</td>
+								<td align="center">
+									<a id="view_1" onClick="return popup(this, 'width=700,height=550,resizable=yes,scrollbars=yes');" title="View Auction Document" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?component=view&amp;page=FrontEndEauctionByDate&amp;service=direct&amp;session=T&amp;sp=SMRIdZz4R9Y%2F6gwlXuh2xkQ%3D%3D">
+										<i class="fa fa-search"></i>
+									</a>
+								</td>								
+							
+	</tr>
+
+	<tr class="odd" id="informal_2">
+		
+								<td align="left">4.</td> 
+								<td align="left">2026_MH_35004</td>
+								<td align="left">JUL 2026 ONE VEHICLE</td>
+								<td align="left">02-Jul-2026 02:00 PM</td>	
+								<td align="left">03-Jul-2026 05:00 PM</td>
+								<td align="center">
+									<a id="view_2" onClick="return popup(this, 'width=700,height=550,resizable=yes,scrollbars=yes');" title="View Auction Document" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?component=view&amp;page=FrontEndEauctionByDate&amp;service=direct&amp;session=T&amp;sp=SR8sYzkk9fuApcc0CikRiNQ%3D%3D">
+										<i class="fa fa-search"></i>
+									</a>
+								</td>								
+							
+	</tr>
+
+
+													
+							<tr>
+								<td class="list_footer" colspan="7" align="left">&nbsp;
+									
+								</td>
+							</tr>
+							</span>
+							
+						</tbody>
+					
+</table>
+
+
+				</div>
+			</div>
+		</div>
+		</div>
+	</form>
+</section>
+	
+
+	<!-- Page content ends here -->	
+	</div>
+
+	<footer class="container-fluid">
+	<div class="row">
+	    <section id="follow-us" class="container-fluid pt-2 pb-2">
+			<div class="find-us-images-container text-center">
+				<a target="_blank" href="https://digitalindia.gov.in/"><img src="images/footerImg/digitalIndia.png"></a>
+				<a target="_blank" href="https://gepnic.gov.in/"><img src="images/footerImg/gepnic.png"></a>
+				<a target="_blank" href="https://www.india.gov.in/"><img src="images/footerImg/india.gov.in.png"></a>
+				<a target="_blank" href="https://www.meity.gov.in/"><img src="images/footerImg/Meity_logo.png"></a>
+			</div>
+		</section>
+	</div>
+	<div class="row"  style="flex-direction: column;">
+		<div class="container">
+			<div class="row">					
+				<div class="col-md-4 footerMar nic-credit">
+					<!-- <div class="default-big-font-size bold mb-3 mt-3">About Us</div> -->
+					<div class="row">
+						<div class="col-md-4 p-0">
+							<p class="mt-1">&nbsp;</p>
+							<img src="images/footerImg/QRCode.png"/>
+						</div>
+						<div class="col-md-8 pr-2">
+							<p class="mt-1">&nbsp;</p>
+							<img src="images/footerImg/nic_logo.png">
+							<p><i style="color: #f1f1f1;" class="fa fa-copyright" aria-hidden="true"></i> Contents maintained and owned by respective Auction Inviting Authorities.<br>
+								eAuction platform is designed, developed and hosted by National Informatics Centre, Ministry of Electronics & Information Technology, Government of India.</p>
+						</div>
+					</div>
+				</div>
+				<div class="col-md-2 mt-1 mb-1 border-l certifying-agency">
+					<div class="default-big-font-size bold mb-2">Certifying Agency</div>
+					<p class="text-center" style="padding-top: 25px;">
+						<a id="DirectLink" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?component=%24WebBorder.%24WebFooter.%24DirectLink&amp;page=FrontEndEauctionByDate&amp;service=direct&amp;session=T&amp;sp=SSTQC_Audit_Report.pdf">	
+								<img width="100" src="images/footerImg/stqc.png" alt="STQC Logo" title="Standardization, Testing and Quality Control">
+						</a>
+					</p>
+					
+				</div>
+				<div class="col-md-3 mt-1 mb-1 footerLinks border-l">
+					<div class="default-big-font-size bold mb-2">Resources</div>
+					<a id="PageLink_13" class="footer-links" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=HelpForContractors&amp;service=page">Help For Contractors</a>
+					<a id="PageLink_0_0" class="footer-links" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=DSCInfo&amp;service=page">Information About DSC</a>
+					<a id="PageLink_1_0" class="footer-links" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=FAQFrontEnd&amp;service=page">FAQ</a>
+					<a id="PageLink_2_0" class="footer-links" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=FrontFeedback&amp;service=page">Feedback</a>
+					<a id="PageLink_3_0" class="footer-links" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=BiddersManualKit&amp;service=page">Bidders Manual Kit</a>
+					<a id="PageLink_4_0" class="footer-links" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=SiteMap&amp;service=page">Site Map</a>
+					<a id="PageLink_5_0" class="footer-links" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=Disclaimer&amp;service=page">Portal Polices</a>
+				</div>
+				<div class="col-md-3 mt-1 mb-1 border-l contact-us-footer">
+					<div style="border-bottom: 1px solid rgba(255, 255, 255, 0.2); padding-bottom: 10px;">
+						<div class="default-big-font-size bold mb-2">Contact Us</div>
+						<div class="contact-us">
+							<div class="flex phone mt-2"><i style="font-size: var(--default-big-font-size);" class="fa fa-phone"></i><span style="font-size:12px;line-height:2.0;"> 0120-4001 002 / 0120-4001 005 / 0120-6277 787</span></div>
+							<div class="flex email mt-2"><i style="margin-top: 5px;" class="fa fa-envelope"></i><div><div>support-eauction[at]nic[dot]in / </div><div>eproc-support[at]nic[dot]in</div></div></div>
+							<a id="PageLink_6_0" class="text-white text-right moreContacts" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?page=FrontEndContactUs&amp;service=page">more details...</a>
+						</div>
+					</div>
+					<div class="row mt-3 mb-2 justify-content-center">
+						<div class="col-4 text-center">
+							<a id="DirectLink_0" title="eBrochure" class="logo-white-container" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?component=%24WebBorder.%24WebFooter.%24DirectLink_0&amp;page=FrontEndEauctionByDate&amp;service=direct&amp;session=T&amp;sp=SeAuction-India-Brochure.pdf" target="_blank">	
+								<img style="width: 50px;" src="images/logo.png">
+							</a>
+						</div>
+						<div style="border-left: 1px solid rgba(255, 255, 255, 0.2)" class="col-4 text-center">
+							<a id="DirectLink_1" title="eBook" class="logo-white-container" href="/eAuction/app;jsessionid=15C204C9963242F5F6C2A3F55AE4579A.eauc1?component=%24WebBorder.%24WebFooter.%24DirectLink_1&amp;page=FrontEndEauctionByDate&amp;service=direct&amp;session=T&amp;sp=Sindex.html" target="_blank">	
+								<i style="font-size: 36px;" class="fa fa-book footer-ebook-icon"></i>
+							</a>
+						</div>
+						
+						<div style="border-left: 1px solid rgba(255, 255, 255, 0.2)" class="col-4 text-center">
+					
+									<span class="logo-white-container videoBtn" style="cursor:pointer;" data-toggle="modal" data-target="#myModal" onclick="startvideo()" title="eMovie">
+							 <i style="font-size: 36px;" class="fa fa-film footer-ebook-icon"></i>
+							</span>
+						</div>
+						
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="container feet text-center border-t">
+			<p class="mb-3">Version : 1.09.12 12-Sep-2022<br/>
+			(c) 2017 Auctions NIC, All rights reserved.<br/>
+			Site best viewed in Firefox 47 and 49, IE 11 with a screen resolution 1024 x 768.</p>
+		</div>
+	</div>
+</footer>
+
+<div class="modal fade" id="myModal" data-backdrop="static" tabindex="-1"  aria-hidden="true">
+  <div class="modal-dialog" role="document">
+  	
+    <div class="modal-content">
+      <button type="button" class="close" data-dismiss="modal" aria-label="Close" onclick="stopvideo()">
+         <span aria-hidden="true">&times;</span>
+       </button>
+      <div class="modal-body">
+        <video id='myVideo' width="100%" height="100%" src="E_Auction.mp4" class='eauctionVideo' controls></video>
+      </div>
+      
+    </div>
+  </div>
+</div>
+<script type="text/javascript" src="js/bootstrap.min.js"></script>
+
+<script type="text/javascript">
+function startvideo(){
+	var vid = document.getElementById("myVideo");	
+	vid.currentTime = 0;
+	$("#myVideo").trigger('play')
+}
+function stopvideo(){
+	$('#myVideo').trigger('pause')
+}
+</script>
+<style scoped>
+
+	.pl-30{
+		padding-left: 30px;
+	}
+
+	.footer-links{
+		display: inline-block;
+		width: 100%;
+		padding: 3px 0;
+		cursor: pointer;
+	}
+
+	.footer-links:before{
+		content: ">";
+		margin-right: 5px;
+	}
+	.contact-us i{
+		margin-top: 5px;
+	}
+	.footerLinks a:hover{
+		color: var(--yellow);
+	}
+	.contact-us a:hover{
+		color: var(--yellow)!important;
+		cursor: pointer;
+	}
+	.footerMar{
+		margin-top: 0.5rem;
+		margin-bottom: 0.5rem;
+	}
+	.contact-us i{
+		margin-right: 5px;
+		color: white;
+	}
+</style>
+
+<script type="text/javascript"><!--
+tapestry.addOnLoad(function(e) {
+dojo.require("tapestry.form");tapestry.form.registerForm("ListAuctionsbyDate");
+
+tapestry.cleanConnect("typeSearch", "onchange", "formEvent870608625");
+                tapestry.formEvent870608625=function(e){
+                    var content={beventname:"onchange", bcomponentidpath:"FrontEndEauctionByDate/typeSearch", bcomponentid:"typeSearch"};
+                    tapestry.event.buildEventProperties(e, content, arguments);
+                    if (!content["beventtarget.id"]){
+                    	content["beventtarget.id"]="typeSearch";
+                    }
+                    
+                   var validateState=tapestry.form.forms["ListAuctionsbyDate"].validateForm;
+                   var validateForm=false;
+                   tapestry.form.setFormValidating("ListAuctionsbyDate", validateForm);
+                   
+                    
+                    tapestry.form.submitAsync("ListAuctionsbyDate", content);
+                    
+                    
+                    
+                    tapestry.form.setFormValidating("ListAuctionsbyDate", validateState);
+                    
+                };
+                tapestry.connect("typeSearch", "onchange", "formEvent870608625");
+tapestry.form.focusField('typeSearch');});
+// --></script></body>
+</html>
+<!-- Render time: ~ 2 ms -->
+
+<script type="text/javascript" src="includes/CsrfdeleteBlock.js"></script>
+<script language="javascript">
+function validateSearch() {
+var f = document.getElementById("ListAuctionsbyDate");
+	var closingDateValue = document.getElementById("closingDateId").value;
+	if(closingDateValue==null || closingDateValue=="") {
+	    displayErrorMsg('closingDateId','Please select the closing date to search.',true) 
+		return false;
+	} 
+	var currentDate=new Date();
+	var curDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate());
+	var closingDateArr= closingDateValue.split('/');
+	var closingDateobj = new Date(closingDateArr[2], closingDateArr[1]-1, closingDateArr[0]);
+	if(getDatesDifference(curDate, closingDateobj)>0)
+	{
+		displayErrorMsg('closingDateId','Closing date should not be lesser than current date.',true) 
+		return false;
+	}
+	if(f.captchaText.value==0){
+	    displayErrorMsg('captchaText','Please enter Captcha.') 
+		return false;
+	  }
+}
+function getDatesDifference(date2, date1){
+	var datesDiff =  date2.getTime() - date1.getTime();
+	return (parseInt(datesDiff)/(24*60*60*1000));
+}
+
+function enableClickEvent(){
+	var closingTodayTab = document.getElementById("closingTodayTab");
+	closingTodayTab.click();
+}
+
+function popup(mylink, windowname)
+	{
+		if (! window.focus)return true;
+		var href;
+	if (typeof(mylink) == 'string')
+		href=mylink;
+	else
+		 href=mylink.href;
+		window.open(href, windowname, 'location=no,scrollbars=1,toolbar=no,left=350,top=50,height=400,width=800,directories=no, menubar=no, resizable=1');
+			return false;   
+	}
+</script>

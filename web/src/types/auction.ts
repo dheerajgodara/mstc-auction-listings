@@ -1,0 +1,137 @@
+export type EmdParseStatus =
+  | "auction_wise"
+  | "item_wise"
+  | "not_required"
+  | "missing"
+  | "unknown";
+
+export type LotDocumentStatus =
+  | "pending"
+  | "downloaded"
+  | "thumbnail_ready"
+  | "thumbnail_failed"
+  | "failed"
+  | "skipped";
+
+export type LotDocument = {
+  type: "photo" | "annexure" | "document" | "unknown";
+  filename: string;
+  source_url?: string | null;
+  cached_url?: string | null;
+  thumbnail_url?: string | null;
+  page_count?: number | null;
+  mime_type?: string | null;
+  status?: LotDocumentStatus;
+  error?: string | null;
+};
+
+export interface ContactInfo {
+  name?: string | null;
+  phones?: string[];
+  email?: string | null;
+}
+
+export interface LotRecord {
+  lot_id: string;
+  item_title: string;
+  item_description?: string | null;
+  start_price_inr?: number | null;
+  start_price?: number | null;
+  start_price_label?: string | null;
+  start_price_text?: string | null;
+  price_parse_status?: string;
+  price_type?: string;
+  quantity?: string | null;
+  unit?: string | null;
+  location?: string | null;
+  lot_state?: string | null;
+  gst?: string | null;
+  tcs?: string | null;
+  tax_text?: string | null;
+  category?: string | null;
+  product_type?: string | null;
+  pcb_group?: string | null;
+  bid_increment?: number | null;
+  post_bid_emd_percent?: number | null;
+  bid_valid_till?: string | null;
+  pre_bid_emd_amount?: number | null;
+  pre_bid_emd_text?: string | null;
+  annexure_file?: string | null;
+  photo_file?: string | null;
+  inspection_contact?: ContactInfo | null;
+  lot_details_text?: string | null;
+  lot_description_text?: string | null;
+  lot_parameters_text?: string | null;
+  lot_other_details_text?: string | null;
+  lot_documents_text?: string | null;
+  lot_parse_warnings?: string[];
+  documents?: LotDocument[];
+  preview_images?: string[];
+}
+
+export type AuctionSource = "mstc" | "eauction" | "gem_forward";
+
+export type AssetCategory =
+  | "vehicle"
+  | "scrap"
+  | "machinery"
+  | "ewaste"
+  | "minerals"
+  | "timber"
+  | "property"
+  | "coal"
+  | "other";
+
+export interface AuctionRecord {
+  id: string;
+  auction_number: string;
+  source?: AuctionSource;
+  source_auction_id?: string | null;
+  region: string;
+  office: string;
+  state?: string | null;
+  asset_category?: AssetCategory | null;
+  platform?: string | null;
+  detail_url?: string | null;
+  document_urls?: string[];
+  seller?: string | null;
+  location?: string | null;
+  office_address?: string | null;
+  opening?: string | null;
+  closing?: string | null;
+  inspection_from?: string | null;
+  inspection_to?: string | null;
+  inspection?: string | null;
+  pre_bid_emd_type?: string | null;
+  pre_bid_emd_amount?: number | null;
+  pre_bid_emd_required?: boolean | null;
+  emd_parse_status?: EmdParseStatus;
+  tax_summary?: string | null;
+  lot_types?: string[];
+  contact?: ContactInfo | null;
+  seller_contact?: ContactInfo | null;
+  pdf_url?: string | null;
+  source_pdf_url?: string | null;
+  mstc_html_url?: string | null;
+  lots: LotRecord[];
+  item_summary?: string | null;
+  price_summary?: string | null;
+  price_parse_status?: string;
+  emd_summary?: string | null;
+  min_start_price?: number | null;
+  max_start_price?: number | null;
+  search_text?: string;
+  parse_confidence?: string;
+  missing_fields?: string[];
+  warnings?: string[];
+  status?: string;
+  errors?: string[];
+  total_lots?: number | null;
+}
+
+export interface AuctionsExport {
+  generated_at: string;
+  count: number;
+  auctions: AuctionRecord[];
+  stats?: Record<string, unknown>;
+}

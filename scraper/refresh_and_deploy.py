@@ -1,0 +1,469 @@
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import shutil
+import subprocess
+import sys
+import time
+import traceback
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from scraper.batch_manifest import BATCH_STATUS_FAILED
+from scraper.batch_run import batch_run
+from scraper.config import (
+    DEFAULT_DOCS_DIR,
+    DEFAULT_JSON_OUT,
+    DEFAULT_PDF_DIR,
+    DEFAULT_THUMBS_DIR,
+    REPO_ROOT,
+    SITE_BASE_URL,
+)
+from scraper.deploy import deploy as deploy_to_hostinger
+from scraper.export_guard import ExportGuardError
+from scraper.filters import tomorrow_min_closing_date, make_run_id
+from scraper.http_verify import verify_live_site
+from scraper.merge_batches import merge_batches
+from scraper.predeploy_verify import verify_predeploy_build
+from scraper.promote_export import promote_export
+from scraper.refresh_lock import (
+    DEFAULT_LOCK_PATH,
+    RefreshLockError,
+    acquire_refresh_lock,
+    release_refresh_lock,
+)
+from scraper.refresh_reports import (
+    load_production_summary,
+    update_latest_run,
+    write_final_reports,
+)
+from scraper.safety_gates import SafetyGateConfig, run_safety_gates
+
+IST = ZoneInfo("Asia/Kolkata")
+logger = logging.getLogger("scraper.refresh_and_deploy")
+
+
+@dataclass
+class RefreshConfig:
+    sources: list[str] = field(default_factory=lambda: ["mstc", "gem_forward", "eauction"])
+    max_docs_per_run: int = 2000
+    min_count: int = 1000
+    deploy: bool = False
+    skip_build: bool = False
+    skip_docs: bool = False
+    force_min_closing_date: str | None = None
+    resume_run_id: str | None = None
+    notify_only_on_failure: bool = False
+    lock_timeout_minutes: int = 10
+    break_stale_lock: bool = False
+    allow_large_drop: bool = False
+    allow_failed_batches: bool = False
+    eauction_warn_only: bool = False
+    repo_root: Path = REPO_ROOT
+    lock_path: Path = DEFAULT_LOCK_PATH
+
+
+@dataclass
+class RefreshResult:
+    status: str
+    run_id: str
+    run_dir: Path
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    report_paths: dict[str, str] = field(default_factory=dict)
+
+
+def _setup_run_logging(logs_dir: Path) -> None:
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = logs_dir / "refresh.log"
+    root = logging.getLogger()
+    if not any(isinstance(h, logging.FileHandler) and h.baseFilename == str(log_file) for h in root.handlers):
+        handler = logging.FileHandler(log_file, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+        root.addHandler(handler)
+
+
+def _run_subprocess(cmd: list[str], *, cwd: Path, step: str) -> dict[str, Any]:
+    started = time.monotonic()
+    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    duration = round(time.monotonic() - started, 2)
+    output = {
+        "command": " ".join(cmd),
+        "returncode": result.returncode,
+        "duration_sec": duration,
+    }
+    if result.returncode != 0:
+        output["stderr_tail"] = (result.stderr or "")[-2000:]
+        output["stdout_tail"] = (result.stdout or "")[-2000:]
+        raise RuntimeError(f"{step} failed (exit {result.returncode})")
+    return output
+
+
+def _prepare_run_dirs(config: RefreshConfig) -> tuple[str, Path, Path, Path, Path, Path]:
+    if config.resume_run_id:
+        run_id = config.resume_run_id
+        run_dir = config.repo_root / "work" / "runs" / run_id
+        if not run_dir.is_dir():
+            raise FileNotFoundError(f"Resume run dir not found: {run_dir}")
+    else:
+        run_id = make_run_id()
+        run_dir = config.repo_root / "work" / "runs" / run_id
+        for sub in ("batches", "logs", "reports"):
+            (run_dir / sub).mkdir(parents=True, exist_ok=True)
+    batches_dir = run_dir / "batches"
+    logs_dir = run_dir / "logs"
+    reports_dir = run_dir / "reports"
+    candidate_path = run_dir / "future_full_auctions.json"
+    return run_id, run_dir, batches_dir, logs_dir, reports_dir, candidate_path
+
+
+def _snapshot_production_backup(
+    *,
+    production_json: Path,
+    run_dir: Path,
+    backup_dir: Path,
+) -> Path | None:
+    if not production_json.is_file():
+        return None
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(IST).strftime("%Y%m%d_%H%M%S")
+    path = backup_dir / f"auctions_{stamp}.json"
+    shutil.copy2(production_json, path)
+    run_copy = run_dir / "previous_production.json"
+    shutil.copy2(production_json, run_copy)
+    meta = {
+        "previous_production_backup_path": str(path),
+        "previous_production_run_copy": str(run_copy),
+        "previous_production_summary": load_production_summary(production_json),
+        "captured_at": datetime.now(IST).isoformat(),
+    }
+    (run_dir / "run_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return path
+
+
+def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
+    run_id, run_dir, batches_dir, logs_dir, reports_dir, candidate_path = _prepare_run_dirs(config)
+    _setup_run_logging(logs_dir)
+
+    min_closing_date = config.force_min_closing_date or tomorrow_min_closing_date()
+    production_json = config.repo_root / DEFAULT_JSON_OUT
+    web_dir = config.repo_root / "web"
+    out_dir = web_dir / "out"
+    backup_dir = config.repo_root / "work" / "backups"
+
+    started_at = datetime.now(IST).isoformat()
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "status": "running",
+        "started_at": started_at,
+        "min_closing_date": min_closing_date,
+        "sources": config.sources,
+        "deploy_requested": config.deploy,
+        "warnings": [],
+        "errors": [],
+    }
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    promoted = False
+    backup_path: Path | None = None
+    previous_backup: Path | None = None
+
+    lock_acquired = False
+    try:
+        acquire_refresh_lock(
+            lock_path=config.repo_root / config.lock_path,
+            run_id=run_id,
+            stale_minutes=config.lock_timeout_minutes,
+            break_stale_lock=config.break_stale_lock,
+        )
+        lock_acquired = True
+
+        previous_backup = _snapshot_production_backup(
+            production_json=production_json,
+            run_dir=run_dir,
+            backup_dir=backup_dir,
+        )
+        payload["previous_production_backup_path"] = str(previous_backup) if previous_backup else None
+        payload["previous_production_summary"] = load_production_summary(production_json)
+
+        # 1. Batch scrape
+        scrape_started = time.monotonic()
+        manifest = batch_run(
+            sources=config.sources,
+            batch_dir=batches_dir,
+            pdf_dir=config.repo_root / DEFAULT_PDF_DIR,
+            docs_dir=config.repo_root / DEFAULT_DOCS_DIR,
+            thumbs_dir=config.repo_root / DEFAULT_THUMBS_DIR,
+            min_closing_date=min_closing_date,
+            max_docs_per_run=config.max_docs_per_run,
+            resume=bool(config.resume_run_id),
+            force=False,
+            skip_docs=config.skip_docs,
+        )
+        failed_batches = [
+            b.get("batch_id")
+            for b in manifest.data.get("batches", [])
+            if b.get("status") == BATCH_STATUS_FAILED
+        ]
+        payload["batch_scrape"] = {
+            "duration_sec": round(time.monotonic() - scrape_started, 2),
+            "manifest_summary": manifest.summary(),
+            "failed_batches": failed_batches,
+            "docs_budget_remaining": manifest.data.get("docs_budget_remaining"),
+        }
+        if failed_batches and not config.allow_failed_batches:
+            raise RuntimeError(f"batch scrape had failures: {', '.join(failed_batches)}")
+
+        # 2. Merge
+        merge_started = time.monotonic()
+        export = merge_batches(
+            batch_dir=batches_dir,
+            out_path=candidate_path,
+            min_closing_date=min_closing_date,
+        )
+        payload["merge"] = {
+            "duration_sec": round(time.monotonic() - merge_started, 2),
+            "count": export.count,
+            "total_lots": export.stats.get("total_lots_in_export"),
+            "by_source": export.stats.get("by_source"),
+            "duplicates_removed": export.stats.get("duplicates_removed"),
+        }
+        payload["total_auctions"] = export.count
+        payload["total_lots"] = export.stats.get("total_lots_in_export")
+        payload["by_source"] = export.stats.get("by_source")
+
+        # 3-4. QA + safety gates
+        gate_config = SafetyGateConfig(
+            min_count=config.min_count,
+            min_closing_date=min_closing_date,
+            allow_large_drop=config.allow_large_drop,
+            allow_failed_batches=config.allow_failed_batches,
+            eauction_warn_only=config.eauction_warn_only,
+            production_json=production_json,
+        )
+        gates = run_safety_gates(
+            candidate_path,
+            config=gate_config,
+            batch_dir=batches_dir,
+            public_dir=config.repo_root / "web" / "public",
+        )
+        payload["qa"] = {
+            "passed": gates.qa_report.get("passed"),
+            "earliest_closing": gates.qa_report.get("earliest_closing"),
+        }
+        payload["safety_gates"] = {
+            "passed": gates.passed,
+            "errors": gates.errors,
+            "warnings": gates.warnings,
+            "candidate_count": gates.candidate_count,
+            "production_count": gates.production_count,
+        }
+        warnings.extend(gates.warnings)
+        if not gates.passed:
+            errors.extend(gates.errors)
+            raise RuntimeError("safety gates failed")
+
+        # 5. Promote
+        try:
+            backup_path = promote_export(
+                candidate=candidate_path,
+                target=production_json,
+                min_count=config.min_count,
+                min_closing_date=min_closing_date,
+                backup_dir=backup_dir,
+                require_sources=["mstc"] if config.eauction_warn_only else ["mstc", "eauction"],
+                warn_missing_sources=["gem_forward"],
+            )
+            promoted = True
+            payload["promotion"] = {
+                "promoted": True,
+                "backup_path": str(backup_path) if backup_path else None,
+            }
+            payload["rollback_backup_path"] = str(backup_path) if backup_path else None
+        except ExportGuardError as exc:
+            errors.append(str(exc))
+            raise
+
+        # 6. Build
+        if not config.skip_build:
+            build_started = time.monotonic()
+            _run_subprocess(["pnpm", "run", "build:prod"], cwd=web_dir, step="build:prod")
+            verify_out = _run_subprocess(["pnpm", "run", "verify-build"], cwd=web_dir, step="verify-build")
+            payload["build"] = {
+                "duration_sec": round(time.monotonic() - build_started, 2),
+                "verify_build": verify_out,
+            }
+        else:
+            payload["build"] = {"skipped": True}
+
+        # 7. Pre-deploy verify
+        if config.deploy:
+            predeploy = verify_predeploy_build(
+                out_dir=out_dir,
+                min_count=config.min_count,
+                min_closing_date=min_closing_date,
+                require_sources=["mstc"] if config.eauction_warn_only else ["mstc", "eauction"],
+                warn_only_sources=["gem_forward"],
+            )
+            payload["predeploy"] = {
+                "passed": predeploy.passed,
+                "count": predeploy.count,
+                "by_source": predeploy.by_source,
+                "pdf_count": predeploy.pdf_count,
+                "docs_count": predeploy.docs_count,
+                "thumbs_count": predeploy.thumbs_count,
+                "errors": predeploy.errors,
+                "warnings": predeploy.warnings,
+            }
+            warnings.extend(predeploy.warnings)
+            if not predeploy.passed:
+                errors.extend(predeploy.errors)
+                raise RuntimeError("pre-deploy verification failed")
+
+            # 8. Deploy
+            deploy_started = time.monotonic()
+            deploy_to_hostinger(build_dir=out_dir)
+            payload["deploy"] = {
+                "deployed": True,
+                "duration_sec": round(time.monotonic() - deploy_started, 2),
+            }
+
+            # 9. HTTP verify
+            http_result = verify_live_site(
+                base_url=SITE_BASE_URL or None,
+                expected_count=export.count,
+                candidate_json=candidate_path,
+            )
+            payload["http_verify"] = {
+                "passed": http_result.passed,
+                "index_status": http_result.index_status,
+                "json_status": http_result.json_status,
+                "pdf_status": http_result.pdf_status,
+                "thumb_status": http_result.thumb_status,
+                "live_count_hint": http_result.live_count_hint,
+                "checked_urls": http_result.checked_urls,
+                "errors": http_result.errors,
+                "warnings": http_result.warnings,
+            }
+            warnings.extend(http_result.warnings)
+            if not http_result.passed:
+                errors.extend(http_result.errors)
+                raise RuntimeError("post-deploy HTTP verification failed")
+        else:
+            payload["deploy"] = {"deployed": False, "skipped": True}
+            payload["http_verify"] = {"skipped": True}
+
+        payload["status"] = "success"
+        payload["finished_at"] = datetime.now(IST).isoformat()
+        payload["warnings"] = warnings
+        payload["errors"] = errors
+
+        md_path, json_path = write_final_reports(reports_dir=reports_dir, payload=payload)
+        update_latest_run(
+            runs_root=config.repo_root / "work" / "runs",
+            payload=payload,
+            success=True,
+        )
+        return RefreshResult(
+            status="success",
+            run_id=run_id,
+            run_dir=run_dir,
+            warnings=warnings,
+            report_paths={"md": str(md_path), "json": str(json_path)},
+        )
+
+    except Exception as exc:
+        logger.exception("refresh_and_deploy failed: %s", exc)
+        errors.append(str(exc))
+        payload["status"] = "failed"
+        payload["finished_at"] = datetime.now(IST).isoformat()
+        payload["errors"] = errors
+        payload["warnings"] = warnings
+        payload["promotion"] = {"promoted": promoted, "backup_path": str(backup_path) if backup_path else None}
+        if not config.deploy:
+            payload["deploy"] = {"deployed": False, "skipped": True}
+
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        md_path, json_path = write_final_reports(reports_dir=reports_dir, payload=payload)
+        update_latest_run(
+            runs_root=config.repo_root / "work" / "runs",
+            payload=payload,
+            success=False,
+        )
+        return RefreshResult(
+            status="failed",
+            run_id=run_id,
+            run_dir=run_dir,
+            errors=errors,
+            warnings=warnings,
+            report_paths={"md": str(md_path), "json": str(json_path)},
+        )
+    finally:
+        if lock_acquired:
+            release_refresh_lock(config.repo_root / config.lock_path, run_id=run_id)
+
+
+def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    parser = argparse.ArgumentParser(description="Full refresh pipeline: scrape, QA, promote, build, deploy")
+    parser.add_argument("--sources", default="mstc,gem_forward,eauction")
+    parser.add_argument("--max-docs-per-run", type=int, default=2000)
+    parser.add_argument("--min-count", type=int, default=1000)
+    parser.add_argument("--deploy", action="store_true", help="Deploy to Hostinger after successful build")
+    parser.add_argument("--no-deploy", action="store_true", help="Do not deploy (default)")
+    parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument("--skip-docs", action="store_true")
+    parser.add_argument("--force-min-closing-date", type=str, default=None)
+    parser.add_argument("--resume-run", dest="resume_run", default=None)
+    parser.add_argument("--notify-only-on-failure", action="store_true")
+    parser.add_argument("--lock-timeout-minutes", type=int, default=10)
+    parser.add_argument("--break-stale-lock", action="store_true")
+    parser.add_argument("--allow-large-drop", action="store_true")
+    parser.add_argument("--allow-failed-batches", action="store_true")
+    parser.add_argument("--warn-missing-eauction", action="store_true")
+    args = parser.parse_args(argv)
+
+    sources = [s.strip().lower() for s in args.sources.split(",") if s.strip()]
+    deploy = args.deploy and not args.no_deploy
+
+    config = RefreshConfig(
+        sources=sources,
+        max_docs_per_run=args.max_docs_per_run,
+        min_count=args.min_count,
+        deploy=deploy,
+        skip_build=args.skip_build,
+        skip_docs=args.skip_docs,
+        force_min_closing_date=args.force_min_closing_date,
+        resume_run_id=args.resume_run,
+        notify_only_on_failure=args.notify_only_on_failure,
+        lock_timeout_minutes=args.lock_timeout_minutes,
+        break_stale_lock=args.break_stale_lock,
+        allow_large_drop=args.allow_large_drop,
+        allow_failed_batches=args.allow_failed_batches,
+        eauction_warn_only=args.warn_missing_eauction,
+    )
+
+    try:
+        result = run_refresh_and_deploy(config)
+    except RefreshLockError as exc:
+        logger.error("%s", exc)
+        return 3
+
+    if result.status == "success":
+        logger.info("Refresh completed successfully: %s", result.run_id)
+        return 0
+    logger.error("Refresh failed: %s", result.errors)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

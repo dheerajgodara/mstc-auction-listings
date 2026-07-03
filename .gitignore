@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+.env.*.local
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Private keys and credentials (never commit)
+*.pem
+*.key
+id_rsa
+id_ed25519
+id_ecdsa
+hostinger_key
+.ssh/
+
+# Scraper/runtime output
+work/
+*.log
+
+# Node
+node_modules/
+web/.next/
+web/out/
+web/.turbo/
+npm-debug.log*
+pnpm-debug.log*
+
+# Generated auction data and assets (produced by scraper / GitHub Actions)
+web/public/data/*.json
+web/public/pdfs/*
+!web/public/pdfs/.gitkeep
+web/public/docs/
+web/public/thumbs/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+.cursor/
+
+# Build
+dist/
+build/

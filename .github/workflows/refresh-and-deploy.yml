@@ -1,0 +1,108 @@
+name: Refresh and Deploy
+
+on:
+  schedule:
+    # 01:30 IST = 20:00 UTC previous day
+    - cron: "0 20 * * *"
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy to Hostinger after successful gates"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      max_docs_per_run:
+        description: "Max MSTC document downloads per run"
+        required: false
+        default: "2000"
+
+jobs:
+  refresh-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: PYTHONPATH=. python -m pytest tests/ -q
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install web dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile || pnpm install
+
+      - name: Configure SSH key
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.deploy != 'false' }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
+          chmod 600 ~/.ssh/hostinger_key
+
+      - name: Run refresh pipeline
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL }}
+          OPENROUTER_FALLBACK_MODELS: ${{ secrets.OPENROUTER_FALLBACK_MODELS }}
+          OPENROUTER_SITE_URL: ${{ secrets.SITE_BASE_URL }}
+          SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
+          HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
+          HOSTINGER_PORT: ${{ secrets.HOSTINGER_PORT }}
+          HOSTINGER_USERNAME: ${{ secrets.HOSTINGER_USERNAME }}
+          HOSTINGER_SSH_KEY: ~/.ssh/hostinger_key
+          HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
+        run: |
+          DEPLOY_FLAG=""
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ github.event.inputs.deploy }}" != "false" ]; then
+            DEPLOY_FLAG="--deploy"
+          fi
+          PYTHONPATH=. python -m scraper.refresh_and_deploy \
+            --sources mstc,gem_forward,eauction \
+            --max-docs-per-run "${{ github.event.inputs.max_docs_per_run || '2000' }}" \
+            --min-count 1000 \
+            --break-stale-lock \
+            $DEPLOY_FLAG
+
+      - name: Upload refresh reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: refresh-run-${{ github.run_id }}
+          path: |
+            work/runs/latest.json
+            work/runs/*/reports/
+            work/runs/*/logs/
+          if-no-files-found: ignore
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: refresh-failure-${{ github.run_id }}
+          path: |
+            work/refresh.lock
+            work/runs/
+          if-no-files-found: ignore

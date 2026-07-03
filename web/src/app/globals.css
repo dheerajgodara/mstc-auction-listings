@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 40%;
+    --border: 214 32% 88%;
+    --primary: 199 89% 42%;
+    --primary-foreground: 0 0% 100%;
+    --accent: 199 95% 94%;
+    --radius: 0.875rem;
+  }
+
+  body {
+    @apply text-[hsl(var(--foreground))] antialiased;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+}
+
+@layer components {
+  .page-bg {
+    @apply relative min-h-screen overflow-x-hidden;
+    background: linear-gradient(
+      135deg,
+      #f0f9ff 0%,
+      #ecfeff 28%,
+      #f0fdf4 55%,
+      #f5f3ff 100%
+    );
+  }
+
+  .page-bg-grid {
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.45) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.45) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  .glass-panel {
+    @apply rounded-2xl border border-white/70 bg-white/65 shadow-[0_8px_32px_rgba(14,116,144,0.1)] backdrop-blur-xl;
+  }
+
+  .glass-card {
+    @apply rounded-xl border border-white/60 bg-white/70 shadow-[0_4px_24px_rgba(15,23,42,0.06)] backdrop-blur-lg transition-all duration-200;
+  }
+
+  .glass-card:hover {
+    @apply -translate-y-0.5 border-cyan-200/60 shadow-[0_12px_40px_rgba(14,116,144,0.12)];
+  }
+
+  .glass-input {
+    @apply border-white/80 bg-white/80 backdrop-blur-sm;
+  }
+
+  .glass-nested {
+    @apply rounded-xl border border-white/50 bg-white/45 backdrop-blur-md;
+  }
+
+  .btn-glass {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg border border-white/70 bg-white/80 px-3 py-2 text-sm font-medium text-cyan-800 shadow-sm backdrop-blur-sm transition-colors hover:bg-white hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/50;
+  }
+
+  .btn-glass-primary {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg border border-cyan-300/60 bg-gradient-to-r from-cyan-500/90 to-sky-500/90 px-3 py-2 text-sm font-medium text-white shadow-sm transition-all hover:from-cyan-600 hover:to-sky-600 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60;
+  }
+
+  .btn-pill-active {
+    @apply border-cyan-400/70 bg-gradient-to-r from-cyan-100 to-sky-100 text-cyan-900 shadow-sm;
+  }
+
+  .btn-pill-inactive {
+    @apply border-white/70 bg-white/55 text-slate-600 hover:bg-white/80 hover:text-slate-900;
+  }
+}
