@@ -4,6 +4,7 @@ import logging
 import re
 from typing import Any, Optional
 
+from scraper.display_enrichment import apply_display_enrichment, build_display_search_text
 from scraper.emd import classify_emd_type_text, format_inr_amount
 from scraper.lot_sections import synthesize_lot_sections
 from scraper.models import AuctionRecord, ContactInfo, EmdParseStatus, ExtractionStatus, LotRecord, PriceParseStatus
@@ -16,22 +17,6 @@ def _norm_lot_id(value: str | None) -> str:
     if not value:
         return ""
     return re.sub(r"\s+", "", str(value)).upper()
-
-
-def _format_inr(amount: int) -> str:
-    s = str(amount)
-    if len(s) <= 3:
-        return f"₹{amount:,}"
-    last3 = s[-3:]
-    rest = s[:-3]
-    parts: list[str] = []
-    while len(rest) > 2:
-        parts.insert(0, rest[-2:])
-        rest = rest[:-2]
-    if rest:
-        parts.insert(0, rest)
-    return "₹" + ",".join(parts) + f",{last3}"
-
 
 def _price_type(amount: float | int | None) -> str:
     if amount is None:
@@ -562,6 +547,10 @@ def merge_auction_record(
     base.missing_fields = compute_missing_fields(base)
     base.parse_confidence = compute_parse_confidence(base)
     base.search_text = build_search_text(base)
+    base = apply_display_enrichment(base)
+    display_bits = build_display_search_text(base)
+    if display_bits:
+        base.search_text = f"{base.search_text} {display_bits}".strip()
     base.status = status
     base.errors = errors
     return base

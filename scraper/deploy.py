@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+from scraper.safety_gates import is_capped_mstc_only_export
 
 load_dotenv()
 
@@ -50,6 +54,45 @@ def _validate_build_dir(build_dir: Path) -> None:
     if not any(build_dir.iterdir()):
         _log(f"ERROR: Build directory is empty: {build_dir}")
         sys.exit(1)
+
+
+class DeployValidationError(Exception):
+    """Raised when static export fails deploy safety checks."""
+
+
+def validate_deploy_export(build_dir: Path) -> tuple[int, dict[str, int]]:
+    """Inspect web/out data before rsync/SFTP. Raises DeployValidationError on unsafe export."""
+    json_path = build_dir / "data" / "auctions.json"
+    if not json_path.is_file():
+        raise DeployValidationError(f"missing deploy data file: {json_path}")
+
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise DeployValidationError(f"cannot parse deploy data file: {json_path}: {exc}") from exc
+
+    auctions = data.get("auctions")
+    if not isinstance(auctions, list):
+        raise DeployValidationError("deploy data file missing auctions array")
+
+    count = int(data.get("count", len(auctions)))
+    if count != len(auctions):
+        raise DeployValidationError(
+            f"deploy data count mismatch: header={count} actual={len(auctions)}"
+        )
+
+    if count <= 1:
+        raise DeployValidationError(f"refusing deploy: auction count is {count}")
+
+    by_source = dict(Counter(a.get("source", "missing") for a in auctions))
+    if is_capped_mstc_only_export(by_source, count):
+        raise DeployValidationError(
+            "Refusing to deploy capped MSTC-only export. "
+            f"count={count}, by_source={by_source}. "
+            "Use refresh-and-deploy.yml for production."
+        )
+
+    return count, by_source
 
 
 def _validate_ssh_key(ssh_key: str) -> Path:
@@ -200,6 +243,12 @@ def deploy(build_dir: Path | None = None) -> None:
     key_path = _validate_ssh_key(config["HOSTINGER_SSH_KEY"])
     _validate_build_dir(source)
 
+    try:
+        count, by_source = validate_deploy_export(source)
+    except DeployValidationError as exc:
+        _log(f"ERROR: {exc}")
+        sys.exit(1)
+
     host = config["HOSTINGER_HOST"]
     port = config["HOSTINGER_PORT"]
     username = config["HOSTINGER_USERNAME"]
@@ -207,6 +256,7 @@ def deploy(build_dir: Path | None = None) -> None:
 
     _log("Starting Hostinger deployment (SSH key auth only).")
     _log(f"Source: {source}")
+    _log(f"Deploy export: {count} auctions, by_source={by_source}")
     _log(f"Target: {username}@{host}:{remote_dir}")
 
     _ensure_remote_dir(key_path, port, username, host, remote_dir)

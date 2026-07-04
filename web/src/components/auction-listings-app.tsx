@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { AuctionListings } from "@/components/auction-listings";
+import { enrichAuctions } from "@/lib/display-enrichment";
 import { loadAuctionsExport } from "@/lib/load-auctions";
 import type { AuctionsExport } from "@/types/auction";
 
@@ -13,7 +14,12 @@ export function AuctionListingsApp() {
     let cancelled = false;
     loadAuctionsExport()
       .then((exportData) => {
-        if (!cancelled) setData(exportData);
+        if (!cancelled) {
+          setData({
+            ...exportData,
+            auctions: enrichAuctions(exportData.auctions),
+          });
+        }
       })
       .catch((err: unknown) => {
         if (!cancelled) {

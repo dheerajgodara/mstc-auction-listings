@@ -1,4 +1,5 @@
 import type { AuctionRecord } from "@/types/auction";
+import { displaySearchText } from "@/lib/display-enrichment";
 
 export const SEARCH_TIER = {
   EXACT_ID: 1000,
@@ -129,7 +130,9 @@ export function scoreAuctionSearch(
     }
   }
 
-  // Tier 6: title/item summary
+  // Tier 6: display title / item summary
+  const displayTitle = norm(auction.display_title);
+  if (displayTitle.includes(query)) return SEARCH_TIER.TITLE;
   const title = norm(auction.item_summary);
   if (title.includes(query)) return SEARCH_TIER.TITLE;
 
@@ -141,9 +144,9 @@ export function scoreAuctionSearch(
     if (lotHay.includes(query)) return SEARCH_TIER.LOT_TITLE;
   }
 
-  // Tier 8: seller / location / state / region / office / address
+  // Tier 8: seller / location / state / region / office / address / display location
   const sellerLoc = norm(
-    `${auction.seller ?? ""} ${auction.location ?? ""} ${auction.state ?? ""} ${auction.region ?? ""} ${auction.office ?? ""} ${auction.office_address ?? ""}`,
+    `${auction.seller ?? ""} ${auction.location ?? ""} ${auction.state ?? ""} ${auction.region ?? ""} ${auction.office ?? ""} ${auction.office_address ?? ""} ${auction.display_location_city ?? ""} ${auction.display_location_state ?? ""} ${auction.display_location_raw ?? ""} ${auction.display_buyer_summary ?? ""} ${auction.display_material_category ?? ""}`,
   );
   if (sellerLoc.includes(query)) return SEARCH_TIER.SELLER_LOCATION;
 
@@ -167,7 +170,9 @@ export function scoreAuctionSearch(
     return SEARCH_TIER.URL;
   }
 
-  // Tier 12: long description / auction_number tokens fallback
+  // Tier 12: long description / display enrichment / auction_number tokens fallback
+  const displayBlob = displaySearchText(auction);
+  if (displayBlob.includes(query)) return SEARCH_TIER.DESCRIPTION;
   if (norm(auction.search_text).includes(query)) return SEARCH_TIER.DESCRIPTION;
   const tokens = auctionNumberTokens(auctionNo);
   if (tokens.some((t) => t === query || t.startsWith(query))) {

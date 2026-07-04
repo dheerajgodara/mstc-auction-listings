@@ -103,6 +103,8 @@ function scoreAuctionSearch(a, rawQuery) {
       return SEARCH_TIER.LOT_ID;
     }
   }
+  const displayTitle = norm(a.display_title);
+  if (displayTitle.includes(query)) return SEARCH_TIER.TITLE;
   const title = norm(a.item_summary);
   if (title.includes(query)) return SEARCH_TIER.TITLE;
   for (const lot of a.lots ?? []) {
@@ -112,7 +114,7 @@ function scoreAuctionSearch(a, rawQuery) {
     if (lotHay.includes(query)) return SEARCH_TIER.LOT_TITLE;
   }
   const sellerLoc = norm(
-    `${a.seller ?? ""} ${a.location ?? ""} ${a.state ?? ""} ${a.region ?? ""} ${a.office ?? ""} ${a.office_address ?? ""}`,
+    `${a.seller ?? ""} ${a.location ?? ""} ${a.state ?? ""} ${a.region ?? ""} ${a.office ?? ""} ${a.office_address ?? ""} ${a.display_location_city ?? ""} ${a.display_location_state ?? ""} ${a.display_location_raw ?? ""} ${a.display_buyer_summary ?? ""} ${a.display_material_category ?? ""}`,
   );
   if (sellerLoc.includes(query)) return SEARCH_TIER.SELLER_LOCATION;
   const sourceCat = norm(
@@ -165,6 +167,25 @@ const mstc1 = {
   item_summary: "Scrap disposal from Rajajinagar substation",
   lots: [{ lot_id: "1", item_title: "Aluminium scrap" }],
 };
+const mstcTower = {
+  id: "582972",
+  source: "mstc",
+  source_auction_id: "582972",
+  auction_number: "MSTC/LKO/582972",
+  location: "CIVIL LINE BALLIA",
+  state: "Uttar Pradesh",
+  region: "LKO",
+  display_title: "459 MT Transmission Tower & Conductor Scrap",
+  display_location_city: "Ballia",
+  display_location_state: "Uttar Pradesh",
+  display_material_category: "transmission_scrap",
+  item_summary: "Tower Parts; Earthwire 7/3.15mm; ACSR Dog CONDUCTOR",
+  lots: [
+    { lot_id: "1", item_title: "Tower Parts" },
+    { lot_id: "2", item_title: "Earthwire 7/3.15mm" },
+    { lot_id: "3", item_title: "ACSR Dog CONDUCTOR" },
+  ],
+};
 const mstc2 = {
   id: "588051",
   source: "mstc",
@@ -214,7 +235,7 @@ const distractor = {
   lots: [],
 };
 
-const corpus = [distractor, gem1, eauction1, mstc2, mstc1];
+const corpus = [distractor, gem1, eauction1, mstc2, mstcTower, mstc1];
 
 function runTests() {
   const errors = [];
@@ -310,6 +331,28 @@ function runTests() {
   assert(
     `exact 584985 beats description noise from 999999`,
     noise[0]?.id === "584985" && noise.indexOf(distractor) > 0,
+  );
+
+  // Display enrichment search: city, material, tower
+  const ballia = rankAuctionsBySearch(corpus, "Ballia");
+  assert(
+    `Ballia finds 582972 (got ${ballia[0]?.id})`,
+    ballia[0]?.id === "582972",
+  );
+  const tower = rankAuctionsBySearch(corpus, "tower");
+  assert(
+    `tower finds 582972 in top (got ${tower[0]?.id})`,
+    tower[0]?.id === "582972",
+  );
+  const acsr = rankAuctionsBySearch(corpus, "ACSR");
+  assert(
+    `ACSR finds 582972 (got ${acsr[0]?.id})`,
+    acsr[0]?.id === "582972",
+  );
+  const moose = rankAuctionsBySearch(corpus, "588051");
+  assert(
+    `588051 id search (got ${moose[0]?.id})`,
+    moose[0]?.id === "588051",
   );
 
   return errors;

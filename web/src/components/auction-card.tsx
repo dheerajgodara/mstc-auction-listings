@@ -3,6 +3,7 @@
 import { useState } from "react";
 import {
   Calendar,
+  CalendarPlus,
   Clock,
   ExternalLink,
   FileText,
@@ -30,7 +31,11 @@ import {
   formatInr,
   resolvePublicUrl,
 } from "@/lib/utils";
-import { isLongSummary, truncateSummary } from "@/lib/text-summary";
+import { isLongSummary } from "@/lib/text-summary";
+import {
+  enrichAuctionDisplay,
+  materialCategoryLabel,
+} from "@/lib/display-enrichment";
 import { valuationBadgeLabel } from "@/lib/valuation";
 import type { AuctionRecord, AuctionSource } from "@/types/auction";
 
@@ -98,6 +103,24 @@ function AuctionWarnings({ warnings }: { warnings?: string[] }) {
   );
 }
 
+function formatListedDate(auction: AuctionRecord): string | null {
+  if (auction.listed_at_label) return auction.listed_at_label;
+  const iso = auction.listed_at ?? (auction.listed_date ? `${auction.listed_date}T00:00:00+05:30` : null);
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  const dt = new Date(t);
+  const fmt = new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  const prefix =
+    auction.listed_at_source === "opening_date_fallback" ? "Listed: approx. " : "Listed: ";
+  return `${prefix}${fmt.format(dt)}`;
+}
+
 function gemDocumentLabel(url: string, index: number, total: number): string {
   const lower = url.toLowerCase();
   if (lower.includes("rule")) return total > 1 ? `GeM rules ${index + 1}` : "GeM rules";
@@ -108,7 +131,7 @@ function gemDocumentLabel(url: string, index: number, total: number): string {
 }
 
 export function AuctionCard({
-  auction,
+  auction: rawAuction,
   index,
   watched = false,
   onToggleWatch,
@@ -118,12 +141,25 @@ export function AuctionCard({
   watched?: boolean;
   onToggleWatch?: (id: string) => void;
 }) {
+  const auction = enrichAuctionDisplay(rawAuction);
   const [showFullNotice, setShowFullNotice] = useState(false);
-  const fullSummary = auction.item_summary || "—";
-  const longNotice = isLongSummary(fullSummary);
-  const cardSummary = showFullNotice ? fullSummary : truncateSummary(fullSummary, 160);
-  const displayLocation =
-    auction.location || auction.lots[0]?.location || auction.state || "—";
+  const cardTitle = auction.display_title || auction.item_summary || "—";
+  const fullSummary = auction.item_summary || cardTitle;
+  const longNotice = isLongSummary(fullSummary) && fullSummary !== cardTitle;
+  const cardSummary = showFullNotice ? fullSummary : cardTitle;
+  const cityState =
+    auction.display_location_city && auction.display_location_state
+      ? `${auction.display_location_city}, ${auction.display_location_state}`
+      : auction.display_location_city ?? auction.display_location_state ?? null;
+  const rawSite =
+    auction.display_location_raw &&
+    cityState &&
+    auction.display_location_raw.toLowerCase() !== cityState.toLowerCase()
+      ? auction.display_location_raw
+      : auction.display_location_raw && !cityState
+        ? auction.display_location_raw
+        : null;
+  const materialLabel = materialCategoryLabel(auction.display_material_category);
   const pdfHref = resolvePublicUrl(auction.pdf_url);
   const detailHref = auction.detail_url?.startsWith("http")
     ? auction.detail_url
@@ -159,6 +195,11 @@ export function AuctionCard({
                 {categoryLabel && (
                   <Chip className="border-emerald-200/80 bg-emerald-50/90 text-emerald-900">
                     {categoryLabel}
+                  </Chip>
+                )}
+                {materialLabel && (
+                  <Chip className="border-sky-200/80 bg-sky-50/90 text-sky-900">
+                    {materialLabel}
                   </Chip>
                 )}
                 <Chip className={regionChipClass()}>{auction.region}</Chip>
@@ -198,6 +239,16 @@ export function AuctionCard({
               >
                 {cardSummary}
               </h2>
+              {auction.display_quantity_summary && (
+                <p className="text-sm font-medium text-slate-700">
+                  {auction.display_quantity_summary}
+                </p>
+              )}
+              {auction.display_key_lots && auction.display_key_lots.length > 1 && (
+                <p className="text-xs text-slate-600">
+                  {auction.display_key_lots.join(" · ")}
+                </p>
+              )}
               {longNotice && (
                 <button
                   type="button"
@@ -218,10 +269,26 @@ export function AuctionCard({
         </CardHeader>
         <CardContent className="space-y-3 pl-5 text-sm">
           <div className="grid gap-2 sm:grid-cols-2">
-            <div className="flex items-start gap-2">
-              <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-cyan-600/70" />
-              <span className="text-slate-700">{displayLocation}</span>
-            </div>
+            {cityState && (
+              <div className="flex items-start gap-2 sm:col-span-2">
+                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-cyan-600/70" />
+                <span className="font-medium text-slate-800">{cityState}</span>
+              </div>
+            )}
+            {rawSite && (
+              <div className="flex items-start gap-2 sm:col-span-2">
+                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
+                <span className="text-slate-600">Site: {rawSite}</span>
+              </div>
+            )}
+            {!cityState && !rawSite && (auction.location || auction.state) && (
+              <div className="flex items-start gap-2 sm:col-span-2">
+                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-cyan-600/70" />
+                <span className="text-slate-700">
+                  {auction.location || auction.state}
+                </span>
+              </div>
+            )}
             {auction.seller && (
               <div className="flex items-start gap-2">
                 <User className="mt-0.5 h-4 w-4 shrink-0 text-cyan-600/70" />
@@ -238,6 +305,12 @@ export function AuctionCard({
                 Closes {formatDateTime(auction.closing)}
               </span>
             </div>
+            {formatListedDate(auction) && (
+              <div className="flex items-start gap-2 sm:col-span-2">
+                <CalendarPlus className="mt-0.5 h-4 w-4 shrink-0 text-violet-600/80" />
+                <span className="text-slate-700">{formatListedDate(auction)}</span>
+              </div>
+            )}
             {hasInspection(auction) && (
               <div className="flex items-start gap-2 sm:col-span-2">
                 <Calendar className="mt-0.5 h-4 w-4 shrink-0 text-cyan-600/70" />

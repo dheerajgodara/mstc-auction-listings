@@ -139,6 +139,27 @@ export interface AuctionRecord {
   valuation_confidence?: string | null;
   valuation_notes?: string | null;
   benchmark_source?: string | null;
+  listed_at?: string | null;
+  listed_date?: string | null;
+  listed_at_source?:
+    | "source_listed_date"
+    | "published_date"
+    | "created_date"
+    | "catalogue_date"
+    | "opening_date_fallback"
+    | "missing"
+    | null;
+  listed_at_label?: string | null;
+  display_title?: string | null;
+  display_location_city?: string | null;
+  display_location_state?: string | null;
+  display_location_raw?: string | null;
+  display_quantity_summary?: string | null;
+  display_material_category?: string | null;
+  display_key_lots?: string[];
+  display_buyer_summary?: string | null;
+  display_location_confidence?: "high" | "medium" | "low" | null;
+  display_total_quantity_mt?: number | null;
 }
 
 export interface AuctionsExport {

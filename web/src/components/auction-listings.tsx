@@ -8,12 +8,26 @@ import { Chip, Input, Select } from "@/components/ui/primitives";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import {
   type DatePreset,
+  type ListedPreset,
   applySortOption,
   isActiveOrUpcoming,
   isDateFilterActive,
+  isListedFilterActive,
+  matchesCityFilter,
   matchesClosingDateFilter,
+  matchesDisplayStateFilter,
+  matchesLargeLotsOnly,
+  matchesListedDateFilter,
+  matchesMaterialCategoryFilter,
+  matchesQuantityMinFilter,
+  type QuantityMinFilter,
   type SortOption,
 } from "@/lib/auction-filters";
+import {
+  DISPLAY_MATERIAL_CATEGORIES,
+  enrichAuctionDisplay,
+  materialCategoryLabel,
+} from "@/lib/display-enrichment";
 import { auctionsToCsv, downloadCsv } from "@/lib/export-csv";
 import { rankAuctionsBySearch } from "@/lib/search";
 import {
@@ -91,6 +105,33 @@ const DATE_PRESET_LABELS: Record<DatePreset, string> = {
   custom: "Custom range",
 };
 
+const LISTED_PRESETS: { id: ListedPreset; label: string }[] = [
+  { id: "today", label: "Listed today" },
+  { id: "yesterday", label: "Listed yesterday" },
+  { id: "last3", label: "Last 3 days" },
+  { id: "last7", label: "Last 7 days" },
+  { id: "last14", label: "Last 14 days" },
+];
+
+const LISTED_PRESET_LABELS: Record<ListedPreset, string> = {
+  all: "All listing dates",
+  today: "Listed today",
+  yesterday: "Listed yesterday",
+  last3: "Listed last 3 days",
+  last7: "Listed last 7 days",
+  last14: "Listed last 14 days",
+  custom: "Custom range",
+};
+
+const QUANTITY_MIN_OPTIONS: { id: QuantityMinFilter; label: string }[] = [
+  { id: "any", label: "Any quantity" },
+  { id: "10", label: "10+ MT" },
+  { id: "50", label: "50+ MT" },
+  { id: "100", label: "100+ MT" },
+  { id: "500", label: "500+ MT" },
+  { id: "1000", label: "1000+ MT" },
+];
+
 function PillButton({
   active,
   onClick,
@@ -158,6 +199,13 @@ export function AuctionListings({
   const [datePreset, setDatePreset] = useState<DatePreset>("all");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
+  const [listedPreset, setListedPreset] = useState<ListedPreset>("all");
+  const [listedFrom, setListedFrom] = useState("");
+  const [listedTo, setListedTo] = useState("");
+  const [cityFilter, setCityFilter] = useState("All");
+  const [materialFilter, setMaterialFilter] = useState("All");
+  const [quantityMin, setQuantityMin] = useState<QuantityMinFilter>("any");
+  const [largeLotsOnly, setLargeLotsOnly] = useState(false);
   const [sortBy, setSortBy] = useState<SortOption>("closing_asc");
   const [includeClosed, setIncludeClosed] = useState(true);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -180,12 +228,27 @@ export function AuctionListings({
   }, [auctions]);
 
   const states = useMemo(() => {
-    const s = new Set(auctions.map((a) => a.state).filter(Boolean) as string[]);
+    const s = new Set<string>();
+    for (const a of auctions) {
+      const st = enrichAuctionDisplay(a).display_location_state ?? a.state;
+      if (st) s.add(st);
+    }
     return ["All", ...Array.from(s).sort()];
+  }, [auctions]);
+
+  const cities = useMemo(() => {
+    const c = new Set<string>();
+    for (const a of auctions) {
+      const city = enrichAuctionDisplay(a).display_location_city;
+      if (city) c.add(city);
+    }
+    return ["All", ...Array.from(c).sort()];
   }, [auctions]);
 
   const effectiveDatePreset =
     datePreset === "all" && (customFrom || customTo) ? "custom" : datePreset;
+  const effectiveListedPreset =
+    listedPreset === "all" && (listedFrom || listedTo) ? "custom" : listedPreset;
 
   const filtered = useMemo(() => {
     return auctions.filter((a) => {
@@ -194,7 +257,11 @@ export function AuctionListings({
       const auctionSource = a.source ?? "mstc";
       if (sourceFilter !== "All" && auctionSource !== sourceFilter) return false;
       if (assetCategory !== "All" && a.asset_category !== assetCategory) return false;
-      if (stateFilter !== "All" && a.state !== stateFilter) return false;
+      if (!matchesDisplayStateFilter(a, stateFilter)) return false;
+      if (!matchesCityFilter(a, cityFilter)) return false;
+      if (!matchesMaterialCategoryFilter(a, materialFilter)) return false;
+      if (!matchesQuantityMinFilter(a, quantityMin)) return false;
+      if (!matchesLargeLotsOnly(a, largeLotsOnly)) return false;
       if (regionFilter !== "All" && a.region !== regionFilter) return false;
       if (lotType !== "All" && !a.lot_types?.includes(lotType)) return false;
       if (confidence !== "All" && a.parse_confidence !== confidence) return false;
@@ -217,6 +284,11 @@ export function AuctionListings({
       ) {
         return false;
       }
+      if (
+        !matchesListedDateFilter(a, effectiveListedPreset, listedFrom, listedTo)
+      ) {
+        return false;
+      }
       return true;
     });
   }, [
@@ -227,6 +299,10 @@ export function AuctionListings({
     sourceFilter,
     assetCategory,
     stateFilter,
+    cityFilter,
+    materialFilter,
+    quantityMin,
+    largeLotsOnly,
     regionFilter,
     lotType,
     confidence,
@@ -235,6 +311,9 @@ export function AuctionListings({
     effectiveDatePreset,
     customFrom,
     customTo,
+    effectiveListedPreset,
+    listedFrom,
+    listedTo,
   ]);
 
   const sorted = useMemo(() => {
@@ -259,6 +338,10 @@ export function AuctionListings({
     sourceFilter,
     assetCategory,
     stateFilter,
+    cityFilter,
+    materialFilter,
+    quantityMin,
+    largeLotsOnly,
     regionFilter,
     lotType,
     confidence,
@@ -267,6 +350,9 @@ export function AuctionListings({
     datePreset,
     customFrom,
     customTo,
+    listedPreset,
+    listedFrom,
+    listedTo,
     sortBy,
     includeClosed,
     watchlistOnly,
@@ -290,6 +376,13 @@ export function AuctionListings({
     setDatePreset("all");
     setCustomFrom("");
     setCustomTo("");
+    setListedPreset("all");
+    setListedFrom("");
+    setListedTo("");
+    setCityFilter("All");
+    setMaterialFilter("All");
+    setQuantityMin("any");
+    setLargeLotsOnly(false);
     setIncludeClosed(true);
     setWatchlistOnly(false);
   };
@@ -331,6 +424,9 @@ export function AuctionListings({
       datePreset,
       customFrom,
       customTo,
+      listedPreset,
+      listedFrom,
+      listedTo,
       sortBy,
       includeClosed,
       watchlistOnly,
@@ -351,6 +447,9 @@ export function AuctionListings({
     setDatePreset(saved.datePreset);
     setCustomFrom(saved.customFrom);
     setCustomTo(saved.customTo);
+    setListedPreset(saved.listedPreset ?? "all");
+    setListedFrom(saved.listedFrom ?? "");
+    setListedTo(saved.listedTo ?? "");
     setSortBy(saved.sortBy);
     setIncludeClosed(saved.includeClosed);
     setWatchlistOnly(saved.watchlistOnly);
@@ -381,6 +480,21 @@ export function AuctionListings({
         },
       });
     }
+    if (isListedFilterActive(effectiveListedPreset, listedFrom, listedTo)) {
+      const listedLabel =
+        effectiveListedPreset === "custom"
+          ? `Listed: ${listedFrom || "…"} – ${listedTo || "…"}`
+          : LISTED_PRESET_LABELS[effectiveListedPreset];
+      chips.push({
+        key: "listed",
+        label: listedLabel,
+        onRemove: () => {
+          setListedPreset("all");
+          setListedFrom("");
+          setListedTo("");
+        },
+      });
+    }
     if (sourceFilter !== "All") {
       chips.push({
         key: "source",
@@ -400,6 +514,34 @@ export function AuctionListings({
         key: "state",
         label: `State: ${stateFilter}`,
         onRemove: () => setStateFilter("All"),
+      });
+    }
+    if (cityFilter !== "All") {
+      chips.push({
+        key: "city",
+        label: `City: ${cityFilter}`,
+        onRemove: () => setCityFilter("All"),
+      });
+    }
+    if (materialFilter !== "All") {
+      chips.push({
+        key: "material",
+        label: `Material: ${materialCategoryLabel(materialFilter) ?? materialFilter}`,
+        onRemove: () => setMaterialFilter("All"),
+      });
+    }
+    if (quantityMin !== "any") {
+      chips.push({
+        key: "quantity",
+        label: `Quantity: ${quantityMin}+ MT`,
+        onRemove: () => setQuantityMin("any"),
+      });
+    }
+    if (largeLotsOnly) {
+      chips.push({
+        key: "largeLots",
+        label: "Large lots (100+ MT)",
+        onRemove: () => setLargeLotsOnly(false),
       });
     }
     if (regionFilter !== "All") {
@@ -451,9 +593,16 @@ export function AuctionListings({
     effectiveDatePreset,
     customFrom,
     customTo,
+    effectiveListedPreset,
+    listedFrom,
+    listedTo,
     sourceFilter,
     assetCategory,
     stateFilter,
+    cityFilter,
+    materialFilter,
+    quantityMin,
+    largeLotsOnly,
     regionFilter,
     confidence,
     priceStatus,
@@ -464,6 +613,8 @@ export function AuctionListings({
 
   const showCustomRange =
     datePreset === "custom" || Boolean(customFrom || customTo);
+  const showListedCustomRange =
+    listedPreset === "custom" || Boolean(listedFrom || listedTo);
 
   return (
     <div className="space-y-4">
@@ -507,6 +658,8 @@ export function AuctionListings({
             >
               <option value="closing_asc">Closing soonest</option>
               <option value="opening_asc">Opening soonest</option>
+              <option value="listed_desc">Recently listed</option>
+              <option value="quantity_desc">Largest quantity</option>
               <option value="price_asc">Price low → high</option>
               <option value="price_desc">Price high → low</option>
               <option value="best_opportunities">Best opportunities</option>
@@ -621,6 +774,74 @@ export function AuctionListings({
               )}
 
               <div className="flex flex-wrap items-center gap-2">
+                <Calendar className="h-4 w-4 shrink-0 text-violet-600/80" />
+                <span className="text-xs font-medium uppercase tracking-wider text-slate-500">
+                  Listed date
+                </span>
+                {LISTED_PRESETS.map((p) => (
+                  <PillButton
+                    key={p.id}
+                    active={listedPreset === p.id}
+                    onClick={() => {
+                      setListedPreset(p.id);
+                      setListedFrom("");
+                      setListedTo("");
+                    }}
+                  >
+                    {p.label}
+                  </PillButton>
+                ))}
+                <PillButton
+                  active={listedPreset === "custom"}
+                  onClick={() => setListedPreset("custom")}
+                >
+                  Custom range
+                </PillButton>
+                {(listedPreset !== "all" || listedFrom || listedTo) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setListedPreset("all");
+                      setListedFrom("");
+                      setListedTo("");
+                    }}
+                    className="text-xs font-medium text-cyan-800 hover:underline"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+
+              {showListedCustomRange && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="flex items-center gap-2 text-xs text-slate-600">
+                    Listed from
+                    <Input
+                      type="date"
+                      value={listedFrom}
+                      onChange={(e) => {
+                        setListedFrom(e.target.value);
+                        if (listedPreset !== "custom") setListedPreset("custom");
+                      }}
+                      className="h-8 w-auto"
+                    />
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-slate-600">
+                    Listed to
+                    <Input
+                      type="date"
+                      value={listedTo}
+                      onChange={(e) => {
+                        setListedTo(e.target.value);
+                        if (listedPreset !== "custom") setListedPreset("custom");
+                      }}
+                      className="h-8 w-auto"
+                    />
+                  </label>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2">
                 <Select
                   value={sourceFilter}
                   onChange={(e) =>
@@ -655,6 +876,39 @@ export function AuctionListings({
                   {states.map((s) => (
                     <option key={s} value={s}>
                       {s === "All" ? "All states" : s}
+                    </option>
+                  ))}
+                </Select>
+                <Select
+                  value={cityFilter}
+                  onChange={(e) => setCityFilter(e.target.value)}
+                  className="h-9 w-auto min-w-[110px] text-sm"
+                >
+                  {cities.map((c) => (
+                    <option key={c} value={c}>
+                      {c === "All" ? "All cities" : c}
+                    </option>
+                  ))}
+                </Select>
+                <Select
+                  value={materialFilter}
+                  onChange={(e) => setMaterialFilter(e.target.value)}
+                  className="h-9 w-auto min-w-[140px] text-sm"
+                >
+                  {DISPLAY_MATERIAL_CATEGORIES.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </Select>
+                <Select
+                  value={quantityMin}
+                  onChange={(e) => setQuantityMin(e.target.value as QuantityMinFilter)}
+                  className="h-9 w-auto min-w-[120px] text-sm"
+                >
+                  {QUANTITY_MIN_OPTIONS.map((q) => (
+                    <option key={q.id} value={q.id}>
+                      {q.label}
                     </option>
                   ))}
                 </Select>
@@ -741,6 +995,15 @@ export function AuctionListings({
                 />
                 <Star className="h-4 w-4 text-amber-600" />
                 Watchlist only ({watchlist.size})
+              </label>
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={largeLotsOnly}
+                  onChange={(e) => setLargeLotsOnly(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-cyan-600 focus:ring-cyan-400/50"
+                />
+                Large lots only (100+ MT)
               </label>
               {watchlist.size > 0 && (
                 <button

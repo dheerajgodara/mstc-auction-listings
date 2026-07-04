@@ -159,7 +159,32 @@ class AuctionRecord(BaseModel):
     errors: list[str] = Field(default_factory=list)
     total_lots: Optional[int] = None
 
-    @field_serializer("opening", "closing")
+    # Enlistment / listed date (optional; populated only when the source exposes it)
+    listed_at: Optional[datetime] = None
+    listed_date: Optional[str] = None
+    listed_at_source: Literal[
+        "source_listed_date",
+        "published_date",
+        "created_date",
+        "catalogue_date",
+        "opening_date_fallback",
+        "missing",
+    ] = "missing"
+    listed_at_label: Optional[str] = None
+
+    # Buyer-facing display enrichment (additive; raw fields unchanged)
+    display_title: Optional[str] = None
+    display_location_city: Optional[str] = None
+    display_location_state: Optional[str] = None
+    display_location_raw: Optional[str] = None
+    display_quantity_summary: Optional[str] = None
+    display_material_category: Optional[str] = None
+    display_key_lots: list[str] = Field(default_factory=list)
+    display_buyer_summary: Optional[str] = None
+    display_location_confidence: Optional[str] = None
+    display_total_quantity_mt: Optional[float] = None
+
+    @field_serializer("opening", "closing", "listed_at")
     def serialize_dt(self, v: Optional[datetime]) -> Optional[str]:
         return v.isoformat() if v else None
 

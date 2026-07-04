@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -105,6 +106,32 @@ ok(
   ".htaccess copied to output (JSON MIME hint)",
   fs.existsSync(path.join(outDir, ".htaccess")),
   "optional on Hostinger",
+);
+
+const repoRoot = path.resolve(webRoot, "..");
+const deployCheck = spawnSync(
+  "python3",
+  [
+    "-c",
+    `import sys; sys.path.insert(0, ${JSON.stringify(repoRoot)}); from scraper.deploy import validate_deploy_export; from pathlib import Path; validate_deploy_export(Path(${JSON.stringify(outDir)})); print('deploy-export-ok')`,
+  ],
+  { cwd: repoRoot, encoding: "utf8" },
+);
+ok(
+  "deploy export safety on web/out",
+  deployCheck.status === 0,
+  deployCheck.status === 0 ? "" : (deployCheck.stderr || deployCheck.stdout || "").trim().slice(0, 200),
+);
+
+const pyTests = spawnSync(
+  "python3",
+  ["-m", "pytest", "tests/test_deploy_safety.py", "tests/test_display_enrichment.py", "-q"],
+  { cwd: repoRoot, encoding: "utf8" },
+);
+ok(
+  "display/deploy python tests",
+  pyTests.status === 0,
+  pyTests.status === 0 ? "" : (pyTests.stdout || pyTests.stderr || "").trim().slice(-200),
 );
 
 const failed = checks.filter((c) => !c.pass);
