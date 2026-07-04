@@ -1,4 +1,4 @@
-import type { SortOption, DatePreset } from "@/lib/auction-filters";
+import type { SortOption, DatePreset, ListedPreset } from "@/lib/auction-filters";
 
 export interface SavedSearch {
   id: string;
@@ -16,6 +16,9 @@ export interface SavedSearch {
   datePreset: DatePreset;
   customFrom: string;
   customTo: string;
+  listedPreset?: ListedPreset;
+  listedFrom?: string;
+  listedTo?: string;
   sortBy: SortOption;
   includeClosed: boolean;
   watchlistOnly: boolean;
