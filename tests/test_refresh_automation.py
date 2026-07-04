@@ -11,6 +11,7 @@ import pytest
 from scraper.batch_manifest import BATCH_STATUS_DONE, BATCH_STATUS_FAILED, BatchManifest
 from scraper.export_guard import ExportGuardError
 from scraper.filters import make_run_id, tomorrow_min_closing_date
+from scraper.predeploy_verify import verify_predeploy_build
 from scraper.refresh_lock import RefreshLockError, acquire_refresh_lock, release_refresh_lock
 from scraper.refresh_reports import render_final_report_md, write_final_reports
 from scraper.safety_gates import SafetyGateConfig, run_safety_gates
@@ -111,8 +112,10 @@ def test_safety_gate_rejects_one_record_candidate(tmp_path: Path):
 def test_safety_gate_rejects_large_count_drop(tmp_path: Path):
     candidate = tmp_path / "candidate.json"
     production = tmp_path / "production.json"
-    _write_export(candidate, [_record_dict(f"c{i}") for i in range(500)])
-    _write_export(production, [_record_dict(f"p{i}") for i in range(1800)])
+    records = [_record_dict(f"c{i}", source="mstc") for i in range(500)]
+    records.append(_record_dict("ea-1", source="eauction"))
+    _write_export(candidate, records)
+    _write_export(production, [_record_dict(f"p{i}", source="mstc") for i in range(1800)])
 
     result = run_safety_gates(
         candidate,
@@ -147,6 +150,51 @@ def test_safety_gate_accepts_normal_candidate(tmp_path: Path):
     assert result.passed is True
 
 
+def test_safety_gate_rejects_capped_mstc_only_export(tmp_path: Path):
+    candidate = tmp_path / "candidate.json"
+    production = tmp_path / "production.json"
+    _write_export(
+        candidate,
+        [_record_dict(f"mstc-{i}", source="mstc") for i in range(300)],
+    )
+    prod_records = [_record_dict(f"m{i}", source="mstc") for i in range(1681)]
+    prod_records.extend(_record_dict(f"ea-{i}", source="eauction") for i in range(61))
+    prod_records.extend(_record_dict(f"gem-{i}", source="gem_forward") for i in range(74))
+    _write_export(production, prod_records)
+
+    result = run_safety_gates(
+        candidate,
+        config=SafetyGateConfig(
+            min_count=100,
+            min_closing_date="2026-07-04",
+            production_json=production,
+        ),
+    )
+    assert result.passed is False
+    assert any("capped MSTC-only" in e for e in result.errors)
+
+
+def test_safety_gate_rejects_single_source_regression(tmp_path: Path):
+    candidate = tmp_path / "candidate.json"
+    production = tmp_path / "production.json"
+    records = [_record_dict(f"mstc-{i}", source="mstc") for i in range(1200)]
+    records.append(_record_dict("ea-1", source="eauction"))
+    records.append(_record_dict("gem-1", source="gem_forward"))
+    _write_export(candidate, [_record_dict(f"mstc-{i}", source="mstc") for i in range(1200)])
+    _write_export(production, records)
+
+    result = run_safety_gates(
+        candidate,
+        config=SafetyGateConfig(
+            min_count=1000,
+            min_closing_date="2026-07-04",
+            production_json=production,
+        ),
+    )
+    assert result.passed is False
+    assert any("only one source" in e for e in result.errors)
+
+
 def test_safety_gate_rejects_failed_mstc_batches(tmp_path: Path):
     candidate = tmp_path / "candidate.json"
     production = tmp_path / "production.json"
@@ -172,6 +220,29 @@ def test_safety_gate_rejects_failed_mstc_batches(tmp_path: Path):
     )
     assert result.passed is False
     assert any("failed MSTC" in e for e in result.errors)
+
+
+def test_predeploy_verify_rejects_capped_mstc_only_build(tmp_path: Path):
+    out_dir = tmp_path / "out"
+    data_dir = out_dir / "data"
+    pdfs_dir = out_dir / "pdfs"
+    data_dir.mkdir(parents=True)
+    pdfs_dir.mkdir(parents=True)
+    (out_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+    (pdfs_dir / "sample.pdf").write_bytes(b"%PDF")
+
+    records = [_record_dict(f"mstc-{i}", source="mstc") for i in range(300)]
+    _write_export(data_dir / "auctions.json", records)
+
+    result = verify_predeploy_build(
+        out_dir=out_dir,
+        min_count=100,
+        min_closing_date="2026-07-04",
+        require_sources=["mstc", "eauction"],
+        warn_only_sources=["gem_forward"],
+    )
+    assert result.passed is False
+    assert any("capped MSTC-only" in e for e in result.errors)
 
 
 def test_final_report_generation(tmp_path: Path):

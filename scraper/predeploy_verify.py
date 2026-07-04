@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from scraper.filters import parse_min_closing_date
 from scraper.qa_summary import _parse_closing
+from scraper.safety_gates import is_capped_mstc_only_export
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -94,6 +95,13 @@ def verify_predeploy_build(
         for source in warn_only_sources or []:
             if by_source.get(source, 0) <= 0:
                 warnings.append(f"optional source missing in build: {source}")
+
+        if is_capped_mstc_only_export(by_source, count):
+            errors.append(
+                "Refusing to deploy capped MSTC-only export. "
+                f"count={count}, by_source={by_source}. "
+                "Use refresh-and-deploy.yml for production."
+            )
 
     pdf_count = _count_files(pdfs_dir)
     docs_count = _count_files(docs_dir)

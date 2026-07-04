@@ -1,10 +1,13 @@
-# Deprecated: use .github/workflows/refresh-and-deploy.yml instead.
-# This workflow remains for manual capped MSTC-only runs.
+# LEGACY / MANUAL DIAGNOSTIC ONLY — NOT FOR PRODUCTION
+#
+# This workflow uses scraper.run_all with low defaults (MSTC-only, capped limit).
+# It must NEVER run on a schedule and must NEVER deploy without explicit double confirmation.
+#
+# Production automation: .github/workflows/refresh-and-deploy.yml
+# (full multi-source refresh via scraper.refresh_and_deploy)
 name: Scrape and Deploy (legacy)
 
 on:
-  schedule:
-    - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
       sources:
@@ -16,9 +19,17 @@ on:
         required: false
         default: "300"
       deploy:
-        description: "Deploy to Hostinger after build"
+        description: "Deploy to Hostinger after build (default false — diagnostic only)"
         required: false
-        default: "true"
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      confirm_legacy_deploy:
+        description: "Type true to confirm you intend a LEGACY deploy (required with deploy=true)"
+        required: false
+        default: "false"
         type: choice
         options:
           - "true"
@@ -80,14 +91,20 @@ jobs:
           pnpm run verify-build
 
       - name: Configure SSH key
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.deploy != 'false' }}
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          && github.event.inputs.deploy == 'true'
+          && github.event.inputs.confirm_legacy_deploy == 'true'
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
 
       - name: Deploy to Hostinger
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.deploy != 'false' }}
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          && github.event.inputs.deploy == 'true'
+          && github.event.inputs.confirm_legacy_deploy == 'true'
         env:
           HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
           HOSTINGER_PORT: ${{ secrets.HOSTINGER_PORT }}

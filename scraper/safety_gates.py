@@ -79,6 +79,45 @@ def _check_drop(
         )
 
 
+def _active_sources(by_source: dict[str, int]) -> set[str]:
+    return {source for source, count in by_source.items() if count > 0}
+
+
+def is_capped_mstc_only_export(by_source: dict[str, int], count: int) -> bool:
+    """True when export looks like a legacy capped MSTC-only scrape (<=500, mstc only)."""
+    if count <= 0 or count > 500:
+        return False
+    active = _active_sources(by_source)
+    return active == {"mstc"} and by_source.get("mstc", 0) == count
+
+
+def _check_capped_mstc_only(by_source: dict[str, int], count: int, errors: list[str]) -> None:
+    if is_capped_mstc_only_export(by_source, count):
+        errors.append(
+            "Refusing to deploy capped MSTC-only export. "
+            f"count={count}, by_source={by_source}. "
+            "Use refresh-and-deploy.yml for production."
+        )
+
+
+def _check_single_source_regression(
+    cand_by_source: dict[str, int],
+    prod_by_source: dict[str, int],
+    *,
+    allow_large_drop: bool,
+    errors: list[str],
+) -> None:
+    if allow_large_drop:
+        return
+    prod_sources = _active_sources(prod_by_source)
+    cand_sources = _active_sources(cand_by_source)
+    if len(prod_sources) > 1 and len(cand_sources) <= 1:
+        errors.append(
+            "candidate has only one source but production had multiple sources: "
+            f"production={sorted(prod_sources)}, candidate={sorted(cand_sources)}"
+        )
+
+
 def run_safety_gates(
     candidate: Path,
     *,
@@ -118,6 +157,17 @@ def run_safety_gates(
     prod_count, prod_by_source = _load_counts(config.production_json)
     cand_count = int(qa.get("total_auctions", 0))
     cand_by_source = qa.get("by_source", {})
+
+    if cand_count <= 1:
+        errors.append("accidental one-record candidate export")
+
+    _check_capped_mstc_only(cand_by_source, cand_count, errors)
+    _check_single_source_regression(
+        cand_by_source,
+        prod_by_source,
+        allow_large_drop=config.allow_large_drop,
+        errors=errors,
+    )
 
     _check_drop(
         label="Total",
