@@ -155,10 +155,16 @@ def _lot_quantity_mt(lot: LotRecord) -> float | None:
 
 def _format_mt(value: float) -> str:
     if value >= 100:
-        return f"{value:,.0f}".rstrip("0").rstrip(".")
+        return f"{round(value):,}"
     if value >= 10:
-        return f"{value:,.1f}".rstrip("0").rstrip(".")
-    return f"{value:,.2f}".rstrip("0").rstrip(".")
+        formatted = f"{value:,.1f}"
+        if "." in formatted:
+            formatted = formatted.rstrip("0").rstrip(".")
+        return formatted
+    formatted = f"{value:,.2f}"
+    if "." in formatted:
+        formatted = formatted.rstrip("0").rstrip(".")
+    return formatted
 
 
 def _lot_labels(lots: list[LotRecord], limit: int = 3) -> list[str]:

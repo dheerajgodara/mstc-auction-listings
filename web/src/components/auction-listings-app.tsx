@@ -51,7 +51,8 @@ export function AuctionListingsApp() {
   return (
     <AuctionListings
       auctions={data.auctions}
-      generatedAt={data.generated_at}
+      generatedAt={data.export_generated_at ?? data.generated_at}
+      automationRanAt={data.automation_ran_at ?? undefined}
       total={data.count}
     />
   );

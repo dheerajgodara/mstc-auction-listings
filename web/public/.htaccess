@@ -6,4 +6,11 @@
   <FilesMatch "\.(json)$">
     Header set Access-Control-Allow-Origin "*"
   </FilesMatch>
+
+  # Auction payloads must not be cached for days — stale exports break listings.
+  <FilesMatch "^(auctions-data\.js|auctions\.json|export-meta\.json|import-history\.json)$">
+    Header set Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+    Header set Pragma "no-cache"
+    Header set Expires "0"
+  </FilesMatch>
 </IfModule>

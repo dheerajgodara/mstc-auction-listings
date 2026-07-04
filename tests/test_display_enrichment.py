@@ -24,6 +24,14 @@ def _lot(
     )
 
 
+def test_format_mt_does_not_strip_trailing_zero_from_hundreds():
+    from scraper.display_enrichment import _format_mt
+
+    assert _format_mt(430.353) == "430"
+    assert _format_mt(100.0) == "100"
+    assert _format_mt(1000.5) == "1,000"
+
+
 def test_enrich_582972_transmission_tower_title():
     record = AuctionRecord(
         id="582972",
@@ -47,6 +55,8 @@ def test_enrich_582972_transmission_tower_title():
     assert enriched.display_location_confidence == "high"
     assert enriched.display_material_category == "transmission_scrap"
     assert enriched.display_quantity_summary
+    assert "430 MT Tower Parts" in enriched.display_quantity_summary
+    assert "43 MT Tower Parts" not in enriched.display_quantity_summary
     assert "Tower Parts" in enriched.display_key_lots
 
 

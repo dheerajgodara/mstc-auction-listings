@@ -150,6 +150,9 @@ export interface AuctionRecord {
     | "missing"
     | null;
   listed_at_label?: string | null;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  imported_at?: string | null;
   display_title?: string | null;
   display_location_city?: string | null;
   display_location_state?: string | null;
@@ -164,7 +167,35 @@ export interface AuctionRecord {
 
 export interface AuctionsExport {
   generated_at: string;
+  export_generated_at?: string | null;
+  automation_ran_at?: string | null;
+  run_id?: string | null;
   count: number;
   auctions: AuctionRecord[];
   stats?: Record<string, unknown>;
+  sources?: Record<
+    string,
+    {
+      count?: number;
+      lots?: number;
+      status?: string;
+      documents_downloaded?: number | null;
+      documents_failed?: number | null;
+    }
+  >;
+  daily_import_summary?: DailyImportSummaryRow[];
+}
+
+export interface DailyImportSummaryRow {
+  date: string;
+  run_id: string;
+  automation_ran_at: string;
+  mstc_auctions: number;
+  gem_forward_auctions: number;
+  eauction_auctions: number;
+  total_auctions: number;
+  total_lots: number;
+  new_auctions_first_seen: number;
+  removed_auctions: number;
+  status: string;
 }

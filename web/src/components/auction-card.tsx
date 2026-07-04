@@ -121,6 +121,20 @@ function formatListedDate(auction: AuctionRecord): string | null {
   return `${prefix}${fmt.format(dt)}`;
 }
 
+function formatImportedDate(auction: AuctionRecord): string | null {
+  const iso = auction.imported_at ?? auction.first_seen_at;
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  const fmt = new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  return `Imported: ${fmt.format(new Date(t))}`;
+}
+
 function gemDocumentLabel(url: string, index: number, total: number): string {
   const lower = url.toLowerCase();
   if (lower.includes("rule")) return total > 1 ? `GeM rules ${index + 1}` : "GeM rules";
@@ -309,6 +323,12 @@ export function AuctionCard({
               <div className="flex items-start gap-2 sm:col-span-2">
                 <CalendarPlus className="mt-0.5 h-4 w-4 shrink-0 text-violet-600/80" />
                 <span className="text-slate-700">{formatListedDate(auction)}</span>
+              </div>
+            )}
+            {formatImportedDate(auction) && (
+              <div className="flex items-start gap-2 sm:col-span-2">
+                <CalendarPlus className="mt-0.5 h-4 w-4 shrink-0 text-sky-600/80" />
+                <span className="text-slate-600">{formatImportedDate(auction)}</span>
               </div>
             )}
             {hasInspection(auction) && (

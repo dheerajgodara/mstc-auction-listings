@@ -15,6 +15,7 @@ export type SortOption =
   | "price_desc"
   | "best_opportunities"
   | "listed_desc"
+  | "imported_desc"
   | "quantity_desc";
 
 export type QuantityMinFilter = "any" | "10" | "50" | "100" | "500" | "1000";
@@ -26,6 +27,14 @@ export type ListedPreset =
   | "last3"
   | "last7"
   | "last14"
+  | "custom";
+
+export type ImportedPreset =
+  | "all"
+  | "today"
+  | "yesterday"
+  | "last3"
+  | "last7"
   | "custom";
 
 export interface ClosingUrgency {
@@ -248,6 +257,80 @@ export function matchesListedDateFilter(
   return listedMs >= range.start && listedMs <= range.end;
 }
 
+/** When this auction first entered our dataset (not source listed date). */
+export function parseImportedMs(auction: AuctionRecord): number | null {
+  const iso = auction.imported_at ?? auction.first_seen_at;
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? null : t;
+}
+
+export function importedIstYmd(auction: AuctionRecord): string | null {
+  const ms = parseImportedMs(auction);
+  if (ms === null) return null;
+  return ymdFormatter().format(new Date(ms));
+}
+
+export function isImportedFilterActive(
+  preset: ImportedPreset,
+  customFrom: string,
+  customTo: string,
+): boolean {
+  if (preset !== "all") return true;
+  return Boolean(customFrom || customTo);
+}
+
+function resolveImportedRange(
+  preset: ImportedPreset,
+  customFrom: string,
+  customTo: string,
+): { start: number; end: number } | null {
+  const today = istTodayYmd();
+  switch (preset) {
+    case "today":
+      return { start: istYmdStartMs(today), end: istYmdEndMs(today) };
+    case "yesterday": {
+      const y = addDaysYmd(today, -1);
+      return { start: istYmdStartMs(y), end: istYmdEndMs(y) };
+    }
+    case "last3":
+      return {
+        start: istYmdStartMs(addDaysYmd(today, -2)),
+        end: istYmdEndMs(today),
+      };
+    case "last7":
+      return {
+        start: istYmdStartMs(addDaysYmd(today, -6)),
+        end: istYmdEndMs(today),
+      };
+    case "custom": {
+      if (!customFrom && !customTo) return null;
+      return {
+        start: customFrom ? istYmdStartMs(customFrom) : Number.NEGATIVE_INFINITY,
+        end: customTo ? istYmdEndMs(customTo) : Number.POSITIVE_INFINITY,
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+export function matchesImportedDateFilter(
+  auction: AuctionRecord,
+  preset: ImportedPreset,
+  customFrom: string,
+  customTo: string,
+): boolean {
+  const effective =
+    preset === "all" && (customFrom || customTo) ? "custom" : preset;
+  if (!isImportedFilterActive(effective, customFrom, customTo)) return true;
+  const importedMs = parseImportedMs(auction);
+  if (importedMs === null) return false;
+  const range = resolveImportedRange(effective, customFrom, customTo);
+  if (!range) return true;
+  return importedMs >= range.start && importedMs <= range.end;
+}
+
 export function matchesMaterialCategoryFilter(
   auction: AuctionRecord,
   materialCategory: string,
@@ -387,6 +470,16 @@ export function sortAuctions(
         if (la === null) return 1;
         if (lb === null) return -1;
         return lb - la || parseAuctionMs(a.closing) - parseAuctionMs(b.closing);
+      }
+      case "imported_desc": {
+        const ia = parseImportedMs(a);
+        const ib = parseImportedMs(b);
+        if (ia === null && ib === null) {
+          return parseAuctionMs(a.closing) - parseAuctionMs(b.closing);
+        }
+        if (ia === null) return 1;
+        if (ib === null) return -1;
+        return ib - ia || parseAuctionMs(a.closing) - parseAuctionMs(b.closing);
       }
       case "quantity_desc": {
         const qa = auctionTotalMt(a);

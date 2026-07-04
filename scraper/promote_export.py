@@ -11,6 +11,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from scraper.export_guard import ExportGuardError, is_protected_export_path, validate_export_write
+from scraper.import_tracking import finalize_export_payload
 from scraper.qa_summary import run_strict_qa
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -27,6 +28,9 @@ def promote_export(
     require_sources: list[str] | None = None,
     warn_missing_sources: list[str] | None = None,
     allow_small_output: bool = False,
+    automation_ran_at: datetime | None = None,
+    run_id: str | None = None,
+    history_path: Path | None = None,
 ) -> Path:
     if not candidate.is_file():
         raise FileNotFoundError(f"Candidate not found: {candidate}")
@@ -44,6 +48,20 @@ def promote_export(
     data = json.loads(candidate.read_text(encoding="utf-8"))
     count = data.get("count", len(data.get("auctions", [])))
     validate_export_write(target, count, allow_small_output=allow_small_output)
+
+    previous_export = None
+    if target.is_file():
+        previous_export = json.loads(target.read_text(encoding="utf-8"))
+
+    resolved_history = history_path or target.parent / "import-history.json"
+    data = finalize_export_payload(
+        data,
+        previous_export=previous_export,
+        automation_ran_at=automation_ran_at,
+        run_id=run_id,
+        history_path=resolved_history,
+    )
+    count = data.get("count", len(data.get("auctions", [])))
 
     if not is_protected_export_path(target):
         logger.warning("Target %s is not a known protected path; proceeding with caution", target)

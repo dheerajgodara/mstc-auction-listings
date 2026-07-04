@@ -8,14 +8,17 @@ import { Chip, Input, Select } from "@/components/ui/primitives";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import {
   type DatePreset,
+  type ImportedPreset,
   type ListedPreset,
   applySortOption,
   isActiveOrUpcoming,
   isDateFilterActive,
+  isImportedFilterActive,
   isListedFilterActive,
   matchesCityFilter,
   matchesClosingDateFilter,
   matchesDisplayStateFilter,
+  matchesImportedDateFilter,
   matchesLargeLotsOnly,
   matchesListedDateFilter,
   matchesMaterialCategoryFilter,
@@ -37,7 +40,7 @@ import {
   upsertSavedSearch,
 } from "@/lib/saved-searches";
 import { isWatched, loadWatchlist, toggleWatchlist } from "@/lib/watchlist";
-import { formatDateTime } from "@/lib/utils";
+import { formatDateTime, resolvePublicUrl } from "@/lib/utils";
 import type { AssetCategory, AuctionRecord, AuctionSource, EmdParseStatus } from "@/types/auction";
 import { cn } from "@/lib/utils";
 
@@ -123,6 +126,22 @@ const LISTED_PRESET_LABELS: Record<ListedPreset, string> = {
   custom: "Custom range",
 };
 
+const IMPORTED_PRESETS: { id: ImportedPreset; label: string }[] = [
+  { id: "today", label: "Imported today" },
+  { id: "yesterday", label: "Imported yesterday" },
+  { id: "last3", label: "Last 3 days" },
+  { id: "last7", label: "Last 7 days" },
+];
+
+const IMPORTED_PRESET_LABELS: Record<ImportedPreset, string> = {
+  all: "All import dates",
+  today: "Imported today",
+  yesterday: "Imported yesterday",
+  last3: "Imported last 3 days",
+  last7: "Imported last 7 days",
+  custom: "Custom range",
+};
+
 const QUANTITY_MIN_OPTIONS: { id: QuantityMinFilter; label: string }[] = [
   { id: "any", label: "Any quantity" },
   { id: "10", label: "10+ MT" },
@@ -177,10 +196,12 @@ function RemovableChip({
 export function AuctionListings({
   auctions,
   generatedAt,
+  automationRanAt,
   total,
 }: {
   auctions: AuctionRecord[];
   generatedAt?: string;
+  automationRanAt?: string;
   total?: number;
 }) {
   const [query, setQuery] = useState("");
@@ -202,6 +223,9 @@ export function AuctionListings({
   const [listedPreset, setListedPreset] = useState<ListedPreset>("all");
   const [listedFrom, setListedFrom] = useState("");
   const [listedTo, setListedTo] = useState("");
+  const [importedPreset, setImportedPreset] = useState<ImportedPreset>("all");
+  const [importedFrom, setImportedFrom] = useState("");
+  const [importedTo, setImportedTo] = useState("");
   const [cityFilter, setCityFilter] = useState("All");
   const [materialFilter, setMaterialFilter] = useState("All");
   const [quantityMin, setQuantityMin] = useState<QuantityMinFilter>("any");
@@ -249,6 +273,8 @@ export function AuctionListings({
     datePreset === "all" && (customFrom || customTo) ? "custom" : datePreset;
   const effectiveListedPreset =
     listedPreset === "all" && (listedFrom || listedTo) ? "custom" : listedPreset;
+  const effectiveImportedPreset =
+    importedPreset === "all" && (importedFrom || importedTo) ? "custom" : importedPreset;
 
   const filtered = useMemo(() => {
     return auctions.filter((a) => {
@@ -289,6 +315,16 @@ export function AuctionListings({
       ) {
         return false;
       }
+      if (
+        !matchesImportedDateFilter(
+          a,
+          effectiveImportedPreset,
+          importedFrom,
+          importedTo,
+        )
+      ) {
+        return false;
+      }
       return true;
     });
   }, [
@@ -314,6 +350,9 @@ export function AuctionListings({
     effectiveListedPreset,
     listedFrom,
     listedTo,
+    effectiveImportedPreset,
+    importedFrom,
+    importedTo,
   ]);
 
   const sorted = useMemo(() => {
@@ -353,6 +392,9 @@ export function AuctionListings({
     listedPreset,
     listedFrom,
     listedTo,
+    importedPreset,
+    importedFrom,
+    importedTo,
     sortBy,
     includeClosed,
     watchlistOnly,
@@ -379,6 +421,9 @@ export function AuctionListings({
     setListedPreset("all");
     setListedFrom("");
     setListedTo("");
+    setImportedPreset("all");
+    setImportedFrom("");
+    setImportedTo("");
     setCityFilter("All");
     setMaterialFilter("All");
     setQuantityMin("any");
@@ -495,6 +540,21 @@ export function AuctionListings({
         },
       });
     }
+    if (isImportedFilterActive(effectiveImportedPreset, importedFrom, importedTo)) {
+      const importedLabel =
+        effectiveImportedPreset === "custom"
+          ? `Imported: ${importedFrom || "…"} – ${importedTo || "…"}`
+          : IMPORTED_PRESET_LABELS[effectiveImportedPreset];
+      chips.push({
+        key: "imported",
+        label: importedLabel,
+        onRemove: () => {
+          setImportedPreset("all");
+          setImportedFrom("");
+          setImportedTo("");
+        },
+      });
+    }
     if (sourceFilter !== "All") {
       chips.push({
         key: "source",
@@ -596,6 +656,9 @@ export function AuctionListings({
     effectiveListedPreset,
     listedFrom,
     listedTo,
+    effectiveImportedPreset,
+    importedFrom,
+    importedTo,
     sourceFilter,
     assetCategory,
     stateFilter,
@@ -615,6 +678,9 @@ export function AuctionListings({
     datePreset === "custom" || Boolean(customFrom || customTo);
   const showListedCustomRange =
     listedPreset === "custom" || Boolean(listedFrom || listedTo);
+  const showImportedCustomRange =
+    importedPreset === "custom" || Boolean(importedFrom || importedTo);
+  const statusPageHref = resolvePublicUrl("status/");
 
   return (
     <div className="space-y-4">
@@ -626,15 +692,25 @@ export function AuctionListings({
             </h1>
             <p className="max-w-2xl text-sm text-slate-600">
               Government auction opportunities from MSTC, GeM Forward, and eAuction.gov.in
-              (public ByDate tabs — near-term visible window).
+              (public ByDate tabs — near-term visible window).{" "}
+              <a href={statusPageHref} className="font-medium text-cyan-800 hover:underline">
+                Import status
+              </a>
             </p>
           </div>
-          {generatedAt && (
-            <Chip className="border-violet-200/80 bg-violet-50/90 text-violet-900 normal-case tracking-normal">
-              <Clock className="mr-1 inline h-3 w-3" />
-              Updated: {formatDateTime(generatedAt)}
-            </Chip>
-          )}
+          <div className="flex flex-col items-end gap-1">
+            {automationRanAt && (
+              <Chip className="border-violet-200/80 bg-violet-50/90 text-violet-900 normal-case tracking-normal">
+                <Clock className="mr-1 inline h-3 w-3" />
+                Automation ran: {formatDateTime(automationRanAt)}
+              </Chip>
+            )}
+            {generatedAt && (
+              <p className="text-xs text-slate-500">
+                Data generated: {formatDateTime(generatedAt)}
+              </p>
+            )}
+          </div>
         </div>
       </header>
 
@@ -659,6 +735,7 @@ export function AuctionListings({
               <option value="closing_asc">Closing soonest</option>
               <option value="opening_asc">Opening soonest</option>
               <option value="listed_desc">Recently listed</option>
+              <option value="imported_desc">Recently imported</option>
               <option value="quantity_desc">Largest quantity</option>
               <option value="price_asc">Price low → high</option>
               <option value="price_desc">Price high → low</option>
@@ -834,6 +911,74 @@ export function AuctionListings({
                       onChange={(e) => {
                         setListedTo(e.target.value);
                         if (listedPreset !== "custom") setListedPreset("custom");
+                      }}
+                      className="h-8 w-auto"
+                    />
+                  </label>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Calendar className="h-4 w-4 shrink-0 text-sky-600/80" />
+                <span className="text-xs font-medium uppercase tracking-wider text-slate-500">
+                  Imported date
+                </span>
+                {IMPORTED_PRESETS.map((p) => (
+                  <PillButton
+                    key={p.id}
+                    active={importedPreset === p.id}
+                    onClick={() => {
+                      setImportedPreset(p.id);
+                      setImportedFrom("");
+                      setImportedTo("");
+                    }}
+                  >
+                    {p.label}
+                  </PillButton>
+                ))}
+                <PillButton
+                  active={importedPreset === "custom"}
+                  onClick={() => setImportedPreset("custom")}
+                >
+                  Custom range
+                </PillButton>
+                {(importedPreset !== "all" || importedFrom || importedTo) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportedPreset("all");
+                      setImportedFrom("");
+                      setImportedTo("");
+                    }}
+                    className="text-xs font-medium text-cyan-800 hover:underline"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+
+              {showImportedCustomRange && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="flex items-center gap-2 text-xs text-slate-600">
+                    Imported from
+                    <Input
+                      type="date"
+                      value={importedFrom}
+                      onChange={(e) => {
+                        setImportedFrom(e.target.value);
+                        if (importedPreset !== "custom") setImportedPreset("custom");
+                      }}
+                      className="h-8 w-auto"
+                    />
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-slate-600">
+                    Imported to
+                    <Input
+                      type="date"
+                      value={importedTo}
+                      onChange={(e) => {
+                        setImportedTo(e.target.value);
+                        if (importedPreset !== "custom") setImportedPreset("custom");
                       }}
                       className="h-8 w-auto"
                     />

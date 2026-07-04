@@ -172,6 +172,11 @@ class AuctionRecord(BaseModel):
     ] = "missing"
     listed_at_label: Optional[str] = None
 
+    # Import / first-seen tracking (our dataset, not source listed date)
+    first_seen_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+    imported_at: Optional[datetime] = None
+
     # Buyer-facing display enrichment (additive; raw fields unchanged)
     display_title: Optional[str] = None
     display_location_city: Optional[str] = None
@@ -184,7 +189,7 @@ class AuctionRecord(BaseModel):
     display_location_confidence: Optional[str] = None
     display_total_quantity_mt: Optional[float] = None
 
-    @field_serializer("opening", "closing", "listed_at")
+    @field_serializer("opening", "closing", "listed_at", "first_seen_at", "last_seen_at", "imported_at")
     def serialize_dt(self, v: Optional[datetime]) -> Optional[str]:
         return v.isoformat() if v else None
 
@@ -210,10 +215,15 @@ class ListingApiOfficeResponse(BaseModel):
 
 class AuctionsExport(BaseModel):
     generated_at: datetime
+    export_generated_at: Optional[datetime] = None
+    automation_ran_at: Optional[datetime] = None
+    run_id: Optional[str] = None
     count: int
     auctions: list[AuctionRecord]
     stats: dict[str, Any] = Field(default_factory=dict)
+    sources: dict[str, Any] = Field(default_factory=dict)
+    daily_import_summary: list[dict[str, Any]] = Field(default_factory=list)
 
-    @field_serializer("generated_at")
-    def serialize_generated(self, v: datetime) -> str:
-        return v.isoformat()
+    @field_serializer("generated_at", "export_generated_at", "automation_ran_at")
+    def serialize_generated(self, v: Optional[datetime]) -> Optional[str]:
+        return v.isoformat() if v else None

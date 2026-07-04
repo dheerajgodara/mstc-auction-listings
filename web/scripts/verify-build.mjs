@@ -68,7 +68,20 @@ if (fs.existsSync(dataJsPath)) {
     "auctions-data.js exports __AUCTIONS_EXPORT__",
     jsBody.includes("window.__AUCTIONS_EXPORT__"),
   );
+  ok(
+    "auctions-data.js includes automation_ran_at",
+    jsBody.includes('"automation_ran_at"'),
+  );
+  ok(
+    "auctions-data.js includes imported_at",
+    jsBody.includes('"imported_at"'),
+  );
 }
+
+ok(
+  "data/export-meta.json exists",
+  fs.existsSync(path.join(outDir, "data", "export-meta.json")),
+);
 
 const pdfDir = path.join(outDir, "pdfs");
 const pdfCount = fs.existsSync(pdfDir)
@@ -80,7 +93,18 @@ const jsonPath = path.join(outDir, "data", "auctions.json");
 if (fs.existsSync(jsonPath)) {
   const data = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
   ok("JSON has generated_at", Boolean(data.generated_at));
+  ok("JSON has automation_ran_at", Boolean(data.automation_ran_at));
   ok("JSON count matches auctions", data.count === data.auctions?.length);
+  const missingImport = (data.auctions || []).filter(
+    (a) => !(a.imported_at || a.first_seen_at),
+  ).length;
+  ok(
+    "every auction has imported_at or first_seen_at",
+    missingImport === 0,
+    missingImport ? `${missingImport} missing` : "",
+  );
+  const a582972 = (data.auctions || []).find((a) => String(a.id) === "582972");
+  ok("auction 582972 has imported_at", Boolean(a582972?.imported_at || a582972?.first_seen_at));
   const badPdf = (data.auctions || []).filter(
     (a) => a.pdf_url && a.pdf_url.startsWith("/pdfs/"),
   );
@@ -108,6 +132,32 @@ ok(
   "optional on Hostinger",
 );
 
+ok(
+  "status page exported",
+  fs.existsSync(path.join(outDir, "status", "index.html")),
+);
+
+const historyPath = path.join(outDir, "data", "import-history.json");
+if (fs.existsSync(historyPath)) {
+  try {
+    const history = JSON.parse(fs.readFileSync(historyPath, "utf8"));
+    ok("import-history.json parses", Array.isArray(history) && history.length > 0);
+  } catch {
+    ok("import-history.json parses", false);
+  }
+} else {
+  ok("import-history.json exists", false, "run finalize_public_export");
+}
+
+const statusIndex = path.join(outDir, "status", "index.html");
+if (fs.existsSync(statusIndex)) {
+  const statusHtml = fs.readFileSync(statusIndex, "utf8");
+  ok(
+    "status page does not use misleading Updated badge label",
+    !statusHtml.includes("Updated:") || statusHtml.includes("Automation ran:"),
+  );
+}
+
 const repoRoot = path.resolve(webRoot, "..");
 const deployCheck = spawnSync(
   "python3",
@@ -125,7 +175,7 @@ ok(
 
 const pyTests = spawnSync(
   "python3",
-  ["-m", "pytest", "tests/test_deploy_safety.py", "tests/test_display_enrichment.py", "-q"],
+  ["-m", "pytest", "tests/test_deploy_safety.py", "tests/test_display_enrichment.py", "tests/test_import_tracking.py", "-q"],
   { cwd: repoRoot, encoding: "utf8" },
 );
 ok(

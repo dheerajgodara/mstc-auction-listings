@@ -7,22 +7,52 @@ declare global {
   }
 }
 
-function scriptUrl(): string {
-  return resolvePublicUrl("data/auctions-data.js");
+export interface ExportMeta {
+  automation_ran_at: string;
+  run_id: string;
+  count: number;
+  data_version: string;
 }
 
 function jsonUrl(): string {
   return resolvePublicUrl("data/auctions.json");
 }
 
-function loadViaScript(): Promise<AuctionsExport> {
+function scriptUrl(): string {
+  return resolvePublicUrl("data/auctions-data.js");
+}
+
+function metaUrl(): string {
+  return resolvePublicUrl("data/export-meta.json");
+}
+
+function withCacheBust(url: string, version: string): string {
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}v=${encodeURIComponent(version)}`;
+}
+
+/** Small manifest fetched with no-store so clients never reuse stale auction payloads. */
+export async function loadExportMeta(): Promise<ExportMeta | null> {
+  try {
+    const response = await fetch(metaUrl(), { cache: "no-store" });
+    if (!response.ok) return null;
+    return (await response.json()) as ExportMeta;
+  } catch {
+    return null;
+  }
+}
+
+function loadViaScript(version: string): Promise<AuctionsExport> {
   return new Promise((resolve, reject) => {
-    if (window.__AUCTIONS_EXPORT__) {
-      resolve(window.__AUCTIONS_EXPORT__);
+    const cacheKey = `auctions-data:${version}`;
+    const cached = window.__AUCTIONS_EXPORT__;
+    if (cached && (cached as AuctionsExport & { __cacheKey?: string }).__cacheKey === cacheKey) {
+      resolve(cached);
       return;
     }
+
     const script = document.createElement("script");
-    script.src = scriptUrl();
+    script.src = withCacheBust(scriptUrl(), version);
     script.async = true;
     script.onload = () => {
       if (window.__AUCTIONS_EXPORT__) {
@@ -36,19 +66,23 @@ function loadViaScript(): Promise<AuctionsExport> {
   });
 }
 
-async function loadViaJson(): Promise<AuctionsExport> {
-  const response = await fetch(jsonUrl(), { cache: "no-store" });
+async function loadViaJson(version: string): Promise<AuctionsExport> {
+  const response = await fetch(withCacheBust(jsonUrl(), version), { cache: "no-store" });
   if (!response.ok) {
     throw new Error(`auctions.json HTTP ${response.status}`);
   }
   return (await response.json()) as AuctionsExport;
 }
 
-/** Load auction export client-side (Hostinger-safe .js with JSON fallback). */
+/** Load auction export client-side; always bypasses stale CDN/browser caches. */
 export async function loadAuctionsExport(): Promise<AuctionsExport> {
+  const meta = await loadExportMeta();
+  const version =
+    meta?.data_version ?? meta?.run_id ?? meta?.automation_ran_at ?? String(Date.now());
+
   try {
-    return await loadViaScript();
+    return await loadViaJson(version);
   } catch {
-    return loadViaJson();
+    return loadViaScript(version);
   }
 }

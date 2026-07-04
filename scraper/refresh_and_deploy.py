@@ -289,6 +289,8 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
                 backup_dir=backup_dir,
                 require_sources=["mstc"] if config.eauction_warn_only else ["mstc", "eauction"],
                 warn_missing_sources=["gem_forward"],
+                automation_ran_at=datetime.now(IST),
+                run_id=run_id,
             )
             promoted = True
             payload["promotion"] = {
