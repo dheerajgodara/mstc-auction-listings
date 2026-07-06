@@ -18,14 +18,17 @@ import {
   matchesCityFilter,
   matchesClosingDateFilter,
   matchesDisplayStateFilter,
+  matchesDocumentsFilter,
   matchesImportedDateFilter,
   matchesLargeLotsOnly,
   matchesListedDateFilter,
   matchesMaterialCategoryFilter,
   matchesQuantityMinFilter,
   type QuantityMinFilter,
+  type DocumentsFilter,
   type SortOption,
 } from "@/lib/auction-filters";
+import { trackEvent } from "@/lib/analytics";
 import {
   DISPLAY_MATERIAL_CATEGORIES,
   enrichAuctionDisplay,
@@ -230,6 +233,7 @@ export function AuctionListings({
   const [materialFilter, setMaterialFilter] = useState("All");
   const [quantityMin, setQuantityMin] = useState<QuantityMinFilter>("any");
   const [largeLotsOnly, setLargeLotsOnly] = useState(false);
+  const [documentsFilter, setDocumentsFilter] = useState<DocumentsFilter>("any");
   const [sortBy, setSortBy] = useState<SortOption>("closing_asc");
   const [includeClosed, setIncludeClosed] = useState(true);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -243,6 +247,11 @@ export function AuctionListings({
     setWatchlist(loadWatchlist());
     setSavedSearches(loadSavedSearches());
   }, []);
+
+  useEffect(() => {
+    if (!debouncedQuery.trim()) return;
+    trackEvent("search", { search_term: debouncedQuery.trim().slice(0, 100) });
+  }, [debouncedQuery]);
 
   const totalCount = total ?? auctions.length;
 
@@ -288,6 +297,7 @@ export function AuctionListings({
       if (!matchesMaterialCategoryFilter(a, materialFilter)) return false;
       if (!matchesQuantityMinFilter(a, quantityMin)) return false;
       if (!matchesLargeLotsOnly(a, largeLotsOnly)) return false;
+      if (!matchesDocumentsFilter(a, documentsFilter)) return false;
       if (regionFilter !== "All" && a.region !== regionFilter) return false;
       if (lotType !== "All" && !a.lot_types?.includes(lotType)) return false;
       if (confidence !== "All" && a.parse_confidence !== confidence) return false;
@@ -339,6 +349,7 @@ export function AuctionListings({
     materialFilter,
     quantityMin,
     largeLotsOnly,
+    documentsFilter,
     regionFilter,
     lotType,
     confidence,
@@ -381,6 +392,7 @@ export function AuctionListings({
     materialFilter,
     quantityMin,
     largeLotsOnly,
+    documentsFilter,
     regionFilter,
     lotType,
     confidence,
@@ -437,6 +449,7 @@ export function AuctionListings({
   };
 
   const handleExportVisible = () => {
+    trackEvent("csv_export", { count: sorted.length });
     downloadCsv(
       `auctions-visible-${new Date().toISOString().slice(0, 10)}.csv`,
       auctionsToCsv(sorted),
@@ -604,6 +617,20 @@ export function AuctionListings({
         onRemove: () => setLargeLotsOnly(false),
       });
     }
+    if (documentsFilter === "documents") {
+      chips.push({
+        key: "documents",
+        label: "Has documents",
+        onRemove: () => setDocumentsFilter("any"),
+      });
+    }
+    if (documentsFilter === "photos") {
+      chips.push({
+        key: "photos",
+        label: "Has photos",
+        onRemove: () => setDocumentsFilter("any"),
+      });
+    }
     if (regionFilter !== "All") {
       chips.push({
         key: "region",
@@ -666,6 +693,7 @@ export function AuctionListings({
     materialFilter,
     quantityMin,
     largeLotsOnly,
+    documentsFilter,
     regionFilter,
     confidence,
     priceStatus,
@@ -728,7 +756,11 @@ export function AuctionListings({
             </div>
             <Select
               value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as SortOption)}
+              onChange={(e) => {
+                const next = e.target.value as SortOption;
+                setSortBy(next);
+                trackEvent("sort_change", { sort: next });
+              }}
               className="h-9 w-auto min-w-[140px] text-sm"
               aria-label="Sort auctions"
             >
@@ -737,6 +769,8 @@ export function AuctionListings({
               <option value="listed_desc">Recently listed</option>
               <option value="imported_desc">Recently imported</option>
               <option value="quantity_desc">Largest quantity</option>
+              <option value="lots_desc">Most lots</option>
+              <option value="documents_desc">Most documents</option>
               <option value="price_asc">Price low → high</option>
               <option value="price_desc">Price high → low</option>
               <option value="best_opportunities">Best opportunities</option>
@@ -1145,11 +1179,30 @@ export function AuctionListings({
                 <input
                   type="checkbox"
                   checked={largeLotsOnly}
-                  onChange={(e) => setLargeLotsOnly(e.target.checked)}
+                  onChange={(e) => {
+                    setLargeLotsOnly(e.target.checked);
+                    trackEvent("filter_change", { filter: "large_lots", value: e.target.checked });
+                  }}
                   className="h-4 w-4 rounded border-slate-300 text-cyan-600 focus:ring-cyan-400/50"
                 />
                 Large lots only (100+ MT)
               </label>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-slate-600">Documents / photos</span>
+                <Select
+                  value={documentsFilter}
+                  onChange={(e) => {
+                    const next = e.target.value as DocumentsFilter;
+                    setDocumentsFilter(next);
+                    trackEvent("filter_change", { filter: "documents", value: next });
+                  }}
+                  className="h-9 text-sm"
+                >
+                  <option value="any">Any</option>
+                  <option value="documents">Has documents</option>
+                  <option value="photos">Has photos</option>
+                </Select>
+              </div>
               {watchlist.size > 0 && (
                 <button
                   type="button"

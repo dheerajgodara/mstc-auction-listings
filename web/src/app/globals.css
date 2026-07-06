@@ -76,4 +76,20 @@
   .btn-pill-inactive {
     @apply border-white/70 bg-white/55 text-slate-600 hover:bg-white/80 hover:text-slate-900;
   }
+
+  .text-page-title {
+    @apply text-2xl font-bold tracking-tight text-slate-900;
+  }
+
+  .text-card-title {
+    @apply text-lg font-semibold leading-snug text-slate-900;
+  }
+
+  .text-metadata {
+    @apply text-xs text-slate-600;
+  }
+
+  .text-commercial {
+    @apply text-sm font-semibold tabular-nums;
+  }
 }

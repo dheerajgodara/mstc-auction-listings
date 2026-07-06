@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -118,6 +119,31 @@ def test_kg_to_mt_quantity_summary():
     )
     enriched = apply_display_enrichment(record)
     assert enriched.display_total_quantity_mt == 5.0
+
+
+def test_embedded_unit_in_quantity_field():
+    record = AuctionRecord(
+        id="dup",
+        auction_number="dup",
+        region="JPR",
+        office="JPR",
+        lots=[_lot("1", "Scrap", quantity="430353 KG", unit="KG")],
+    )
+    enriched = apply_display_enrichment(record)
+    assert enriched.display_total_quantity_mt == pytest.approx(430.353, rel=0.01)
+    if enriched.display_quantity_summary:
+        assert "KG KG" not in enriched.display_quantity_summary.upper()
+
+
+def test_location_from_office_address():
+    loc = py_normalize(
+        None,
+        None,
+        [],
+        office_address="Office at New Town, Kolkata, West Bengal",
+    )
+    assert loc[0] == "Kolkata"
+    assert loc[1] == "West Bengal"
 
 
 def test_gem_long_notice_truncated_title():

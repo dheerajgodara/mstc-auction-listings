@@ -1,5 +1,6 @@
 import type { AuctionRecord } from "@/types/auction";
 import { auctionTotalMt } from "@/lib/display-enrichment";
+import { countAuctionDocuments } from "@/lib/auction-documents";
 import { sortByOpportunity } from "@/lib/opportunity-score";
 
 const IST = "Asia/Kolkata";
@@ -16,7 +17,11 @@ export type SortOption =
   | "best_opportunities"
   | "listed_desc"
   | "imported_desc"
-  | "quantity_desc";
+  | "quantity_desc"
+  | "lots_desc"
+  | "documents_desc";
+
+export type DocumentsFilter = "any" | "documents" | "photos";
 
 export type QuantityMinFilter = "any" | "10" | "50" | "100" | "500" | "1000";
 
@@ -366,6 +371,17 @@ export function matchesLargeLotsOnly(auction: AuctionRecord, enabled: boolean): 
   return total != null && total >= 100;
 }
 
+export function matchesDocumentsFilter(
+  auction: AuctionRecord,
+  filter: DocumentsFilter,
+): boolean {
+  if (filter === "any") return true;
+  const counts = countAuctionDocuments(auction);
+  if (filter === "documents") return counts.documents > 0 && counts.hasReady;
+  if (filter === "photos") return counts.photos > 0;
+  return true;
+}
+
 export function isActiveOrUpcoming(
   closing: string | null | undefined,
 ): boolean {
@@ -490,6 +506,16 @@ export function sortAuctions(
         if (qa == null) return 1;
         if (qb == null) return -1;
         return qb - qa || parseAuctionMs(a.closing) - parseAuctionMs(b.closing);
+      }
+      case "lots_desc": {
+        const la = a.lots?.length ?? 0;
+        const lb = b.lots?.length ?? 0;
+        return lb - la || parseAuctionMs(a.closing) - parseAuctionMs(b.closing);
+      }
+      case "documents_desc": {
+        const da = countAuctionDocuments(a).documents + countAuctionDocuments(a).photos;
+        const db = countAuctionDocuments(b).documents + countAuctionDocuments(b).photos;
+        return db - da || parseAuctionMs(a.closing) - parseAuctionMs(b.closing);
       }
       default:
         return 0;

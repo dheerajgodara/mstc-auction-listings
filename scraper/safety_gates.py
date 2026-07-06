@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from pydantic import TypeAdapter, ValidationError
 
 from scraper.batch_manifest import BATCH_STATUS_FAILED, BatchManifest
 from scraper.qa_summary import run_strict_qa
+
+IST = ZoneInfo("Asia/Kolkata")
 
 _auctions_export_adapter = None
 
@@ -35,6 +39,9 @@ class SafetyGateConfig:
     allow_failed_batches: bool = False
     max_html_fail_rate_pct: float = 5.0
     max_pdf_fail_rate_pct: float = 5.0
+    stale_warn_hours: float = 48.0
+    stale_block_days: float = 7.0
+    require_import_metadata: bool = True
     production_json: Path = Path("web/public/data/auctions.json")
 
 
@@ -118,6 +125,48 @@ def _check_single_source_regression(
         )
 
 
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(IST)
+    except (TypeError, ValueError):
+        return None
+
+
+def _check_import_metadata(data: dict, errors: list[str]) -> None:
+    if not data.get("automation_ran_at"):
+        errors.append("candidate export missing automation_ran_at")
+    if not data.get("run_id"):
+        errors.append("candidate export missing run_id")
+    auctions = data.get("auctions") or []
+    missing = sum(1 for a in auctions if not (a.get("imported_at") or a.get("first_seen_at")))
+    if missing:
+        errors.append(f"{missing} auctions missing imported_at/first_seen_at")
+
+
+def _check_stale_automation(
+    data: dict,
+    *,
+    warn_hours: float,
+    block_days: float,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    ran_at = _parse_iso_datetime(data.get("automation_ran_at"))
+    if ran_at is None:
+        return
+    age_hours = (datetime.now(IST) - ran_at).total_seconds() / 3600.0
+    if age_hours > block_days * 24:
+        errors.append(
+            f"automation_ran_at is older than {block_days:.0f} days ({age_hours:.1f}h ago)"
+        )
+    elif age_hours > warn_hours:
+        warnings.append(
+            f"automation_ran_at is older than {warn_hours:.0f} hours ({age_hours:.1f}h ago)"
+        )
+
+
 def run_safety_gates(
     candidate: Path,
     *,
@@ -153,6 +202,17 @@ def run_safety_gates(
         _export_adapter().validate_python(data)
     except (json.JSONDecodeError, ValidationError) as exc:
         errors.append(f"JSON schema validation failed: {exc}")
+        data = {}
+
+    if data and config.require_import_metadata:
+        _check_import_metadata(data, errors)
+        _check_stale_automation(
+            data,
+            warn_hours=config.stale_warn_hours,
+            block_days=config.stale_block_days,
+            errors=errors,
+            warnings=warnings,
+        )
 
     prod_count, prod_by_source = _load_counts(config.production_json)
     cand_count = int(qa.get("total_auctions", 0))

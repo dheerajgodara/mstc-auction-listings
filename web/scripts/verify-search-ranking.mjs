@@ -136,7 +136,30 @@ function scoreAuctionSearch(a, rawQuery) {
   if (tokens.some((t) => t === query || t.startsWith(query))) {
     return SEARCH_TIER.DESCRIPTION;
   }
+  const synBlob = `${sellerLoc} ${norm(a.search_text)} ${norm(a.display_title)} ${norm(a.item_summary)}`;
+  if (synonymMatch(synBlob, query)) return SEARCH_TIER.DESCRIPTION;
   return null;
+}
+
+const SYNONYM_GROUPS = [
+  ["aluminium", "aluminum", "acsr", "al conductor"],
+  ["tower", "transmission", "conductor"],
+  ["scrap", "ferrous", "ms scrap"],
+  ["vehicle", "car", "truck"],
+  ["timber", "wood", "teak"],
+  ["coal", "rom"],
+  ["machinery", "machine"],
+];
+
+function synonymMatch(haystack, query) {
+  const h = norm(haystack);
+  const q = norm(query);
+  for (const group of SYNONYM_GROUPS) {
+    const qHit = group.some((t) => q.includes(t) || t.includes(q));
+    if (!qHit) continue;
+    if (group.some((t) => h.includes(t))) return true;
+  }
+  return false;
 }
 
 function rankAuctionsBySearch(auctions, query) {
@@ -353,6 +376,11 @@ function runTests() {
   assert(
     `588051 id search (got ${moose[0]?.id})`,
     moose[0]?.id === "588051",
+  );
+  const aluminium = rankAuctionsBySearch(corpus, "aluminium");
+  assert(
+    `aluminium synonym finds 584985 (got ${aluminium[0]?.id})`,
+    aluminium[0]?.id === "584985",
   );
 
   return errors;

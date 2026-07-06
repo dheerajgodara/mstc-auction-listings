@@ -2,13 +2,19 @@
 
 import { useEffect, useState } from "react";
 import { AuctionListings } from "@/components/auction-listings";
+import { SiteDisclaimer } from "@/components/site-disclaimer";
 import { enrichAuctions } from "@/lib/display-enrichment";
 import { loadAuctionsExport } from "@/lib/load-auctions";
+import { trackPageView } from "@/lib/analytics";
 import type { AuctionsExport } from "@/types/auction";
 
 export function AuctionListingsApp() {
   const [data, setData] = useState<AuctionsExport | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    trackPageView("/auctions/");
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -49,11 +55,16 @@ export function AuctionListingsApp() {
   }
 
   return (
-    <AuctionListings
-      auctions={data.auctions}
-      generatedAt={data.export_generated_at ?? data.generated_at}
-      automationRanAt={data.automation_ran_at ?? undefined}
-      total={data.count}
-    />
+    <>
+      <AuctionListings
+        auctions={data.auctions}
+        generatedAt={data.export_generated_at ?? data.generated_at}
+        automationRanAt={data.automation_ran_at ?? undefined}
+        total={data.count}
+      />
+      <div className="mx-auto max-w-6xl px-4 pb-8">
+        <SiteDisclaimer />
+      </div>
+    </>
   );
 }

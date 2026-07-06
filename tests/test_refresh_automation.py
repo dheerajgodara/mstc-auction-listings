@@ -27,6 +27,7 @@ def _record_dict(
     source: str = "mstc",
     closing: str = "2026-07-10T10:00:00+05:30",
 ) -> dict:
+    now = datetime.now(IST).isoformat()
     return {
         "id": rid,
         "source": source,
@@ -35,13 +36,17 @@ def _record_dict(
         "region": "JPR",
         "office": "JPR",
         "closing": closing,
+        "imported_at": now,
         "lots": [{"lot_id": "1", "item_title": "Item"}],
     }
 
 
 def _write_export(path: Path, records: list[dict], stats: dict | None = None) -> None:
+    now = datetime.now(IST).isoformat()
     payload = {
-        "generated_at": datetime.now(IST).isoformat(),
+        "generated_at": now,
+        "automation_ran_at": now,
+        "run_id": "test_run_IST",
         "count": len(records),
         "auctions": records,
         "stats": stats or {"html_failures": 0, "pdf_failures": 0},

@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, Clock } from "lucide-react";
 import { Chip } from "@/components/ui/primitives";
+import { SiteDisclaimer } from "@/components/site-disclaimer";
+import { trackEvent, trackPageView } from "@/lib/analytics";
 import { loadAuctionsExport } from "@/lib/load-auctions";
 import { loadImportHistory } from "@/lib/load-import-history";
 import { formatDateTime, resolvePublicUrl } from "@/lib/utils";
@@ -61,6 +63,11 @@ export function StatusPageApp() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    trackPageView("/auctions/status/");
+    trackEvent("status_page_view");
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     Promise.all([loadAuctionsExport(), loadImportHistory()])
       .then(([data, hist]) => {
@@ -101,10 +108,28 @@ export function StatusPageApp() {
   const lots = totalLots(exportData);
   const sources = exportData.sources ?? {};
   const importTracking = (exportData.stats?.import_tracking ?? {}) as Record<string, number>;
-  const documents = (exportData.stats?.documents ?? {}) as Record<string, number>;
+  const documentsStats = (exportData.stats?.documents ?? {}) as Record<string, unknown>;
+  const failedByReason = (documentsStats.failed_by_reason ?? {}) as Record<string, number>;
+  const failedByType = (documentsStats.failed_by_doc_type ?? {}) as Record<string, number>;
+  const documentsFailed =
+    typeof documentsStats.failed === "number" ? documentsStats.failed : 0;
   const dailyRows = [...history].sort(
     (a, b) => (b.automation_ran_at || "").localeCompare(a.automation_ran_at || ""),
   );
+  const latestDaily = dailyRows[0];
+  const docFailureRows = [
+    ...Object.entries(failedByReason).map(([reason, count]) => [reason, count, "—"]),
+    ...Object.entries(failedByType).map(([type, count]) => ["—", count, type]),
+  ];
+
+  const automationMs = exportData.automation_ran_at
+    ? Date.parse(exportData.automation_ran_at)
+    : NaN;
+  const staleHours =
+    !Number.isNaN(automationMs)
+      ? (Date.now() - automationMs) / (1000 * 60 * 60)
+      : null;
+  const isStale = staleHours != null && staleHours > 36;
 
   const sourceRows = Object.entries(sources).map(([key, meta]) => [
     SOURCE_LABELS[key] ?? key,
@@ -152,6 +177,44 @@ export function StatusPageApp() {
           )}
         </div>
       </header>
+
+      {isStale && (
+        <section className="rounded-xl border border-rose-200/80 bg-rose-50/80 p-4 text-sm text-rose-950">
+          <p className="font-semibold">Data freshness warning</p>
+          <p className="mt-1">
+            Automation last ran {staleHours!.toFixed(0)} hours ago (threshold 36h). Verify the
+            refresh pipeline or check Hostinger deployment.
+          </p>
+        </section>
+      )}
+
+      {latestDaily && (
+        <section className="space-y-2">
+          <h2 className="text-lg font-semibold text-slate-900">Latest run / deploy</h2>
+          <StatusTable
+            headers={["Date", "Status", "Total", "New", "Removed", "Lots", "Automation ran"]}
+            rows={[
+              [
+                latestDaily.date,
+                latestDaily.status,
+                latestDaily.total_auctions,
+                latestDaily.new_auctions_first_seen,
+                latestDaily.removed_auctions,
+                latestDaily.total_lots,
+                latestDaily.automation_ran_at
+                  ? formatDateTime(latestDaily.automation_ran_at)
+                  : "—",
+              ],
+            ]}
+          />
+          {importTracking.new_auctions != null && (
+            <p className="text-sm text-slate-600">
+              Import tracking: {importTracking.new_auctions} new,{" "}
+              {importTracking.removed_auctions ?? 0} removed in last tracked run.
+            </p>
+          )}
+        </section>
+      )}
 
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-xl border border-slate-200/80 bg-white/80 p-4">
@@ -207,6 +270,16 @@ export function StatusPageApp() {
         />
       </section>
 
+      {docFailureRows.length > 0 && (
+        <section className="space-y-2">
+          <h2 className="text-lg font-semibold text-slate-900">Document / PDF failures</h2>
+          <StatusTable
+            headers={["Reason", "Count", "Doc type"]}
+            rows={docFailureRows}
+          />
+        </section>
+      )}
+
       <section className="space-y-2 rounded-xl border border-amber-200/70 bg-amber-50/50 p-4 text-sm text-amber-950">
         <h2 className="font-semibold">Notes</h2>
         <ul className="list-disc space-y-1 pl-5">
@@ -214,8 +287,8 @@ export function StatusPageApp() {
             eAuction listings reflect the public ByDate visible window only — counts may be lower
             than the full catalogue.
           </li>
-          {documents.failed ? (
-            <li>Document downloads failed in last run: {documents.failed} (see batch stats).</li>
+          {documentsFailed ? (
+            <li>Document downloads failed in last run: {documentsFailed} (see batch stats).</li>
           ) : null}
           {importTracking.new_auctions != null ? (
             <li>
@@ -230,6 +303,8 @@ export function StatusPageApp() {
           </li>
         </ul>
       </section>
+
+      <SiteDisclaimer />
     </div>
   );
 }

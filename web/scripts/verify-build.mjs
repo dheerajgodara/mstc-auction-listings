@@ -43,6 +43,15 @@ if (fs.existsSync(indexPath)) {
     warn("index.html large", `${indexBytes} bytes (warn > ${INDEX_WARN_BYTES})`);
   }
   const indexHtml = fs.readFileSync(indexPath, "utf8");
+  ok("robots.txt exists", fs.existsSync(path.join(outDir, "robots.txt")));
+  ok(
+    "index.html has canonical link",
+    indexHtml.includes('rel="canonical"') || indexHtml.includes("canonical"),
+  );
+  ok(
+    "index.html has Open Graph tags",
+    indexHtml.includes("og:title") || indexHtml.includes('property="og:title"'),
+  );
   const embeddedAuctions = indexHtml.includes('"auctions":[') || indexHtml.includes('"auctions" : [');
   ok(
     "index.html does not embed full auctions JSON",
@@ -105,6 +114,11 @@ if (fs.existsSync(jsonPath)) {
   );
   const a582972 = (data.auctions || []).find((a) => String(a.id) === "582972");
   ok("auction 582972 has imported_at", Boolean(a582972?.imported_at || a582972?.first_seen_at));
+  const regressionIds = ["582972", "584985", "588051"];
+  for (const rid of regressionIds) {
+    const found = (data.auctions || []).some((a) => String(a.id) === rid);
+    ok(`regression auction ${rid} present`, found || data.auctions?.length === 0, found ? "" : "missing from export");
+  }
   const badPdf = (data.auctions || []).filter(
     (a) => a.pdf_url && a.pdf_url.startsWith("/pdfs/"),
   );
@@ -131,6 +145,15 @@ ok(
   fs.existsSync(path.join(outDir, ".htaccess")),
   "optional on Hostinger",
 );
+
+const htaccessPath = path.join(outDir, ".htaccess");
+if (fs.existsSync(htaccessPath)) {
+  const htaccess = fs.readFileSync(htaccessPath, "utf8");
+  ok(
+    "htaccess disables cache for auction data files",
+    htaccess.includes("no-store") && htaccess.includes("auctions-data"),
+  );
+}
 
 ok(
   "status page exported",

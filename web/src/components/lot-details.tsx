@@ -14,6 +14,7 @@ import {
   matchesLotSearch,
 } from "@/lib/format";
 import { formatDateTime } from "@/lib/utils";
+import { trackEvent } from "@/lib/analytics";
 import type { LotRecord } from "@/types/auction";
 import { LotDocumentsPanel } from "@/components/lot-documents";
 
@@ -201,11 +202,13 @@ export function LotDetails({ lots }: { lots: LotRecord[] }) {
 
   const toggleOpen = () => {
     setOpen((v) => {
+      const next = !v;
+      if (next) trackEvent("lot_expand", { lot_count: lots.length });
       if (v) {
         setShowAll(false);
         setSearch("");
       }
-      return !v;
+      return next;
     });
   };
 

@@ -73,6 +73,9 @@ _CITY_ALIASES: dict[str, tuple[str, str | None]] = {
     "rajajinagar": ("Bengaluru", "Karnataka"),
     "bhandara": ("Bhandara", "Maharashtra"),
     "gadegaon": ("Gadegaon", "Maharashtra"),
+    "kolkata": ("Kolkata", "West Bengal"),
+    "new town": ("Kolkata", "West Bengal"),
+    "howrah": ("Howrah", "West Bengal"),
 }
 
 _MATERIAL_PATTERNS: list[tuple[re.Pattern[str], DisplayMaterialCategory, str]] = [
@@ -109,14 +112,24 @@ def _title_case_city(name: str) -> str:
 def _parse_quantity_mt(quantity: str | None, unit: str | None) -> float | None:
     if not quantity:
         return None
-    m = _QTY_NUM_RE.search(quantity.replace(",", ""))
-    if not m:
-        return None
-    try:
-        value = float(m.group(1))
-    except ValueError:
-        return None
-    u = (unit or "").strip().upper()
+    q = quantity.replace(",", "").strip()
+    embedded = re.search(
+        r"^([\d.]+)\s*(MT|MTS|TON|TONS|KG|KGS|LOT|LOTS)\b",
+        q,
+        re.I,
+    )
+    if embedded:
+        value = float(embedded.group(1))
+        u = embedded.group(2).upper()
+    else:
+        m = _QTY_NUM_RE.search(q)
+        if not m:
+            return None
+        try:
+            value = float(m.group(1))
+        except ValueError:
+            return None
+        u = (unit or "").strip().upper()
     if u in {"KG", "KGS"}:
         return value / 1000.0
     if u in {"MT", "MTS", "TON", "TONS"}:
@@ -233,6 +246,9 @@ def _normalize_location(
     raw: str | None,
     state: str | None,
     lots: list[LotRecord],
+    *,
+    office_address: str | None = None,
+    seller: str | None = None,
 ) -> tuple[str | None, str | None, str | None, DisplayLocationConfidence]:
     raw_clean = _clean_text(raw) or _clean_text(lots[0].location if lots else None)
     state_clean = _clean_text(state) or (lots[0].lot_state if lots else None)
@@ -243,8 +259,11 @@ def _normalize_location(
     city: str | None = None
     inferred_state: str | None = state_clean
 
+    extra_blob = " ".join(filter(None, [office_address, seller])).lower()
+    search_blob = f"{lower} {extra_blob}"
+
     for token, (city_name, alias_state) in _CITY_ALIASES.items():
-        if token in lower:
+        if token in search_blob:
             city = city_name
             inferred_state = inferred_state or alias_state
             break
@@ -354,14 +373,47 @@ def normalize_location(
     raw: str | None,
     state: str | None,
     lots: list[LotRecord],
+    *,
+    office_address: str | None = None,
+    seller: str | None = None,
 ) -> tuple[str | None, str | None, str | None, DisplayLocationConfidence]:
-    return _normalize_location(raw, state, lots)
+    return _normalize_location(
+        raw, state, lots, office_address=office_address, seller=seller
+    )
+
+
+def _build_buyer_summary(
+    record: AuctionRecord,
+    qty_summary: str | None,
+    mat_label: str,
+    location_line: str | None,
+) -> str | None:
+    bits: list[str] = []
+    if record.price_summary:
+        bits.append(record.price_summary)
+    elif record.min_start_price is not None and record.min_start_price > 0:
+        bits.append(f"Floor ₹{int(record.min_start_price):,}")
+    if record.emd_summary:
+        bits.append(record.emd_summary.split(";")[0].strip()[:60])
+    if qty_summary:
+        bits.append(qty_summary)
+    elif mat_label:
+        bits.append(mat_label)
+    if location_line:
+        bits.append(location_line)
+    return " · ".join(bits) if bits else None
 
 
 def _compute_display_fields(record: AuctionRecord) -> dict[str, Any]:
     lots = list(record.lots)
     raw_location = _clean_text(record.location) or _clean_text(lots[0].location if lots else None) or None
-    city, state, raw_norm, loc_conf = _normalize_location(record.location, record.state, lots)
+    city, state, raw_norm, loc_conf = _normalize_location(
+        record.location,
+        record.state,
+        lots,
+        office_address=record.office_address,
+        seller=record.seller,
+    )
 
     blob = " ".join(
         filter(
@@ -388,7 +440,7 @@ def _compute_display_fields(record: AuctionRecord) -> dict[str, Any]:
         location_line = state
 
     buyer_bits = [b for b in [qty_summary, mat_label, location_line] if b]
-    buyer_summary = " · ".join(buyer_bits) if buyer_bits else None
+    buyer_summary = _build_buyer_summary(record, qty_summary, mat_label, location_line)
 
     return {
         "display_title": display_title,

@@ -56,6 +56,16 @@ def adapt_gem_forward_auction(auction: GemForwardAuction) -> AuctionRecord:
     min_price = min(prices) if prices else auction.min_opening_price_inr
     max_price = max(prices) if prices else auction.min_opening_price_inr
 
+    item_summary = auction.auction_brief or auction.title
+    if lots and len(lots) == 1 and lots[0].item_title:
+        short = lots[0].item_title.strip()
+        if short and len(short) <= 80:
+            item_summary = short
+
+    warnings: list[str] | None = None
+    if auction.emd_amount_inr is None and auction.emd_required is not False:
+        warnings = ["GeM: verify EMD and rules on the official GeM listing"]
+
     return AuctionRecord(
         id=f"gem_forward:{auction.auction_id}",
         source="gem_forward",
@@ -80,7 +90,7 @@ def adapt_gem_forward_auction(auction: GemForwardAuction) -> AuctionRecord:
         detail_url=auction.detail_url,
         document_urls=document_urls,
         lots=lots,
-        item_summary=auction.auction_brief or auction.title,
+        item_summary=item_summary,
         min_start_price=min_price,
         max_start_price=max_price,
         price_parse_status="numeric" if min_price is not None else "missing",
@@ -100,4 +110,5 @@ def adapt_gem_forward_auction(auction: GemForwardAuction) -> AuctionRecord:
         parse_confidence="medium" if lots else "low",
         status=ExtractionStatus.COMPLETE if lots else ExtractionStatus.PARTIAL,
         total_lots=len(lots),
+        warnings=warnings,
     )

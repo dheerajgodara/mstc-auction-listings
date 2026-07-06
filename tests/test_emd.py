@@ -14,7 +14,17 @@ NOT_REQUIRED_HTML = """
 """
 
 
-def test_html_not_required_emd_not_missing():
+
+def test_format_inr_indian_grouping():
+    from scraper.emd import format_inr_amount, format_indian_number
+
+    assert format_indian_number(17200) == "17,200"
+    assert format_indian_number(100000) == "1,00,000"
+    assert format_indian_number(500100000) == "50,01,00,000"
+    assert format_inr_amount(500100000) == "₹50,01,00,000"
+    assert format_inr_amount(4580000) == "₹45,80,000"
+    assert format_inr_amount(1234.56, decimals=2) == "₹1,234.56"
+
     data = parse_html_detail(NOT_REQUIRED_HTML)
     assert data["pre_bid_emd_required"] is False
     assert data["emd_parse_status"] == "not_required"

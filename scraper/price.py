@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Literal, Optional
 
+from scraper.emd import format_inr_amount
+
 PriceParseStatus = Literal[
     "numeric",
     "range",
@@ -121,9 +123,9 @@ def resolve_auction_price(
         if lo == hi:
             if lo <= 1:
                 return "numeric", "Floor ₹1 (open bidding)"
-            return "numeric", f"Floor ₹{int(lo):,}" if lo == int(lo) else f"Floor ₹{lo:,.2f}"
-        lo_s = f"₹{int(lo):,}" if lo == int(lo) else f"₹{lo:,.2f}"
-        hi_s = f"₹{int(hi):,}" if hi == int(hi) else f"₹{hi:,.2f}"
+            return "numeric", f"Floor {format_inr_amount(lo)}" if lo == int(lo) else f"Floor {format_inr_amount(lo, decimals=2)}"
+        lo_s = format_inr_amount(lo) if lo == int(lo) else format_inr_amount(lo, decimals=2)
+        hi_s = format_inr_amount(hi) if hi == int(hi) else format_inr_amount(hi, decimals=2)
         return "range", f"Floor {lo_s}–{hi_s}"
 
     blob = collect_price_text_blobs(lots, html_data=html_data)

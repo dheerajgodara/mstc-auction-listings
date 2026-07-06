@@ -86,6 +86,14 @@ jobs:
             --break-stale-lock \
             $DEPLOY_FLAG
 
+      - name: Post-deploy freshness check (warn-only)
+        if: success()
+        env:
+          SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
+        run: |
+          BASE="${SITE_BASE_URL:-https://lightcyan-camel-979846.hostingersite.com/auctions}"
+          PYTHONPATH=. python -m scraper.freshness_check --base-url "$BASE" --warn-only || true
+
       - name: Upload refresh reports
         if: always()
         uses: actions/upload-artifact@v4

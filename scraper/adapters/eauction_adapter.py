@@ -1,9 +1,43 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from scraper.category_map import normalize_eauction_category
 from scraper.models import AuctionRecord, ExtractionStatus, LotRecord
+
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def _listed_fields_from_publish(publish_dt: Any) -> dict[str, Any]:
+    """Return listed_at / listed_date / listed_at_source / listed_at_label from publish date.
+
+    Accepts a datetime (from parser) or an ISO string (from re-loaded JSON).
+    """
+    parsed: datetime | None = None
+    if isinstance(publish_dt, datetime):
+        parsed = publish_dt
+    elif isinstance(publish_dt, str) and publish_dt.strip():
+        try:
+            parsed = datetime.fromisoformat(publish_dt.strip())
+        except ValueError:
+            parsed = None
+    if parsed is None:
+        return {
+            "listed_at": None,
+            "listed_date": None,
+            "listed_at_source": "missing",
+            "listed_at_label": None,
+        }
+    ist_dt = parsed.astimezone(IST) if parsed.tzinfo else parsed.replace(tzinfo=IST)
+    listed_ymd = ist_dt.strftime("%Y-%m-%d")
+    return {
+        "listed_at": ist_dt,
+        "listed_date": listed_ymd,
+        "listed_at_source": "published_date",
+        "listed_at_label": ist_dt.strftime("Listed %-d %b %Y"),
+    }
 
 
 def _format_organisation(org: str | None) -> str | None:
@@ -57,6 +91,8 @@ def adapt_eauction_record(raw: dict[str, Any]) -> AuctionRecord:
     has_detail = bool(organisation or product_category or document_urls)
     confidence = "medium" if has_detail else "low"
 
+    listed_fields = _listed_fields_from_publish(raw.get("publish_date"))
+
     return AuctionRecord(
         id=f"eauction:{auction_id}",
         source="eauction",
@@ -71,6 +107,10 @@ def adapt_eauction_record(raw: dict[str, Any]) -> AuctionRecord:
         location=raw.get("location"),
         opening=raw.get("publish_date"),
         closing=raw.get("closing_date"),
+        listed_at=listed_fields["listed_at"],
+        listed_date=listed_fields["listed_date"],
+        listed_at_source=listed_fields["listed_at_source"],
+        listed_at_label=listed_fields["listed_at_label"],
         pre_bid_emd_amount=emd,
         emd_parse_status="auction_wise" if emd is not None else "unknown",
         detail_url=detail_url,
@@ -96,4 +136,7 @@ def adapt_eauction_record(raw: dict[str, Any]) -> AuctionRecord:
         parse_confidence=confidence,
         status=ExtractionStatus.COMPLETE if has_detail else ExtractionStatus.PARTIAL,
         total_lots=1,
+        warnings=[
+            "eAuction listings reflect the public ByDate visible window only — verify on eAuction.gov.in",
+        ],
     )

@@ -36,6 +36,8 @@ import {
   enrichAuctionDisplay,
   materialCategoryLabel,
 } from "@/lib/display-enrichment";
+import { countAuctionDocuments } from "@/lib/auction-documents";
+import { trackEvent } from "@/lib/analytics";
 import { valuationBadgeLabel } from "@/lib/valuation";
 import type { AuctionRecord, AuctionSource } from "@/types/auction";
 
@@ -181,6 +183,8 @@ export function AuctionCard({
   const urgency = getClosingUrgency(auction.closing);
   const categoryLabel = formatCategory(auction.asset_category);
   const valuationLabel = valuationBadgeLabel(auction);
+  const docCounts = countAuctionDocuments(auction);
+  const lowLocationConfidence = auction.display_location_confidence === "low";
 
   return (
     <FadeIn delay={Math.min(index * 0.02, 0.25)}>
@@ -196,7 +200,10 @@ export function AuctionCard({
                 {onToggleWatch && (
                   <button
                     type="button"
-                    onClick={() => onToggleWatch(auction.id)}
+                    onClick={() => {
+                      onToggleWatch(auction.id);
+                      trackEvent("watchlist_toggle", { auction_id: auction.id, watched: !watched });
+                    }}
                     className="rounded-full border border-amber-200/80 bg-amber-50/90 p-1 text-amber-700 hover:bg-amber-100"
                     aria-label={watched ? "Remove from watchlist" : "Save to watchlist"}
                   >
@@ -254,8 +261,13 @@ export function AuctionCard({
                 {cardSummary}
               </h2>
               {auction.display_quantity_summary && (
-                <p className="text-sm font-medium text-slate-700">
+                <p className="text-commercial text-sm font-medium text-slate-700">
                   {auction.display_quantity_summary}
+                </p>
+              )}
+              {auction.display_buyer_summary && (
+                <p className="text-metadata text-xs text-slate-600">
+                  {auction.display_buyer_summary}
                 </p>
               )}
               {auction.display_key_lots && auction.display_key_lots.length > 1 && (
@@ -286,7 +298,14 @@ export function AuctionCard({
             {cityState && (
               <div className="flex items-start gap-2 sm:col-span-2">
                 <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-cyan-600/70" />
-                <span className="font-medium text-slate-800">{cityState}</span>
+                <span className="font-medium text-slate-800">
+                  {cityState}
+                  {lowLocationConfidence && (
+                    <span className="ml-1 text-xs font-normal text-amber-700">
+                      (location uncertain)
+                    </span>
+                  )}
+                </span>
               </div>
             )}
             {rawSite && (
@@ -355,6 +374,16 @@ export function AuctionCard({
                 Taxes: {auction.tax_summary}
               </div>
             )}
+            {(docCounts.documents > 0 || docCounts.photos > 0) && (
+              <div className="flex items-center gap-2 sm:col-span-2">
+                <FileText className="h-4 w-4 shrink-0 text-slate-500" />
+                <span className="text-xs text-slate-600">
+                  {docCounts.documents > 0 && `${docCounts.documents} doc${docCounts.documents === 1 ? "" : "s"}`}
+                  {docCounts.documents > 0 && docCounts.photos > 0 && " · "}
+                  {docCounts.photos > 0 && `${docCounts.photos} photo${docCounts.photos === 1 ? "" : "s"}`}
+                </span>
+              </div>
+            )}
           </div>
 
           {pdfHref && (
@@ -363,6 +392,7 @@ export function AuctionCard({
               target="_blank"
               rel="noopener noreferrer"
               className="btn-glass-primary"
+              onClick={() => trackEvent("pdf_open", { auction_id: auction.id })}
             >
               <FileText className="h-4 w-4" />
               Open PDF
@@ -375,6 +405,7 @@ export function AuctionCard({
               target="_blank"
               rel="noopener noreferrer"
               className="btn-glass inline-flex items-center gap-2"
+              onClick={() => trackEvent("source_open", { auction_id: auction.id, source: auction.source ?? "mstc" })}
             >
               <ExternalLink className="h-4 w-4" />
               {detailLinkLabel(auction.source)}

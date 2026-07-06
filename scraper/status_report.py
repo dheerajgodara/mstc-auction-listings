@@ -104,6 +104,24 @@ def build_status_report(
         if http.data_js_status not in (None, 200):
             warnings.append(f"live auctions-data.js HTTP {http.data_js_status}")
 
+        if SITE_BASE_URL:
+            from scraper.freshness_check import check_freshness
+
+            freshness = check_freshness(
+                base_url=SITE_BASE_URL,
+                warn_only=True,
+            )
+            report["freshness"] = {
+                "passed": freshness.passed,
+                "errors": freshness.errors,
+                "warnings": freshness.warnings,
+                "automation_ran_at": freshness.automation_ran_at,
+                "count": freshness.count,
+                "age_hours": freshness.age_hours,
+            }
+            warnings.extend(freshness.warnings)
+            warnings.extend(freshness.errors)
+
     report["warnings"] = warnings
     return report
 
@@ -149,6 +167,13 @@ def print_status_report(report: dict) -> None:
         print(f"Live auctions-data.js HTTP: {live.get('data_js_status')}")
         if live.get("live_count_hint") is not None:
             print(f"Live count hint: {live.get('live_count_hint')}")
+
+    freshness = report.get("freshness")
+    if freshness:
+        print(
+            f"Freshness: passed={freshness.get('passed')} "
+            f"age_hours={freshness.get('age_hours')} count={freshness.get('count')}"
+        )
 
     warnings = report.get("warnings") or []
     if warnings:

@@ -1,5 +1,13 @@
 import type { LotRecord } from "@/types/auction";
 
+/** Plain number with Indian grouping (no currency symbol). */
+export function formatIndianNumber(amount: number, fractionDigits = 0): string {
+  return new Intl.NumberFormat("en-IN", {
+    maximumFractionDigits: fractionDigits,
+    minimumFractionDigits: fractionDigits,
+  }).format(amount);
+}
+
 /** INR with Indian grouping; returns em dash when missing (lot detail context). */
 export function formatInrOrDash(amount: number | null | undefined): string {
   if (amount == null) return "—";
@@ -93,12 +101,12 @@ function synthesizeLotSectionText(lot: LotRecord, key: LotSectionKey): string | 
         lines.push(`Start Price - ${lot.start_price_text}`);
       }
     } else if (lot.start_price != null) {
-      lines.push(`Start Price in INR - ${Math.trunc(lot.start_price)}`);
+      lines.push(`Start Price in INR - ${formatIndianNumber(Math.trunc(lot.start_price))}`);
     } else if (lot.start_price_inr != null) {
-      lines.push(`Start Price in INR - ${Math.trunc(lot.start_price_inr)}`);
+      lines.push(`Start Price in INR - ${formatIndianNumber(Math.trunc(lot.start_price_inr))}`);
     }
     if (lot.bid_increment != null) {
-      lines.push(`Bid Increment in INR - ${lot.bid_increment}`);
+      lines.push(`Bid Increment in INR - ${formatIndianNumber(lot.bid_increment)}`);
     }
     if (lot.post_bid_emd_percent != null) {
       lines.push(`Post Bid EMD % - ${lot.post_bid_emd_percent}`);
@@ -106,7 +114,7 @@ function synthesizeLotSectionText(lot: LotRecord, key: LotSectionKey): string | 
     if (lot.tcs) lines.push(`TCS (%) - ${lot.tcs}`);
     if (lot.pre_bid_emd_text) lines.push(`Pre-Bid EMD Amount - ${lot.pre_bid_emd_text}`);
     else if (lot.pre_bid_emd_amount != null) {
-      lines.push(`Pre-Bid EMD Amount - ${lot.pre_bid_emd_amount}`);
+      lines.push(`Pre-Bid EMD Amount - ${formatIndianNumber(lot.pre_bid_emd_amount)}`);
     }
     return lines.length ? lines.join("\n") : null;
   }

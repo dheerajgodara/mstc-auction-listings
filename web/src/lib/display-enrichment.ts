@@ -63,6 +63,9 @@ const CITY_ALIASES: Record<string, { city: string; state?: string }> = {
   rajajinagar: { city: "Bengaluru", state: "Karnataka" },
   bhandara: { city: "Bhandara", state: "Maharashtra" },
   gadegaon: { city: "Gadegaon", state: "Maharashtra" },
+  kolkata: { city: "Kolkata", state: "West Bengal" },
+  "new town": { city: "Kolkata", state: "West Bengal" },
+  howrah: { city: "Howrah", state: "West Bengal" },
 };
 
 const INDIAN_STATES = new Set([
@@ -114,11 +117,20 @@ function titleCaseCity(name: string): string {
 
 function parseQuantityMt(quantity?: string | null, unit?: string | null): number | null {
   if (!quantity) return null;
-  const m = /([\d,]+(?:\.\d+)?)/.exec(quantity.replace(/,/g, ""));
-  if (!m) return null;
-  const value = Number.parseFloat(m[1]);
+  const q = quantity.replace(/,/g, "").trim();
+  const embedded = /^([\d.]+)\s*(MT|MTS|TON|TONS|KG|KGS|LOT|LOTS)\b/i.exec(q);
+  let value: number;
+  let u: string;
+  if (embedded) {
+    value = Number.parseFloat(embedded[1]);
+    u = embedded[2].toUpperCase();
+  } else {
+    const m = /([\d,]+(?:\.\d+)?)/.exec(q);
+    if (!m) return null;
+    value = Number.parseFloat(m[1].replace(/,/g, ""));
+    u = (unit ?? "").trim().toUpperCase();
+  }
   if (Number.isNaN(value)) return null;
-  const u = (unit ?? "").trim().toUpperCase();
   if (u === "KG" || u === "KGS") return value / 1000;
   if (u === "MT" || u === "MTS" || u === "TON" || u === "TONS") return value;
   return null;
@@ -206,6 +218,7 @@ export function normalizeLocation(
   raw?: string | null,
   state?: string | null,
   lots: LotRecord[] = [],
+  opts?: { officeAddress?: string | null; seller?: string | null },
 ): {
   city: string | null;
   state: string | null;
@@ -217,11 +230,15 @@ export function normalizeLocation(
   if (stateClean) stateClean = titleCaseCity(stateClean);
 
   const lower = rawClean.toLowerCase();
+  const searchBlob = [lower, opts?.officeAddress, opts?.seller]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
   let city: string | null = null;
   let inferredState: string | null = stateClean;
 
   for (const [token, info] of Object.entries(CITY_ALIASES)) {
-    if (lower.includes(token)) {
+    if (searchBlob.includes(token)) {
       city = info.city;
       inferredState = inferredState ?? info.state ?? null;
       break;
@@ -331,11 +348,32 @@ function buildDisplayTitle(
   return shortMaterial;
 }
 
+function buildBuyerSummary(
+  auction: AuctionRecord,
+  qtySummary: string | null,
+  matLabel: string,
+  locationLine: string | null,
+): string | null {
+  const bits: string[] = [];
+  if (auction.price_summary) bits.push(auction.price_summary);
+  else if (auction.min_start_price != null && auction.min_start_price > 0) {
+    bits.push(`Floor ₹${Math.round(auction.min_start_price).toLocaleString("en-IN")}`);
+  }
+  if (auction.emd_summary) bits.push(auction.emd_summary.split(";")[0].trim().slice(0, 60));
+  if (qtySummary) bits.push(qtySummary);
+  else if (matLabel) bits.push(matLabel);
+  if (locationLine) bits.push(locationLine);
+  return bits.length ? bits.join(" · ") : null;
+}
+
 export function enrichAuctionDisplay(auction: AuctionRecord): AuctionRecord {
   if (auction.display_title) return auction;
 
   const lots = auction.lots ?? [];
-  const loc = normalizeLocation(auction.location, auction.state, lots);
+  const loc = normalizeLocation(auction.location, auction.state, lots, {
+    officeAddress: auction.office_address,
+    seller: auction.seller,
+  });
   const blob = [
     auction.item_summary,
     auction.location,
@@ -354,8 +392,8 @@ export function enrichAuctionDisplay(auction: AuctionRecord): AuctionRecord {
 
   const locationLine =
     loc.city && loc.state ? `${loc.city}, ${loc.state}` : loc.city ?? loc.state ?? null;
-  const buyerBits = [qtySummary, MATERIAL_CATEGORY_LABELS[matKey], locationLine].filter(Boolean);
-  const buyerSummary = buyerBits.length ? buyerBits.join(" · ") : null;
+  const matLabel = MATERIAL_CATEGORY_LABELS[matKey];
+  const buyerSummary = buildBuyerSummary(auction, qtySummary, matLabel, locationLine);
 
   return {
     ...auction,

@@ -1,5 +1,6 @@
 import type { AuctionRecord } from "@/types/auction";
 import { displaySearchText } from "@/lib/display-enrichment";
+import { queryMatchesSynonym } from "@/lib/search-synonyms";
 
 export const SEARCH_TIER = {
   EXACT_ID: 1000,
@@ -141,14 +142,18 @@ export function scoreAuctionSearch(
     const lotHay = norm(
       `${lot.item_title} ${lot.item_description ?? ""} ${lot.location ?? ""} ${lot.lot_id ?? ""}`,
     );
-    if (lotHay.includes(query)) return SEARCH_TIER.LOT_TITLE;
+    if (lotHay.includes(query) || queryMatchesSynonym(lotHay, rawQuery)) {
+      return SEARCH_TIER.LOT_TITLE;
+    }
   }
 
   // Tier 8: seller / location / state / region / office / address / display location
   const sellerLoc = norm(
     `${auction.seller ?? ""} ${auction.location ?? ""} ${auction.state ?? ""} ${auction.region ?? ""} ${auction.office ?? ""} ${auction.office_address ?? ""} ${auction.display_location_city ?? ""} ${auction.display_location_state ?? ""} ${auction.display_location_raw ?? ""} ${auction.display_buyer_summary ?? ""} ${auction.display_material_category ?? ""}`,
   );
-  if (sellerLoc.includes(query)) return SEARCH_TIER.SELLER_LOCATION;
+  if (sellerLoc.includes(query) || queryMatchesSynonym(sellerLoc, rawQuery)) {
+    return SEARCH_TIER.SELLER_LOCATION;
+  }
 
   // Tier 9: source / category / platform
   const sourceCat = norm(
@@ -172,7 +177,9 @@ export function scoreAuctionSearch(
 
   // Tier 12: long description / display enrichment / auction_number tokens fallback
   const displayBlob = displaySearchText(auction);
-  if (displayBlob.includes(query)) return SEARCH_TIER.DESCRIPTION;
+  if (displayBlob.includes(query) || queryMatchesSynonym(displayBlob, rawQuery)) {
+    return SEARCH_TIER.DESCRIPTION;
+  }
   if (norm(auction.search_text).includes(query)) return SEARCH_TIER.DESCRIPTION;
   const tokens = auctionNumberTokens(auctionNo);
   if (tokens.some((t) => t === query || t.startsWith(query))) {

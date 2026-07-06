@@ -1,0 +1,37 @@
+[
+  {
+    "id": "582972",
+    "source": "mstc",
+    "require_display_title_contains": ["Transmission", "MT"],
+    "require_location_city": "Ballia",
+    "require_material": "transmission_scrap",
+    "require_import_timestamp": true
+  },
+  {
+    "id": "584985",
+    "source": "mstc",
+    "require_display_title_contains": ["Aluminium", "MT"],
+    "require_material": "aluminium_conductor",
+    "require_import_timestamp": true
+  },
+  {
+    "id": "588051",
+    "source": "mstc",
+    "require_display_title_contains": ["Conductor"],
+    "require_material": "transmission_scrap",
+    "require_import_timestamp": true
+  },
+  {
+    "id": "gem_forward:36121",
+    "source": "gem_forward",
+    "require_display_title": true,
+    "require_location_city": "Mumbai",
+    "require_import_timestamp": false
+  },
+  {
+    "id": "eauction:2026_MH_34847",
+    "source": "eauction",
+    "require_material": "timber",
+    "require_import_timestamp": false
+  }
+]

@@ -7,7 +7,7 @@ from pathlib import Path
 import pdfplumber
 import pypdf
 
-from scraper.emd import classify_emd_type_text, parse_emd_amount
+from scraper.emd import classify_emd_type_text, format_inr_amount, parse_emd_amount
 from scraper.price import detect_price_signal
 
 logger = logging.getLogger(__name__)
@@ -413,7 +413,7 @@ def parse_lot_from_sections(sections: dict[str, str]) -> dict:
     if price_m:
         start_price = _parse_price_inr(price_m.group(1))
         start_price_label = (
-            f"₹{start_price:,}"
+            format_inr_amount(start_price)
             if start_price and start_price > 1
             else "Floor price ₹1 (open bidding)"
         )
