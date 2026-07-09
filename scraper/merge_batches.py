@@ -14,6 +14,7 @@ from pydantic import TypeAdapter
 from scraper.batch_manifest import BATCH_STATUS_DONE, BatchManifest
 from scraper.export_guard import write_auctions_json
 from scraper.filters import apply_future_filter, parse_min_closing_date
+from scraper.incremental import load_export, merge_reusing_unchanged_records, write_report
 from scraper.models import AuctionRecord, AuctionsExport
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -78,6 +79,9 @@ def merge_batches(
     batch_dir: Path,
     out_path: Path,
     min_closing_date: str | None,
+    previous_export_path: Path | None = None,
+    reuse_unchanged: bool = False,
+    incremental_report_path: Path | None = None,
 ) -> AuctionsExport:
     manifest_path = batch_dir / "manifest.json"
     if not manifest_path.is_file():
@@ -139,6 +143,14 @@ def merge_batches(
     )
 
     payload = export.model_dump(mode="json")
+    if reuse_unchanged:
+        if not previous_export_path or not previous_export_path.is_file():
+            raise FileNotFoundError("--reuse-unchanged requires an existing --previous-export")
+        previous_export = load_export(previous_export_path)
+        payload, incremental_report = merge_reusing_unchanged_records(payload, previous_export)
+        if incremental_report_path:
+            write_report(incremental_report_path, incremental_report)
+
     write_auctions_json(out_path, payload)
     logger.info(
         "Merged %d auctions (%d lots) -> %s",
@@ -158,6 +170,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--batch-dir", type=Path, default=Path("work/batches"))
     parser.add_argument("--out", type=Path, default=Path("work/future_full_auctions.json"))
     parser.add_argument("--min-closing-date", required=True)
+    parser.add_argument("--previous-export", type=Path, help="Previous production export for incremental reuse")
+    parser.add_argument("--reuse-unchanged", action="store_true", help="Reuse previous enriched records for unchanged auctions")
+    parser.add_argument("--incremental-report", type=Path, help="Write incremental decision report JSON")
     args = parser.parse_args(argv)
 
     try:
@@ -165,6 +180,9 @@ def main(argv: list[str] | None = None) -> int:
             batch_dir=args.batch_dir,
             out_path=args.out,
             min_closing_date=args.min_closing_date,
+            previous_export_path=args.previous_export,
+            reuse_unchanged=args.reuse_unchanged,
+            incremental_report_path=args.incremental_report,
         )
         return 0
     except Exception as exc:

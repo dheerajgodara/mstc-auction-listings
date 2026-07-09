@@ -24,6 +24,7 @@ from scraper.export_guard import write_auctions_json
 from scraper.filters import apply_future_filter, parse_min_closing_date
 from scraper.gem_forward_client import GemForwardClient, GemForwardTransportError
 from scraper.gem_forward_scraper import scrape_gem_forward
+from scraper.incremental_plan import ids_by_source_for_action, load_work_plan, mstc_ids_by_office_for_action
 from scraper.main import run_pipeline
 from scraper.models import AuctionRecord, AuctionsExport
 
@@ -62,6 +63,7 @@ def run_mstc_office_batch(
     max_docs_per_run: int,
     force: bool,
     skip_docs: bool = False,
+    include_auction_ids: set[str] | None = None,
 ) -> int:
     batch_id = f"mstc_{office}"
     output_file = f"mstc_{office}.json"
@@ -88,6 +90,7 @@ def run_mstc_office_batch(
             min_closing_date=min_closing_date,
             max_docs_per_run=max_docs_per_run,
             skip_docs=skip_docs,
+            include_auction_ids=include_auction_ids,
         )
         records = [adapt_mstc_record(r) for r in export.auctions]
         min_closing = parse_min_closing_date(min_closing_date)
@@ -114,6 +117,8 @@ def run_mstc_office_batch(
             pdf_failures=export.stats.get("pdf_failures", 0),
             documents=docs,
             future_filter=filter_stats,
+            deep_parse_filter_enabled=include_auction_ids is not None,
+            deep_parse_ids_requested=len(include_auction_ids) if include_auction_ids is not None else None,
         )
         logger.info("MSTC office %s done: %d auctions", office, final.count)
         return final.count
@@ -129,6 +134,7 @@ def run_gem_batch(
     manifest: BatchManifest,
     min_closing_date: str,
     force: bool,
+    include_auction_ids: set[str] | None = None,
 ) -> int:
     batch_id = GEM_BATCH_ID
     output_file = "gem_forward_latest.json"
@@ -139,19 +145,31 @@ def run_gem_batch(
         manifest.upsert_batch({**manifest.get_batch(batch_id), "batch_id": batch_id, "status": BATCH_STATUS_SKIPPED})
         return 0
 
+    if include_auction_ids is not None and not include_auction_ids:
+        export = AuctionsExport(
+            generated_at=datetime.now(IST),
+            count=0,
+            auctions=[],
+            stats={"deep_parse_filter_enabled": True, "deep_parse_ids_requested": 0},
+        )
+        _write_batch_export(out_path, export)
+        manifest.mark_done(batch_id, source="gem_forward", output_file=output_file, auction_count=0, lot_count=0)
+        logger.info("GeM Forward skipped: no deep-parse IDs")
+        return 0
+
     manifest.mark_running(batch_id, source="gem_forward", output_file=output_file)
     warnings: list[str] = []
     transport_used = "unknown"
     try:
         client = GemForwardClient(transport="auto")
-        auctions = scrape_gem_forward(client=client, enrich=True)
+        auctions = scrape_gem_forward(client=client, enrich=True, include_auction_ids=include_auction_ids)
         transport_used = client._active_transport
     except GemForwardTransportError as exc:
         warnings.append(f"auto transport failed: {exc}")
         logger.warning("GeM auto transport failed, trying direct: %s", exc)
         try:
             client = GemForwardClient(transport="direct")
-            auctions = scrape_gem_forward(client=client, enrich=True)
+            auctions = scrape_gem_forward(client=client, enrich=True, include_auction_ids=include_auction_ids)
             transport_used = "direct"
         except Exception as direct_exc:
             manifest.mark_failed(batch_id, str(direct_exc), source="gem_forward", output_file=output_file)
@@ -184,6 +202,8 @@ def run_gem_batch(
             "future_filter": filter_stats,
             "with_price": sum(1 for r in records if r.min_start_price is not None),
             "with_document_urls": sum(1 for r in records if r.document_urls),
+            "deep_parse_filter_enabled": include_auction_ids is not None,
+            "deep_parse_ids_requested": len(include_auction_ids) if include_auction_ids is not None else None,
         },
     )
     _write_batch_export(out_path, export)
@@ -207,6 +227,7 @@ def run_eauction_batch(
     manifest: BatchManifest,
     min_closing_date: str,
     force: bool,
+    include_auction_ids: set[str] | None = None,
 ) -> int:
     batch_id = EAUCTION_BATCH_ID
     output_file = "eauction_latest.json"
@@ -217,6 +238,18 @@ def run_eauction_batch(
         manifest.upsert_batch({**manifest.get_batch(batch_id), "batch_id": batch_id, "status": BATCH_STATUS_SKIPPED})
         return 0
 
+    if include_auction_ids is not None and not include_auction_ids:
+        export = AuctionsExport(
+            generated_at=datetime.now(IST),
+            count=0,
+            auctions=[],
+            stats={"deep_parse_filter_enabled": True, "deep_parse_ids_requested": 0},
+        )
+        _write_batch_export(out_path, export)
+        manifest.mark_done(batch_id, source="eauction", output_file=output_file, auction_count=0, lot_count=0)
+        logger.info("eAuction skipped: no deep-parse IDs")
+        return 0
+
     manifest.mark_running(batch_id, source="eauction", output_file=output_file)
     warnings: list[str] = []
     try:
@@ -224,6 +257,7 @@ def run_eauction_batch(
             tabs=list(EAUCTION_TABS),
             max_pages=None,
             enrich_details=True,
+            include_auction_ids=include_auction_ids,
         )
     except Exception as exc:
         manifest.mark_failed(batch_id, str(exc), source="eauction", output_file=output_file)
@@ -241,7 +275,13 @@ def run_eauction_batch(
         generated_at=datetime.now(IST),
         count=len(records),
         auctions=records,
-        stats={**ea_stats, "warnings": warnings, "future_filter": filter_stats},
+        stats={
+            **ea_stats,
+            "warnings": warnings,
+            "future_filter": filter_stats,
+            "deep_parse_filter_enabled": include_auction_ids is not None,
+            "deep_parse_ids_requested": len(include_auction_ids) if include_auction_ids is not None else None,
+        },
     )
     _write_batch_export(out_path, export)
     manifest.mark_done(
@@ -272,15 +312,34 @@ def batch_run(
     resume: bool,
     force: bool,
     skip_docs: bool = False,
+    work_plan_path: Path | None = None,
 ) -> BatchManifest:
     batch_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = batch_dir / "manifest.json"
     manifest = BatchManifest.load_or_create(manifest_path, min_closing_date=min_closing_date)
     manifest.data["docs_budget_remaining"] = max_docs_per_run
+    deep_parse_ids: dict[str, set[str]] = {}
+    mstc_ids_by_office: dict[str, set[str]] = {}
+    if work_plan_path:
+        work_plan = load_work_plan(work_plan_path)
+        deep_parse_ids = ids_by_source_for_action(work_plan, "deep_parse")
+        mstc_ids_by_office = mstc_ids_by_office_for_action(work_plan, "deep_parse")
+        manifest.data["incremental_work_plan"] = {
+            "path": str(work_plan_path),
+            "action_counts": work_plan.action_counts,
+            "enabled": True,
+        }
+        manifest.save()
 
     if "mstc" in sources:
         docs_remaining = max_docs_per_run
-        for office in OFFICE_CODES:
+        offices_to_run = OFFICE_CODES
+        if work_plan_path:
+            if mstc_ids_by_office:
+                offices_to_run = [office for office in OFFICE_CODES if office in mstc_ids_by_office]
+            elif not deep_parse_ids.get("mstc"):
+                offices_to_run = []
+        for office in offices_to_run:
             if resume and _batch_done(manifest, f"mstc_{office}", batch_dir, force=force):
                 logger.info("Resume: skip MSTC %s", office)
                 continue
@@ -295,6 +354,11 @@ def batch_run(
                 max_docs_per_run=docs_remaining,
                 force=force,
                 skip_docs=skip_docs,
+                include_auction_ids=(
+                    mstc_ids_by_office.get(office) or deep_parse_ids.get("mstc")
+                    if work_plan_path
+                    else None
+                ),
             )
             if used:
                 batch = manifest.get_batch(f"mstc_{office}") or {}
@@ -306,11 +370,23 @@ def batch_run(
 
     if "gem_forward" in sources:
         if not (resume and _batch_done(manifest, GEM_BATCH_ID, batch_dir, force=force)):
-            run_gem_batch(batch_dir=batch_dir, manifest=manifest, min_closing_date=min_closing_date, force=force)
+            run_gem_batch(
+                batch_dir=batch_dir,
+                manifest=manifest,
+                min_closing_date=min_closing_date,
+                force=force,
+                include_auction_ids=deep_parse_ids.get("gem_forward") if work_plan_path else None,
+            )
 
     if "eauction" in sources:
         if not (resume and _batch_done(manifest, EAUCTION_BATCH_ID, batch_dir, force=force)):
-            run_eauction_batch(batch_dir=batch_dir, manifest=manifest, min_closing_date=min_closing_date, force=force)
+            run_eauction_batch(
+                batch_dir=batch_dir,
+                manifest=manifest,
+                min_closing_date=min_closing_date,
+                force=force,
+                include_auction_ids=deep_parse_ids.get("eauction") if work_plan_path else None,
+            )
 
     logger.info("Batch run complete: %s", json.dumps(manifest.summary()))
     return manifest
@@ -332,6 +408,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--force", action="store_true", help="Re-run completed batches")
     parser.add_argument("--skip-docs", action="store_true")
+    parser.add_argument("--work-plan", type=Path, help="Incremental work plan; only deep_parse IDs are parsed")
     args = parser.parse_args(argv)
 
     sources = [s.strip().lower() for s in args.sources.split(",") if s.strip()]
@@ -347,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
             resume=args.resume,
             force=args.force,
             skip_docs=args.skip_docs,
+            work_plan_path=args.work_plan,
         )
         return 0
     except Exception as exc:

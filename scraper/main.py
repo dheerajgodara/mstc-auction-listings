@@ -176,6 +176,7 @@ def run_pipeline(
     limit_per_office: int | None = None,
     office: str | None = None,
     auction_id: str | None = None,
+    include_auction_ids: set[str] | None = None,
     min_closing_date: str | None = None,
     allow_small_output: bool = False,
 ) -> AuctionsExport:
@@ -231,6 +232,7 @@ def run_pipeline(
         "excluded_retention": 0,
         "excluded_before_min_closing": 0,
         "excluded_missing_closing_listing": 0,
+        "excluded_not_in_work_plan": 0,
         "offices_scanned": 0,
         "documents": {
             "refs_found": 0,
@@ -256,6 +258,9 @@ def run_pipeline(
 
         for auction in auctions:
             if auction_id and auction.id != auction_id:
+                continue
+            if include_auction_ids is not None and auction.id not in include_auction_ids:
+                stats["excluded_not_in_work_plan"] = stats.get("excluded_not_in_work_plan", 0) + 1
                 continue
             stats["listing_before_filter"] = stats.get("listing_before_filter", 0) + 1
             if not auction_id and min_closing is None and not should_keep_auction(auction):

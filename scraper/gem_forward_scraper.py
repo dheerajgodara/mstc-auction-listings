@@ -52,6 +52,7 @@ def scrape_gem_forward(
     limit: int | None = None,
     enrich: bool = True,
     delay_sec: float = GEM_FORWARD_REQUEST_DELAY_SEC,
+    include_auction_ids: set[str] | None = None,
 ) -> list[GemForwardAuction]:
     cli = client or GemForwardClient(transport="auto")
     cli.init_session()
@@ -77,6 +78,9 @@ def scrape_gem_forward(
             time.sleep(delay_sec)
 
     auctions: list[GemForwardAuction] = []
+    if include_auction_ids is not None:
+        all_listings = [listing for listing in all_listings if listing.auction_id in include_auction_ids]
+
     for i, listing in enumerate(all_listings):
         if not enrich:
             auctions.append(

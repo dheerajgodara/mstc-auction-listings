@@ -141,6 +141,7 @@ def scrape_eauction_tabs(
     enrich_details: bool = False,
     delay_sec: float = 0.75,
     max_pages: int | None = None,
+    include_auction_ids: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Scrape multiple ByDate tabs, dedupe by auction_id+title, optional detail enrichment."""
     selected_tabs = tabs or ["closingWeekTab", "closingTwoWeekTab", "closingTodayTab"]
@@ -197,6 +198,11 @@ def scrape_eauction_tabs(
         time.sleep(delay_sec)
 
     combined_stats["listing_rows"] = len(all_rows)
+
+    if include_auction_ids is not None:
+        before_work_plan_filter = len(all_rows)
+        all_rows = [row for row in all_rows if str(row.get("auction_id") or "") in include_auction_ids]
+        combined_stats["excluded_not_in_work_plan"] = before_work_plan_filter - len(all_rows)
 
     if limit is not None:
         all_rows = all_rows[:limit]

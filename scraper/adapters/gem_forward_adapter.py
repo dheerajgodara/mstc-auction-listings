@@ -62,9 +62,9 @@ def adapt_gem_forward_auction(auction: GemForwardAuction) -> AuctionRecord:
         if short and len(short) <= 80:
             item_summary = short
 
-    warnings: list[str] | None = None
+    warnings: list[str] = []
     if auction.emd_amount_inr is None and auction.emd_required is not False:
-        warnings = ["GeM: verify EMD and rules on the official GeM listing"]
+        warnings.append("GeM: verify EMD and rules on the official GeM listing")
 
     return AuctionRecord(
         id=f"gem_forward:{auction.auction_id}",
