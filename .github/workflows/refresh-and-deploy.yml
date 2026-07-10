@@ -2,17 +2,13 @@ name: Refresh and Deploy
 
 on:
   schedule:
-    # Eight daily production refresh attempts.
+    # Eight daily production refresh slots.
+    # Each slot has target + 10m + 20m backup ticks because GitHub scheduled
+    # events can be delayed or dropped, especially on exact hour boundaries.
+    # scraper.schedule_guard allows only the first successful/running tick per slot.
     # IST: 00:30, 03:30, 06:30, 09:30, 12:30, 15:30, 18:30, 21:30
-    # UTC: 19:00 previous day, 22:00 previous day, 01:00, 04:00, 07:00, 10:00, 13:00, 16:00
-    - cron: "0 19 * * *"
-    - cron: "0 22 * * *"
-    - cron: "0 1 * * *"
-    - cron: "0 4 * * *"
-    - cron: "0 7 * * *"
-    - cron: "0 10 * * *"
-    - cron: "0 13 * * *"
-    - cron: "0 16 * * *"
+    # UTC target hours: 19, 22, 01, 04, 07, 10, 13, 16
+    - cron: "0,10,20 19,22,1,4,7,10,13,16 * * *"
   workflow_dispatch:
     inputs:
       deploy:
@@ -36,28 +32,41 @@ jobs:
   refresh-and-deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    concurrency:
+      group: refresh-and-deploy-production
+      cancel-in-progress: false
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Scheduled slot guard
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: PYTHONPATH=. python -m scraper.schedule_guard --workflow refresh-and-deploy.yml
+
       - name: Set up Python
+        if: env.REFRESH_SHOULD_RUN != 'false'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install Python dependencies
+        if: env.REFRESH_SHOULD_RUN != 'false'
         run: pip install -r requirements.txt
 
       - name: Run tests
+        if: env.REFRESH_SHOULD_RUN != 'false'
         run: PYTHONPATH=. python -m pytest tests/ -q
 
       - name: Set up pnpm
+        if: env.REFRESH_SHOULD_RUN != 'false'
         uses: pnpm/action-setup@v4
         with:
           version: 9
 
       - name: Set up Node.js
+        if: env.REFRESH_SHOULD_RUN != 'false'
         uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -65,16 +74,19 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
 
       - name: Install web dependencies
+        if: env.REFRESH_SHOULD_RUN != 'false'
         working-directory: web
         run: pnpm install --frozen-lockfile || pnpm install
 
       - name: Configure SSH key
+        if: env.REFRESH_SHOULD_RUN != 'false'
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
 
       - name: Run refresh pipeline
+        if: env.REFRESH_SHOULD_RUN != 'false'
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL }}
@@ -103,7 +115,7 @@ jobs:
             $DEPLOY_FLAG
 
       - name: Post-deploy freshness check (warn-only)
-        if: success()
+        if: success() && env.REFRESH_SHOULD_RUN != 'false'
         env:
           SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
         run: |
@@ -111,7 +123,7 @@ jobs:
           PYTHONPATH=. python -m scraper.freshness_check --base-url "$BASE" --warn-only || true
 
       - name: Upload refresh reports
-        if: always()
+        if: always() && env.REFRESH_SHOULD_RUN != 'false'
         uses: actions/upload-artifact@v4
         with:
           name: refresh-run-${{ github.run_id }}
@@ -123,7 +135,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload failure diagnostics
-        if: failure()
+        if: failure() && env.REFRESH_SHOULD_RUN != 'false'
         uses: actions/upload-artifact@v4
         with:
           name: refresh-failure-${{ github.run_id }}
