@@ -12,6 +12,11 @@ import pytest
 
 from scraper.ai_enrichment.cli import build_parser
 from scraper.ai_enrichment.hydrate import build_ai_search_text, hydrate_auctions_export, merge_ai_into_auction
+from scraper.ai_enrichment.ledger_sync import (
+    LedgerSyncResult,
+    default_remote_ledger_path,
+    pull_remote_daily_usage,
+)
 from scraper.ai_enrichment.payload import build_listing_payload, build_enrichment_prompt, payload_stats
 from scraper.ai_enrichment.provider import MockEnrichmentProvider, OpenRouterEnrichmentProvider, get_provider
 from scraper.ai_enrichment.queue import (
@@ -401,6 +406,72 @@ def test_daily_budget_updates_after_ready_call(tmp_path):
     assert usage["attempted"] == 1
     assert usage["ready"] == 1
     assert daily_budget_state(cache_dir=tmp_path, daily_budget=5)["remaining_today"] == 4
+
+
+def test_default_remote_ledger_path_is_private(monkeypatch):
+    monkeypatch.delenv("HOSTINGER_AI_LEDGER_PATH", raising=False)
+    remote = "/home/u268110164/domains/scrapauctionindia.com/public_html/auctions"
+    assert (
+        default_remote_ledger_path(remote)
+        == "/home/u268110164/domains/scrapauctionindia.com/ai_enrichment_state/_daily_usage.json"
+    )
+
+
+def test_remote_ledger_pull_reports_missing_env(tmp_path, monkeypatch):
+    for key in (
+        "HOSTINGER_HOST",
+        "HOSTINGER_PORT",
+        "HOSTINGER_USERNAME",
+        "HOSTINGER_SSH_KEY",
+        "HOSTINGER_REMOTE_DIR",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    result = pull_remote_daily_usage(tmp_path)
+    assert result.ok is False
+    assert result.action == "pull"
+    assert "missing Hostinger ledger env" in result.message
+
+
+def test_cli_remote_ledger_failure_fails_closed_before_provider(tmp_path, monkeypatch):
+    json_path = tmp_path / "auctions.json"
+    json_path.write_text(
+        json.dumps({"count": 1, "auctions": [_auction().model_dump(mode="json")]}),
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "report.json"
+    provider = MockEnrichmentProvider()
+    provider.enrich_listing = MagicMock(side_effect=AssertionError("provider must not be called"))
+    monkeypatch.setattr("scraper.ai_enrichment.queue.get_provider", lambda **_kwargs: provider)
+    monkeypatch.setattr(
+        "scraper.ai_enrichment.cli.pull_remote_daily_usage",
+        lambda _cache_dir: LedgerSyncResult(
+            mode="hostinger",
+            ok=False,
+            action="pull",
+            message="ssh unavailable",
+        ),
+    )
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--json",
+            str(json_path),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+            "enrich",
+            "--allow-network",
+            "--ledger-sync",
+            "hostinger",
+            "--limit",
+            "1",
+            "--report-json",
+            str(report_path),
+        ]
+    )
+    assert args.func(args) == 2
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["error"] == "remote_ledger_pull_failed"
+    assert payload["will_call_provider"] is False
 
 
 def test_hydrate_merge_preserves_parser_fields(tmp_path):

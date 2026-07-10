@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from scraper.ai_enrichment.hydrate import hydrate_json_file
+from scraper.ai_enrichment.ledger_sync import pull_remote_daily_usage, push_remote_daily_usage
 from scraper.ai_enrichment.queue import EnrichmentQueue, count_cache_stats
 from scraper.ai_enrichment.schema import AI_SCHEMA_VERSION, PROMPT_VERSION
 from scraper.config import AI_ENRICHMENT_CACHE_DIR, DEFAULT_JSON_OUT
@@ -31,6 +32,31 @@ def cmd_enrich(args: argparse.Namespace) -> int:
     mock = bool(args.mock or not allow_network)
     no_network = not allow_network
 
+    ledger_sync_events: list[dict[str, object]] = []
+    if args.ledger_sync == "hostinger" and allow_network and not args.dry_run:
+        pull = pull_remote_daily_usage(args.cache_dir)
+        ledger_sync_events.append(pull.to_dict())
+        if not pull.ok and not args.allow_local_ledger_fallback:
+            payload = {
+                "processed": 0,
+                "ready": 0,
+                "skipped": 0,
+                "rejected": 0,
+                "failed": 0,
+                "allow_network": allow_network,
+                "will_call_provider": False,
+                "ledger_sync": ledger_sync_events,
+                "error": "remote_ledger_pull_failed",
+                "cache_stats": count_cache_stats(args.cache_dir),
+            }
+            if args.report_json:
+                args.report_json.parent.mkdir(parents=True, exist_ok=True)
+                args.report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            if args.telegram_report:
+                send_ai_enrichment_report(payload)
+            print(json.dumps(payload, indent=2))
+            return 2
+
     auctions = _load_auctions(args.json)
     queue = EnrichmentQueue(
         dry_run=args.dry_run,
@@ -48,6 +74,21 @@ def cmd_enrich(args: argparse.Namespace) -> int:
     )
     payload = report.to_dict()
     payload["cache_stats"] = count_cache_stats(args.cache_dir)
+    if args.ledger_sync == "hostinger" and allow_network and not args.dry_run:
+        push = push_remote_daily_usage(args.cache_dir)
+        ledger_sync_events.append(push.to_dict())
+        payload["ledger_sync"] = ledger_sync_events
+        if not push.ok and not args.allow_local_ledger_fallback:
+            payload["error"] = "remote_ledger_push_failed"
+            if args.report_json:
+                args.report_json.parent.mkdir(parents=True, exist_ok=True)
+                args.report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            if args.telegram_report:
+                send_ai_enrichment_report(payload)
+            print(json.dumps(payload, indent=2))
+            return 3
+    elif ledger_sync_events:
+        payload["ledger_sync"] = ledger_sync_events
     if args.report_json:
         args.report_json.parent.mkdir(parents=True, exist_ok=True)
         args.report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -107,6 +148,17 @@ def build_parser() -> argparse.ArgumentParser:
     enrich.add_argument("--auction-id", default=None, help="Target one auction id/number")
     enrich.add_argument("--limit", type=int, default=None, help="Max auctions/requests")
     enrich.add_argument("--daily-budget", type=int, default=950, help="Max provider calls per IST day")
+    enrich.add_argument(
+        "--ledger-sync",
+        choices=("none", "hostinger"),
+        default="none",
+        help="Durable daily usage ledger backend. hostinger fails closed on sync errors.",
+    )
+    enrich.add_argument(
+        "--allow-local-ledger-fallback",
+        action="store_true",
+        help="Continue with local ledger if remote sync fails. Not recommended for production.",
+    )
     enrich.add_argument("--report-json", type=Path, default=None, help="Write run report JSON")
     enrich.add_argument("--telegram-report", action="store_true", help="Send Telegram summary when finished")
     enrich.set_defaults(func=cmd_enrich)

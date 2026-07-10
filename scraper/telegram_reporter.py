@@ -306,6 +306,17 @@ def build_ai_enrichment_message(payload: dict[str, Any]) -> str:
                 ],
             )
         )
+    ledger_sync = payload.get("ledger_sync") or []
+    if ledger_sync:
+        rows = []
+        for event in ledger_sync:
+            status = "OK" if event.get("ok") else "FAILED"
+            action = event.get("action", "sync")
+            message = event.get("message") or ""
+            rows.append(_row(str(action).title(), f"{status} | {message}"))
+        lines.extend(_section("Durable Ledger", rows))
+    if payload.get("error"):
+        lines.extend(_section("Error", [_row("Reason", payload.get("error"))]))
     reasons = selection.get("priority_reason_counts") or {}
     if reasons:
         top_reasons = sorted(reasons.items(), key=lambda x: x[1], reverse=True)[:8]
