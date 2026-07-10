@@ -9,6 +9,8 @@ import subprocess
 import sys
 import time
 import traceback
+import re
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +31,7 @@ from scraper.deploy import deploy as deploy_to_hostinger
 from scraper.export_guard import ExportGuardError
 from scraper.filters import tomorrow_min_closing_date, make_run_id
 from scraper.http_verify import verify_live_site
+from scraper.import_tracking import finalize_export_payload
 from scraper.merge_batches import merge_batches
 from scraper.predeploy_verify import verify_predeploy_build
 from scraper.promote_export import promote_export
@@ -45,6 +48,8 @@ from scraper.refresh_reports import (
 )
 from scraper.notify import send_failure_notification
 from scraper.safety_gates import SafetyGateConfig, run_safety_gates
+from scraper.source_fallback import apply_missing_source_fallback, load_export
+from scraper.telegram_reporter import send_telegram_report
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.refresh_and_deploy")
@@ -66,6 +71,7 @@ class RefreshConfig:
     allow_large_drop: bool = False
     allow_failed_batches: bool = False
     eauction_warn_only: bool = False
+    fallback_sources: list[str] = field(default_factory=lambda: ["eauction"])
     repo_root: Path = REPO_ROOT
     lock_path: Path = DEFAULT_LOCK_PATH
 
@@ -148,6 +154,72 @@ def _snapshot_production_backup(
     return path
 
 
+def _write_candidate_payload(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _export_to_payload(export: Any, candidate_path: Path) -> dict[str, Any]:
+    loaded = load_export(candidate_path)
+    if loaded is not None:
+        return loaded
+    if hasattr(export, "model_dump"):
+        return export.model_dump(mode="json")
+    if isinstance(export, dict):
+        return dict(export)
+    raise RuntimeError("merge did not write candidate and export object is not serializable")
+
+
+def _export_count(path: Path) -> int:
+    data = load_export(path)
+    if not data:
+        return 0
+    return int(data.get("count", len(data.get("auctions") or [])) or 0)
+
+
+def _bootstrap_previous_production_from_live(
+    *,
+    production_json: Path,
+    base_url: str | None,
+    warnings: list[str],
+) -> bool:
+    if _export_count(production_json) > 0:
+        return False
+    if not base_url:
+        warnings.append("no local production export and SITE_BASE_URL unavailable for bootstrap")
+        return False
+
+    clean_base = base_url.rstrip("/")
+    url = f"{clean_base}/data/auctions-data.js?v=bootstrap"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            text = resp.read().decode("utf-8")
+    except Exception as exc:
+        warnings.append(f"could not bootstrap previous production from live site: {exc}")
+        return False
+
+    match = re.search(r"__AUCTIONS_EXPORT__\s*=\s*(\{.*\});?\s*$", text, re.S)
+    if not match:
+        warnings.append("could not bootstrap previous production: live data bundle parse failed")
+        return False
+
+    try:
+        data = json.loads(match.group(1))
+    except json.JSONDecodeError as exc:
+        warnings.append(f"could not bootstrap previous production: {exc}")
+        return False
+
+    count = int(data.get("count", len(data.get("auctions") or [])) or 0)
+    if count <= 0:
+        warnings.append("could not bootstrap previous production: live export was empty")
+        return False
+
+    production_json.parent.mkdir(parents=True, exist_ok=True)
+    production_json.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    warnings.append(f"bootstrapped previous production from live site ({count} auctions)")
+    return True
+
+
 def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
     run_id, run_dir, batches_dir, logs_dir, reports_dir, candidate_path = _prepare_run_dirs(config)
     _setup_run_logging(logs_dir)
@@ -166,9 +238,19 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
         "min_closing_date": min_closing_date,
         "sources": config.sources,
         "deploy_requested": config.deploy,
+        "site_base_url": SITE_BASE_URL,
+        "github_run_url": (
+            f"{os.environ.get('GITHUB_SERVER_URL')}/{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/"
+            f"{os.environ.get('GITHUB_RUN_ID')}"
+            if os.environ.get("GITHUB_SERVER_URL")
+            and os.environ.get("GITHUB_REPOSITORY")
+            and os.environ.get("GITHUB_RUN_ID")
+            else None
+        ),
         "warnings": [],
         "errors": [],
     }
+    send_telegram_report(payload, event="started")
 
     errors: list[str] = []
     warnings: list[str] = []
@@ -186,6 +268,17 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
         )
         lock_acquired = True
 
+        bootstrapped = _bootstrap_previous_production_from_live(
+            production_json=production_json,
+            base_url=SITE_BASE_URL or None,
+            warnings=warnings,
+        )
+        payload["previous_production_bootstrap"] = {
+            "attempted": bootstrapped or _export_count(production_json) == 0,
+            "bootstrapped": bootstrapped,
+            "production_count": _export_count(production_json),
+        }
+
         previous_backup = _snapshot_production_backup(
             production_json=production_json,
             run_dir=run_dir,
@@ -193,6 +286,7 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
         )
         payload["previous_production_backup_path"] = str(previous_backup) if previous_backup else None
         payload["previous_production_summary"] = load_production_summary(production_json)
+        previous_export = load_export(production_json)
 
         # 1. Batch scrape
         scrape_started = time.monotonic()
@@ -246,6 +340,48 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             "too_small": int(failed_by_reason.get("too_small", 0) or 0),
             "failed_by_reason": failed_by_reason,
             "failed_by_doc_type": doc_stats.get("failed_by_doc_type") or {},
+        }
+
+        # 2b. Fallback and finalization before gates.
+        #
+        # Safety gates validate import metadata, so candidate metadata must be
+        # stamped before gates run. Also, a source-wide zero result for a flaky
+        # source such as eAuction should not erase still-future production rows.
+        candidate_data = _export_to_payload(export, candidate_path)
+        candidate_data, fallback_report = apply_missing_source_fallback(
+            candidate_data,
+            previous_export=previous_export,
+            min_closing_date=min_closing_date,
+            fallback_sources=config.fallback_sources,
+        )
+        payload["source_fallback"] = fallback_report
+        if fallback_report.get("applied"):
+            warnings.append(f"source fallback applied: {fallback_report.get('sources')}")
+
+        candidate_data = finalize_export_payload(
+            candidate_data,
+            previous_export=previous_export,
+            automation_ran_at=datetime.now(IST),
+            run_id=run_id,
+            history_path=None,
+            status="candidate",
+        )
+        _write_candidate_payload(candidate_path, candidate_data)
+
+        payload["total_auctions"] = int(candidate_data.get("count", 0))
+        payload["total_lots"] = candidate_data.get("stats", {}).get("total_lots_in_export")
+        payload["by_source"] = candidate_data.get("stats", {}).get("by_source") or {
+            source: meta.get("count", 0)
+            for source, meta in (candidate_data.get("sources") or {}).items()
+        }
+        payload["candidate_finalization"] = {
+            "automation_ran_at": candidate_data.get("automation_ran_at"),
+            "run_id": candidate_data.get("run_id"),
+            "imported_at_count": sum(
+                1
+                for auction in candidate_data.get("auctions", [])
+                if auction.get("imported_at") or auction.get("first_seen_at")
+            ),
         }
 
         # 3-4. QA + safety gates
@@ -349,7 +485,7 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             # 9. HTTP verify
             http_result = verify_live_site(
                 base_url=SITE_BASE_URL or None,
-                expected_count=export.count,
+                expected_count=int(candidate_data.get("count", export.count)),
                 candidate_json=candidate_path,
             )
             payload["http_verify"] = {
@@ -383,6 +519,7 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             payload=payload,
             success=True,
         )
+        send_telegram_report(payload, event="success")
         return RefreshResult(
             status="success",
             run_id=run_id,
@@ -409,6 +546,7 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             payload=payload,
             success=False,
         )
+        send_telegram_report(payload, event="failed")
         return RefreshResult(
             status="failed",
             run_id=run_id,

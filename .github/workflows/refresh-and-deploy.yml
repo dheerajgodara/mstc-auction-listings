@@ -2,8 +2,13 @@ name: Refresh and Deploy
 
 on:
   schedule:
-    # 01:30 IST = 20:00 UTC previous day
-    - cron: "0 20 * * *"
+    # Four daily production refresh attempts.
+    # IST: 02:00, 08:00, 14:00, 20:00
+    # UTC: 20:30 previous day, 02:30, 08:30, 14:30
+    - cron: "30 20 * * *"
+    - cron: "30 2 * * *"
+    - cron: "30 8 * * *"
+    - cron: "30 14 * * *"
   workflow_dispatch:
     inputs:
       deploy:
@@ -74,6 +79,8 @@ jobs:
           HOSTINGER_USERNAME: ${{ secrets.HOSTINGER_USERNAME }}
           HOSTINGER_SSH_KEY: ~/.ssh/hostinger_key
           HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           DEPLOY_FLAG=""
           if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ github.event.inputs.deploy }}" != "false" ]; then
@@ -84,6 +91,7 @@ jobs:
             --max-docs-per-run "${{ github.event.inputs.max_docs_per_run || '2000' }}" \
             --min-count 1000 \
             --break-stale-lock \
+            --warn-missing-eauction \
             $DEPLOY_FLAG
 
       - name: Post-deploy freshness check (warn-only)

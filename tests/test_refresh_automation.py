@@ -283,6 +283,44 @@ def test_status_report_reads_latest_run(tmp_path: Path, monkeypatch):
     assert report["last_run"]["run_id"] == "r1"
 
 
+def test_bootstrap_previous_production_from_live_bundle(tmp_path: Path, monkeypatch):
+    from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
+
+    production = tmp_path / "web/public/data/auctions.json"
+    live_payload = {
+        "generated_at": datetime.now(IST).isoformat(),
+        "automation_ran_at": datetime.now(IST).isoformat(),
+        "run_id": "live_run",
+        "count": 2,
+        "auctions": [_record_dict("m1", source="mstc"), _record_dict("ea1", source="eauction")],
+        "stats": {},
+    }
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return ("window.__AUCTIONS_EXPORT__ = " + json.dumps(live_payload) + ";").encode()
+
+    monkeypatch.setattr(
+        "scraper.refresh_and_deploy.urllib.request.urlopen",
+        lambda *args, **kwargs: FakeResponse(),
+    )
+    warnings: list[str] = []
+    assert _bootstrap_previous_production_from_live(
+        production_json=production,
+        base_url="https://example.com/auctions",
+        warnings=warnings,
+    )
+    data = json.loads(production.read_text(encoding="utf-8"))
+    assert data["count"] == 2
+    assert "bootstrapped previous production" in warnings[0]
+
+
 @patch("scraper.refresh_and_deploy.batch_run")
 @patch("scraper.refresh_and_deploy.merge_batches")
 @patch("scraper.refresh_and_deploy.run_safety_gates")

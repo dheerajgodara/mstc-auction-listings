@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from scraper.notify import send_failure_notification
 from scraper.refresh_reports import render_final_report_md
+from scraper.telegram_reporter import build_telegram_message, send_telegram_message
 
 
 def test_final_report_shows_deploy_false_on_dry_run():
@@ -60,6 +61,33 @@ def test_send_failure_notification_posts_when_configured(monkeypatch):
 
     assert ok is True
     urlopen.assert_called_once()
+
+
+def test_telegram_message_includes_operational_counts():
+    message = build_telegram_message(
+        {
+            "run_id": "run_1",
+            "status": "success",
+            "started_at": "2026-07-10T02:00:00+05:30",
+            "finished_at": "2026-07-10T02:30:00+05:30",
+            "total_auctions": 1816,
+            "total_lots": 12200,
+            "by_source": {"mstc": 1681, "eauction": 61, "gem_forward": 74},
+            "safety_gates": {"passed": True},
+            "deploy": {"deployed": True},
+        },
+        event="success",
+    )
+    assert "run_1" in message
+    assert "Auctions: 1816" in message
+    assert "eauction=61" in message
+    assert "Deploy: yes" in message
+
+
+def test_send_telegram_message_skips_without_credentials(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    assert send_telegram_message("hello") is False
 
 
 def test_status_report_local_build_metrics(tmp_path: Path):

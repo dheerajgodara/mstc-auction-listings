@@ -71,7 +71,20 @@ def render_final_report_md(payload: dict[str, Any]) -> str:
         lines.append("")
 
     lines.extend(["## Pipeline", ""])
-    for step in ("batch_scrape", "merge", "qa", "safety_gates", "promotion", "build", "predeploy", "deploy", "http_verify"):
+    for step in (
+        "batch_scrape",
+        "merge",
+        "previous_production_bootstrap",
+        "source_fallback",
+        "candidate_finalization",
+        "qa",
+        "safety_gates",
+        "promotion",
+        "build",
+        "predeploy",
+        "deploy",
+        "http_verify",
+    ):
         step_data = payload.get(step) or {}
         if step_data:
             lines.append(f"### {step.replace('_', ' ').title()}")
