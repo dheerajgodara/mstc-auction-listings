@@ -23,6 +23,8 @@ hostinger_key
 
 # Scraper/runtime output
 work/
+data/
+data/ai_enrichment_cache/
 *.log
 
 # Node

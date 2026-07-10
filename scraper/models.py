@@ -45,6 +45,17 @@ AssetCategory = Literal[
     "other",
 ]
 
+AiEnrichmentStatus = Literal[
+    "missing",
+    "pending",
+    "ready",
+    "failed",
+    "rejected",
+    "stale",
+]
+
+AiConfidence = Literal["high", "medium", "low"]
+
 
 class ContactInfo(BaseModel):
     name: Optional[str] = None
@@ -111,6 +122,19 @@ class LotRecord(BaseModel):
     lot_parse_warnings: list[str] = Field(default_factory=list)
     documents: list[LotDocument] = Field(default_factory=list)
     preview_images: list[str] = Field(default_factory=list)
+
+    # AI buyer-facing enrichment (additive; parser fields unchanged)
+    ai_status: AiEnrichmentStatus = "missing"
+    ai_heading: Optional[str] = None
+    ai_summary: Optional[str] = None
+    ai_tags: list[str] = Field(default_factory=list)
+    ai_confidence: Optional[AiConfidence] = None
+    ai_model: Optional[str] = None
+    ai_generated_at: Optional[str] = None
+    ai_prompt_version: Optional[str] = None
+    ai_schema_version: Optional[str] = None
+    ai_input_hash: Optional[str] = None
+    ai_rejection_reasons: list[str] = Field(default_factory=list)
 
 
 class AuctionRecord(BaseModel):
@@ -188,6 +212,23 @@ class AuctionRecord(BaseModel):
     display_buyer_summary: Optional[str] = None
     display_location_confidence: Optional[str] = None
     display_total_quantity_mt: Optional[float] = None
+
+    # AI buyer-facing enrichment (additive; parser/raw fields unchanged)
+    ai_status: AiEnrichmentStatus = "missing"
+    ai_clean_heading: Optional[str] = None
+    ai_buyer_summary: Optional[str] = None
+    ai_clean_location_label: Optional[str] = None
+    ai_location_confidence: Optional[AiConfidence] = None
+    ai_material_tags: list[str] = Field(default_factory=list)
+    ai_buyer_intent_tags: list[str] = Field(default_factory=list)
+    ai_risk_notes: list[str] = Field(default_factory=list)
+    ai_confidence: Optional[AiConfidence] = None
+    ai_model: Optional[str] = None
+    ai_generated_at: Optional[str] = None
+    ai_prompt_version: Optional[str] = None
+    ai_schema_version: Optional[str] = None
+    ai_input_hash: Optional[str] = None
+    ai_rejection_reasons: list[str] = Field(default_factory=list)
 
     @field_serializer("opening", "closing", "listed_at", "first_seen_at", "last_seen_at", "imported_at")
     def serialize_dt(self, v: Optional[datetime]) -> Optional[str]:

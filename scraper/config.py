@@ -76,7 +76,7 @@ HOSTINGER_USERNAME = os.getenv("HOSTINGER_USERNAME", "u268110164")
 HOSTINGER_SSH_KEY = os.getenv("HOSTINGER_SSH_KEY", "~/.ssh/cursor_mstc_auction_hostinger")
 HOSTINGER_REMOTE_DIR = os.getenv(
     "HOSTINGER_REMOTE_DIR",
-    "/home/u268110164/domains/lightcyan-camel-979846.hostingersite.com/public_html/auctions",
+    "/home/u268110164/domains/scrapauctionindia.com/public_html/auctions",
 )
 SITE_BASE_URL = os.getenv("SITE_BASE_URL", "")
 
@@ -84,21 +84,28 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # OpenRouter AI fallback (optional — used only for low-confidence extraction)
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "qwen/qwen3-next-80b-a3b-instruct:free")
+OPENROUTER_MODEL = (
+    os.getenv("OPENROUTER_MODEL", "").strip()
+    or "qwen/qwen3-next-80b-a3b-instruct:free"
+)
+_OPENROUTER_FALLBACK_MODELS_RAW = (
+    os.getenv("OPENROUTER_FALLBACK_MODELS", "").strip()
+    or "qwen/qwen3-next-80b-a3b-instruct:free,"
+    "nvidia/nemotron-3-super-120b-a12b:free,"
+    "nvidia/nemotron-nano-9b-v2:free"
+)
 OPENROUTER_FALLBACK_MODELS = [
     m.strip()
-    for m in os.getenv(
-        "OPENROUTER_FALLBACK_MODELS",
-        "qwen/qwen3-next-80b-a3b-instruct:free,"
-        "nvidia/nemotron-3-super-120b-a12b:free,"
-        "nvidia/nemotron-nano-9b-v2:free",
-    ).split(",")
+    for m in _OPENROUTER_FALLBACK_MODELS_RAW.split(",")
     if m.strip()
 ]
 OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "")
 OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", "MSTC Auction Listings")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 AI_CACHE_DIR = REPO_ROOT / "data" / "ai_cache"
+AI_ENRICHMENT_CACHE_DIR = REPO_ROOT / "data" / "ai_enrichment_cache"
+AI_ENRICHMENT_PROMPT_VERSION = os.getenv("AI_ENRICHMENT_PROMPT_VERSION", "2026-07-09-v1")
+AI_ENRICHMENT_SCHEMA_VERSION = os.getenv("AI_ENRICHMENT_SCHEMA_VERSION", "1")
 PARSER_VERSION = "v1"
 
 # GeM Forward Auction (requires India IP or SSH fallback via Hostinger)

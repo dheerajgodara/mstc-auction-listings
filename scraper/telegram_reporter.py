@@ -254,3 +254,76 @@ def send_telegram_message(text: str, *, timeout: int = 15, parse_mode: str = "HT
 
 def send_telegram_report(payload: dict[str, Any], *, event: str) -> bool:
     return send_telegram_message(build_telegram_message(payload, event=event))
+
+
+def build_ai_enrichment_message(payload: dict[str, Any]) -> str:
+    selection = payload.get("selection") or {}
+    cache = payload.get("cache_stats") or {}
+    details = payload.get("details") or []
+    ready_models: dict[str, int] = {}
+    for detail in details:
+        model = detail.get("model")
+        if model:
+            ready_models[str(model)] = ready_models.get(str(model), 0) + 1
+
+    title = "🤖 Scrap Auction India AI enrichment report"
+    lines = [f"<b>{_h(title)}</b>"]
+    lines.extend(
+        _section(
+            "Run",
+            [
+                _row("Mode", "live OpenRouter" if payload.get("allow_network") else "mock/no-network"),
+                _row("Processed", payload.get("processed", 0)),
+                _row("Ready", payload.get("ready", 0)),
+                _row("Skipped", payload.get("skipped", 0)),
+                _row("Rejected", payload.get("rejected", 0)),
+                _row("Failed", payload.get("failed", 0)),
+                _row("Prompt/schema", f"{payload.get('prompt_version')} / {payload.get('schema_version')}"),
+            ],
+        )
+    )
+    lines.extend(
+        _section(
+            "Priority Selection",
+            [
+                _row("Eligible", selection.get("eligible", "n/a")),
+                _row("Selected", selection.get("selected", "n/a")),
+                _row("Current cache skipped", selection.get("current_cache_skipped", "n/a")),
+                _row("Sources", _fmt_source_counts(selection.get("selected_by_source") or {})),
+            ],
+        )
+    )
+    reasons = selection.get("priority_reason_counts") or {}
+    if reasons:
+        top_reasons = sorted(reasons.items(), key=lambda x: x[1], reverse=True)[:8]
+        lines.extend(
+            _section(
+                "Why These Listings",
+                [_row("Top reasons", ", ".join(f"{k}={v}" for k, v in top_reasons))],
+            )
+        )
+    top_selected = selection.get("top_selected") or []
+    if top_selected:
+        rows = []
+        for item in top_selected[:5]:
+            rows.append(
+                _row(
+                    str(item.get("auction_id")),
+                    f"score={item.get('score')} | {', '.join((item.get('reasons') or [])[:3])}",
+                )
+            )
+        lines.extend(_section("Top Selected", rows))
+    cache_rows = [
+        _row("Ready cache", cache.get("ready", 0)),
+        _row("Rejected cache", cache.get("rejected", 0)),
+        _row("Failed cache", cache.get("failed", 0)),
+        _row("Total cache", cache.get("total", 0)),
+    ]
+    lines.extend(_section("Cache", cache_rows))
+    if ready_models:
+        lines.extend(_section("Models", [_row("Used", _fmt_source_counts(ready_models))]))
+    return "\n".join(lines)
+
+
+def send_ai_enrichment_report(payload: dict[str, Any]) -> bool:
+    return send_telegram_message(build_ai_enrichment_message(payload))
