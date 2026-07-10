@@ -11,7 +11,7 @@
 
 We will build a **standalone static dashboard** at:
 
-`https://lightcyan-camel-979846.hostingersite.com/gem-reports/`
+`https://scrapauctionindia.com/gem-reports/`
 
 completely isolated from the live MSTC site (`/auctions/`). Each of 63 premium auctions gets a **self-contained HTML report** (all CSS/JS inlined — portable, offline-capable) plus a **hub** with sortable master index, portfolio-level KPIs, and cross-auction analytics.
 
@@ -93,7 +93,7 @@ work/
 ```bash
 HOSTINGER_GEM_REPORTS_DIR=.../public_html/gem-reports
 OPENROUTER_API_KEY=...          # lot extraction QA / ambiguous OCR
-GEM_REPORTS_BASE_URL=https://lightcyan-camel-979846.hostingersite.com/gem-reports
+GEM_REPORTS_BASE_URL=https://scrapauctionindia.com/gem-reports
 ```
 
 ### 3.4 Deploy command (isolated)
@@ -694,8 +694,8 @@ Please confirm before build starts:
 | Operational SOP (v1) | `docs/GEM_PREMIUM_ANALYSIS_SOP.md` |
 | Premium auction data | `work/gem_premium_auctions.json` |
 | Draft analysis #1 | `work/gem_premium_analysis/01_auction_34458.md` |
-| Live MSTC (untouched) | `https://lightcyan-camel-979846.hostingersite.com/auctions/` |
-| Target hub | `https://lightcyan-camel-979846.hostingersite.com/gem-reports/` |
+| Live MSTC (untouched) | `https://scrapauctionindia.com/auctions/` |
+| Target hub | `https://scrapauctionindia.com/gem-reports/` |
 
 ---
 

@@ -26,14 +26,14 @@
 
 | Item | Path |
 |------|------|
-| **Existing MSTC site (do not touch)** | `public_html/auctions/` → `https://lightcyan-camel-979846.hostingersite.com/auctions/` |
-| **New GeM analysis site** | `public_html/gem-reports/` → `https://lightcyan-camel-979846.hostingersite.com/gem-reports/` |
+| **Existing MSTC site (do not touch)** | `public_html/auctions/` → `https://scrapauctionindia.com/auctions/` |
+| **New GeM analysis site** | `public_html/gem-reports/` → `https://scrapauctionindia.com/gem-reports/` |
 
 Deploy uses same SSH credentials as repo (`HOSTINGER_*` in `.env`); only `HOSTINGER_GEM_REPORTS_DIR` differs.
 
 ```bash
 # .env addition (not committed)
-HOSTINGER_GEM_REPORTS_DIR=/home/u268110164/domains/lightcyan-camel-979846.hostingersite.com/public_html/gem-reports
+HOSTINGER_GEM_REPORTS_DIR=/home/u268110164/domains/scrapauctionindia.com/public_html/gem-reports
 ```
 
 ### 1.2 Repo (source of truth)
@@ -344,7 +344,7 @@ PYTHONPATH=. python -m scraper.gem_reports_deploy
 
 `gem_reports_deploy.py` rsyncs `gem-reports/build/` → `$HOSTINGER_GEM_REPORTS_DIR`.
 
-**Verify:** `https://lightcyan-camel-979846.hostingersite.com/gem-reports/auctions/34458/`
+**Verify:** `https://scrapauctionindia.com/gem-reports/auctions/34458/`
 
 ---
 
@@ -460,9 +460,9 @@ Full ID list: `work/gem_premium_auctions.json` → sort by `fresh_summary.total_
 
 | Page | URL |
 |------|-----|
-| Hub | `https://lightcyan-camel-979846.hostingersite.com/gem-reports/` |
-| Auction #1 | `https://lightcyan-camel-979846.hostingersite.com/gem-reports/auctions/34458/` |
-| MSTC (unchanged) | `https://lightcyan-camel-979846.hostingersite.com/auctions/` |
+| Hub | `https://scrapauctionindia.com/gem-reports/` |
+| Auction #1 | `https://scrapauctionindia.com/gem-reports/auctions/34458/` |
+| MSTC (unchanged) | `https://scrapauctionindia.com/auctions/` |
 
 ---
 

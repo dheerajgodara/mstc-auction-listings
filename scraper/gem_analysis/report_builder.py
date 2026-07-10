@@ -7,7 +7,7 @@ from typing import Any
 from scraper.config import REPO_ROOT
 from scraper.gem_analysis.pipeline import PREMIUM_JSON, BUILD_DIR, WORK
 
-BASE_URL = "https://lightcyan-camel-979846.hostingersite.com/gem-reports"
+BASE_URL = "https://scrapauctionindia.com/gem-reports"
 
 
 def _inr(n: float | None) -> str:

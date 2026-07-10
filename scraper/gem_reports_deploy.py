@@ -15,7 +15,7 @@ load_dotenv()
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BUILD_DIR = REPO_ROOT / "gem-reports" / "build"
 DEFAULT_REMOTE = (
-    "/home/u268110164/domains/lightcyan-camel-979846.hostingersite.com/public_html/gem-reports"
+    "/home/u268110164/domains/scrapauctionindia.com/public_html/gem-reports"
 )
 
 
@@ -61,7 +61,7 @@ def deploy(build_dir: Path | None = None) -> None:
             ["scp", "-i", key, "-P", port, "-r", str(source) + "/.", f"{target}:{remote}/"],
             check=True,
         )
-    _log("Done: https://lightcyan-camel-979846.hostingersite.com/gem-reports/")
+    _log("Done: https://scrapauctionindia.com/gem-reports/")
 
 
 def main() -> int:
