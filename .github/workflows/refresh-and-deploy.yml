@@ -2,13 +2,17 @@ name: Refresh and Deploy
 
 on:
   schedule:
-    # Four daily production refresh attempts.
-    # IST: 02:00, 08:00, 14:00, 20:00
-    # UTC: 20:30 previous day, 02:30, 08:30, 14:30
-    - cron: "30 20 * * *"
-    - cron: "30 2 * * *"
-    - cron: "30 8 * * *"
-    - cron: "30 14 * * *"
+    # Eight daily production refresh attempts.
+    # IST: 00:30, 03:30, 06:30, 09:30, 12:30, 15:30, 18:30, 21:30
+    # UTC: 19:00 previous day, 22:00 previous day, 01:00, 04:00, 07:00, 10:00, 13:00, 16:00
+    - cron: "0 19 * * *"
+    - cron: "0 22 * * *"
+    - cron: "0 1 * * *"
+    - cron: "0 4 * * *"
+    - cron: "0 7 * * *"
+    - cron: "0 10 * * *"
+    - cron: "0 13 * * *"
+    - cron: "0 16 * * *"
   workflow_dispatch:
     inputs:
       deploy:
@@ -23,6 +27,10 @@ on:
         description: "Max MSTC document downloads per run"
         required: false
         default: "2000"
+      max_deep_scrape:
+        description: "Max auctions to deep scrape in this run"
+        required: false
+        default: "200"
 
 jobs:
   refresh-and-deploy:
@@ -89,6 +97,7 @@ jobs:
           PYTHONPATH=. python -m scraper.refresh_and_deploy \
             --sources mstc,gem_forward,eauction \
             --max-docs-per-run "${{ github.event.inputs.max_docs_per_run || '2000' }}" \
+            --max-deep-scrape "${{ github.event.inputs.max_deep_scrape || '200' }}" \
             --min-count 1000 \
             --break-stale-lock \
             --warn-missing-eauction \

@@ -14,7 +14,7 @@ from scraper.incremental import ChangeDecision, compare_exports, load_export
 
 IST = ZoneInfo("Asia/Kolkata")
 
-WorkAction = Literal["deep_parse", "reuse_previous", "mark_removed"]
+WorkAction = Literal["deep_parse", "reuse_previous", "reuse_discovery", "mark_removed"]
 
 
 class WorkPlanItem(BaseModel):

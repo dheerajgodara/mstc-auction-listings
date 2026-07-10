@@ -35,6 +35,7 @@ from scraper.http_verify import verify_live_site
 from scraper.import_tracking import finalize_export_payload
 from scraper.incremental_materialize import materialize_incremental_export
 from scraper.incremental_plan import build_work_plan, write_action_id_lists, write_work_plan
+from scraper.incremental_queue import apply_queue_limit, finalize_queue_after_run
 from scraper.merge_batches import merge_batches
 from scraper.predeploy_verify import verify_predeploy_build
 from scraper.promote_export import promote_export
@@ -76,6 +77,7 @@ class RefreshConfig:
     eauction_warn_only: bool = False
     fallback_sources: list[str] = field(default_factory=lambda: ["eauction"])
     full_reconcile: bool = False
+    max_deep_scrape_per_run: int = 200
     repo_root: Path = REPO_ROOT
     lock_path: Path = DEFAULT_LOCK_PATH
 
@@ -242,6 +244,8 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
         "min_closing_date": min_closing_date,
         "sources": config.sources,
         "deploy_requested": config.deploy,
+        "max_deep_scrape_per_run": config.max_deep_scrape_per_run,
+        "mode": "full_reconcile" if config.full_reconcile else "incremental_queue",
         "site_base_url": SITE_BASE_URL,
         "github_run_url": (
             f"{os.environ.get('GITHUB_SERVER_URL')}/{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/"
@@ -293,6 +297,9 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
         previous_export = load_export(production_json)
 
         work_plan_path: Path | None = None
+        full_work_plan_path: Path | None = None
+        queue_path = config.repo_root / "work" / "incremental_queue.json"
+        selected_keys: set[str] = set()
         parsed_deep_path = run_dir / "parsed_deep_auctions.json"
         if not config.full_reconcile:
             if not previous_export or int(previous_export.get("count", 0) or 0) <= 0:
@@ -318,16 +325,29 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             }
 
             plan_started = time.monotonic()
-            work_plan = build_work_plan(discovery_data, previous_export)
-            work_plan_path = run_dir / "incremental_work_plan.json"
+            full_work_plan = build_work_plan(discovery_data, previous_export)
+            full_work_plan_path = run_dir / "incremental_work_plan.full.json"
+            write_work_plan(full_work_plan_path, full_work_plan)
+            work_plan, queue_state = apply_queue_limit(
+                full_work_plan,
+                queue_path=queue_path,
+                max_deep_scrape_per_run=config.max_deep_scrape_per_run,
+                previous_export=previous_export,
+            )
+            selected_keys = set(queue_state.selected_keys)
+            work_plan_path = run_dir / "incremental_work_plan.selected.json"
             write_work_plan(work_plan_path, work_plan)
             write_action_id_lists(run_dir / "incremental_ids", work_plan)
             payload["incremental_work_plan"] = {
                 "duration_sec": round(time.monotonic() - plan_started, 2),
+                "full_path": str(full_work_plan_path),
                 "path": str(work_plan_path),
-                "counts": work_plan.counts,
-                "action_counts": work_plan.action_counts,
-                "by_source": work_plan.by_source,
+                "full_counts": full_work_plan.counts,
+                "full_action_counts": full_work_plan.action_counts,
+                "selected_counts": work_plan.counts,
+                "selected_action_counts": work_plan.action_counts,
+                "selected_by_source": work_plan.by_source,
+                "queue": queue_state.model_dump(mode="json"),
             }
 
         # 1. Batch scrape
@@ -387,19 +407,28 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
 
         if work_plan_path:
             materialize_started = time.monotonic()
-            work_plan = build_work_plan(discovery_data, previous_export)
             parsed_deep_data = _export_to_payload(export, parsed_deep_path)
+            queue_state_after = finalize_queue_after_run(
+                queue_path=queue_path,
+                selected_keys=selected_keys,
+                parsed_export=parsed_deep_data,
+                max_deep_scrape_per_run=config.max_deep_scrape_per_run,
+                previous_export=previous_export,
+            )
             candidate_data = materialize_incremental_export(
                 work_plan=work_plan,
                 previous_export=previous_export,
                 parsed_export=parsed_deep_data,
-                allow_missing_deep_parse=False,
+                discovery_export=discovery_data,
+                allow_missing_deep_parse=True,
             )
+            candidate_data.setdefault("stats", {})["incremental_queue_state"] = queue_state_after.model_dump(mode="json")
             _write_candidate_payload(candidate_path, candidate_data)
             payload["incremental_materialize"] = {
                 "duration_sec": round(time.monotonic() - materialize_started, 2),
                 **(candidate_data.get("stats", {}).get("incremental_materialize") or {}),
             }
+            payload["incremental_queue"] = queue_state_after.model_dump(mode="json")
         else:
             candidate_data = _export_to_payload(export, candidate_path)
 
@@ -628,6 +657,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Full refresh pipeline: scrape, QA, promote, build, deploy")
     parser.add_argument("--sources", default="mstc,gem_forward,eauction")
     parser.add_argument("--max-docs-per-run", type=int, default=2000)
+    parser.add_argument("--max-deep-scrape", type=int, default=200)
     parser.add_argument("--min-count", type=int, default=1000)
     parser.add_argument("--deploy", action="store_true", help="Deploy to Hostinger after successful build")
     parser.add_argument("--no-deploy", action="store_true", help="Do not deploy (default)")
@@ -667,6 +697,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_failed_batches=args.allow_failed_batches,
         eauction_warn_only=args.warn_missing_eauction,
         full_reconcile=args.full_reconcile,
+        max_deep_scrape_per_run=args.max_deep_scrape,
     )
 
     try:

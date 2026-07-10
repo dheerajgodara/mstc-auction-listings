@@ -35,6 +35,10 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
     deploy = payload.get("deploy") or {}
     gates = payload.get("safety_gates") or {}
     fallback = payload.get("source_fallback") or {}
+    discovery = payload.get("discovery") or {}
+    work_plan = payload.get("incremental_work_plan") or {}
+    queue = payload.get("incremental_queue") or (work_plan.get("queue") or {})
+    batch = payload.get("batch_scrape") or {}
     errors = payload.get("errors") or []
     warnings = payload.get("warnings") or []
 
@@ -55,6 +59,37 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
         lines.append(f"Finished: {payload.get('finished_at')}")
     if payload.get("min_closing_date"):
         lines.append(f"Min closing: {payload.get('min_closing_date')}")
+    if payload.get("mode"):
+        lines.append(f"Mode: {payload.get('mode')} | cap={payload.get('max_deep_scrape_per_run', 'n/a')}")
+    if discovery:
+        src = discovery.get("by_source") or {}
+        if src:
+            lines.append("Discovery: " + ", ".join(f"{k}={v}" for k, v in sorted(src.items())))
+    if work_plan:
+        actions = work_plan.get("selected_action_counts") or work_plan.get("action_counts") or {}
+        full_actions = work_plan.get("full_action_counts") or {}
+        if actions:
+            lines.append(
+                "Plan: "
+                + f"selected_deep={actions.get('deep_parse', 0)}"
+                + f" / full_deep={full_actions.get('deep_parse', actions.get('deep_parse', 0))}"
+            )
+    if queue:
+        lines.append(
+            "Queue: "
+            + f"selected={queue.get('selected_count', 0)} "
+            + f"pending={queue.get('pending_after_selection', 0)} "
+            + f"eta_runs={queue.get('estimated_runs_to_clear', 0)}"
+        )
+    if batch:
+        summary = batch.get("manifest_summary") or {}
+        if summary:
+            lines.append(
+                "Deep scrape: "
+                + f"done={summary.get('done', 0)} "
+                + f"failed={summary.get('failed', 0)} "
+                + f"total={summary.get('total', 0)}"
+            )
     if payload.get("total_auctions") is not None:
         lines.append(f"Auctions: {payload.get('total_auctions')} | Lots: {payload.get('total_lots')}")
     if by_source:

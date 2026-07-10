@@ -517,5 +517,6 @@ def test_refresh_uses_incremental_work_plan_by_default(
 
     assert result.status == "success"
     assert mock_batch.call_args.kwargs["work_plan_path"] is not None
-    assert (repo / "work" / "runs" / result.run_id / "incremental_work_plan.json").is_file()
+    assert (repo / "work" / "runs" / result.run_id / "incremental_work_plan.full.json").is_file()
+    assert (repo / "work" / "runs" / result.run_id / "incremental_work_plan.selected.json").is_file()
     assert (repo / "work" / "runs" / result.run_id / "future_full_auctions.json").is_file()

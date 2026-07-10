@@ -27,14 +27,17 @@ def materialize_incremental_export(
     work_plan: IncrementalWorkPlan,
     previous_export: dict[str, Any],
     parsed_export: dict[str, Any],
+    discovery_export: dict[str, Any] | None = None,
     allow_missing_deep_parse: bool = False,
 ) -> dict[str, Any]:
     previous_idx = build_record_index(previous_export)
     parsed_idx = build_record_index(parsed_export)
+    discovery_idx = build_record_index(discovery_export) if discovery_export else {}
 
     records: list[dict[str, Any]] = []
     missing_deep_parse: list[str] = []
     reused = 0
+    reused_discovery = 0
     deep_used = 0
     removed = 0
 
@@ -57,8 +60,30 @@ def materialize_incremental_export(
                     records.append(previous_record)
                     reused += 1
                     missing_deep_parse.append(item.stable_key)
+                else:
+                    discovery_record = discovery_idx.get(item.stable_key)
+                    if discovery_record:
+                        records.append(_mark_pending_shallow(discovery_record))
+                        reused_discovery += 1
+                        missing_deep_parse.append(item.stable_key)
             else:
                 missing_deep_parse.append(item.stable_key)
+        elif item.action == "reuse_discovery":
+            previous_record = previous_idx.get(item.stable_key)
+            if previous_record and not _needs_shallow_placeholder(previous_record):
+                records.append(previous_record)
+                reused += 1
+            else:
+                discovery_record = discovery_idx.get(item.stable_key)
+                if discovery_record:
+                    records.append(_mark_pending_shallow(discovery_record))
+                    reused_discovery += 1
+                elif previous_record:
+                    records.append(previous_record)
+                    reused += 1
+                    missing_deep_parse.append(item.stable_key)
+                else:
+                    missing_deep_parse.append(item.stable_key)
         elif item.action == "mark_removed":
             removed += 1
 
@@ -72,6 +97,7 @@ def materialize_incremental_export(
         "enabled": True,
         "work_plan_generated_at": work_plan.generated_at,
         "reused_previous_records": reused,
+        "reused_discovery_records": reused_discovery,
         "deep_parsed_records": deep_used,
         "removed_records": removed,
         "missing_deep_parse_records": len(missing_deep_parse),
@@ -88,6 +114,24 @@ def materialize_incremental_export(
         "auctions": records,
         "stats": stats,
     }
+
+
+def _needs_shallow_placeholder(record: dict[str, Any]) -> bool:
+    status = str(record.get("status") or "").lower()
+    return status in {"listing_only", "partial", "failed"} or not record.get("lots")
+
+
+def _mark_pending_shallow(record: dict[str, Any]) -> dict[str, Any]:
+    pending = dict(record)
+    pending["status"] = "listing_only"
+    pending["parse_confidence"] = "minimal"
+    warnings = list(pending.get("warnings") or [])
+    if "deep_enrichment_pending" not in warnings:
+        warnings.append("deep_enrichment_pending")
+    pending["warnings"] = warnings
+    pending["missing_fields"] = sorted(set((pending.get("missing_fields") or []) + ["lots"]))
+    pending.setdefault("lots", [])
+    return pending
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -107,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         work_plan=work_plan,
         previous_export=previous,
         parsed_export=parsed,
+        discovery_export=None,
         allow_missing_deep_parse=args.allow_missing_deep_parse,
     )
     write_auctions_json(args.out, output, allow_small_output=args.allow_small_output)
