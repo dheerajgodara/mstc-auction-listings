@@ -69,21 +69,17 @@ def materialize_incremental_export(
             else:
                 missing_deep_parse.append(item.stable_key)
         elif item.action == "reuse_discovery":
+            discovery_record = discovery_idx.get(item.stable_key)
             previous_record = previous_idx.get(item.stable_key)
-            if previous_record and not _needs_shallow_placeholder(previous_record):
+            if discovery_record:
+                records.append(_mark_pending_shallow(discovery_record))
+                reused_discovery += 1
+            elif previous_record:
                 records.append(previous_record)
                 reused += 1
+                missing_deep_parse.append(item.stable_key)
             else:
-                discovery_record = discovery_idx.get(item.stable_key)
-                if discovery_record:
-                    records.append(_mark_pending_shallow(discovery_record))
-                    reused_discovery += 1
-                elif previous_record:
-                    records.append(previous_record)
-                    reused += 1
-                    missing_deep_parse.append(item.stable_key)
-                else:
-                    missing_deep_parse.append(item.stable_key)
+                missing_deep_parse.append(item.stable_key)
         elif item.action == "mark_removed":
             removed += 1
 

@@ -168,3 +168,48 @@ def test_materialize_keeps_shallow_pending_discovery_records(tmp_path: Path):
     by_id = {a["source_auction_id"]: a for a in out["auctions"]}
     assert by_id["new"]["status"] == "listing_only"
     assert "deep_enrichment_pending" in by_id["new"]["warnings"]
+
+
+def test_materialize_pending_changed_record_prefers_fresh_discovery_over_previous(tmp_path: Path):
+    previous = _export(
+        _auction(
+            "577846",
+            title="Old enriched",
+            closing="2026-07-04T14:00:00+05:30",
+        )
+    )
+    discovery = _export(
+        _auction(
+            "577846",
+            title="Fresh shell",
+            closing="2026-07-15T14:00:00+05:30",
+            status="listing_only",
+        )
+    )
+    discovery["stats"] = {"discovery_only": True, "source_stats": {"mstc": {"complete": True}}}
+    plan = build_work_plan(discovery, previous)
+    limited = plan.model_copy(
+        update={
+            "items": [
+                item.model_copy(update={"action": "reuse_discovery"})
+                if item.action == "deep_parse"
+                else item
+                for item in plan.items
+            ]
+        }
+    )
+
+    out = materialize_incremental_export(
+        work_plan=limited,
+        previous_export=previous,
+        parsed_export=_export(),
+        discovery_export=discovery,
+        allow_missing_deep_parse=True,
+    )
+
+    assert out["count"] == 1
+    record = out["auctions"][0]
+    assert record["closing"] == "2026-07-15T14:00:00+05:30"
+    assert record["item_summary"] == "Fresh shell"
+    assert record["status"] == "listing_only"
+    assert "deep_enrichment_pending" in record["warnings"]
