@@ -570,3 +570,14 @@ def test_refresh_uses_incremental_work_plan_by_default(
     assert (repo / "work" / "runs" / result.run_id / "incremental_work_plan.full.json").is_file()
     assert (repo / "work" / "runs" / result.run_id / "incremental_work_plan.selected.json").is_file()
     assert (repo / "work" / "runs" / result.run_id / "future_full_auctions.json").is_file()
+
+
+def test_refresh_default_deep_scrape_cap_is_400():
+    from scraper.refresh_and_deploy import RefreshConfig, build_parser_for_tests
+
+    config = RefreshConfig()
+    assert config.max_deep_scrape_per_run == 400
+
+    parser = build_parser_for_tests()
+    args = parser.parse_args([])
+    assert args.max_deep_scrape == 400

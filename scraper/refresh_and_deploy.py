@@ -89,7 +89,7 @@ class RefreshConfig:
     eauction_warn_only: bool = False
     fallback_sources: list[str] = field(default_factory=lambda: ["eauction"])
     full_reconcile: bool = False
-    max_deep_scrape_per_run: int = 200
+    max_deep_scrape_per_run: int = 400
     repo_root: Path = REPO_ROOT
     lock_path: Path = DEFAULT_LOCK_PATH
 
@@ -702,15 +702,11 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             release_refresh_lock(config.repo_root / config.lock_path, run_id=run_id)
 
 
-def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+def build_parser_for_tests() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Full refresh pipeline: scrape, QA, promote, build, deploy")
     parser.add_argument("--sources", default="mstc,gem_forward,eauction")
     parser.add_argument("--max-docs-per-run", type=int, default=2000)
-    parser.add_argument("--max-deep-scrape", type=int, default=200)
+    parser.add_argument("--max-deep-scrape", type=int, default=400)
     parser.add_argument("--min-count", type=int, default=1000)
     parser.add_argument("--deploy", action="store_true", help="Deploy to Hostinger after successful build")
     parser.add_argument("--no-deploy", action="store_true", help="Do not deploy (default)")
@@ -729,6 +725,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Manual-only full deep scrape. Scheduled production runs should omit this.",
     )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    parser = build_parser_for_tests()
     args = parser.parse_args(argv)
 
     sources = [s.strip().lower() for s in args.sources.split(",") if s.strip()]
