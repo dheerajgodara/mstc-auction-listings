@@ -365,6 +365,7 @@ def test_refresh_dry_run_no_deploy_when_gates_fail(
         lock_path=Path("work/refresh.lock"),
         deploy=False,
         skip_build=True,
+        full_reconcile=True,
         force_min_closing_date="2026-07-04",
         max_docs_per_run=10,
     )
@@ -431,9 +432,90 @@ def test_refresh_no_deploy_on_success_without_flag(
         lock_path=Path("work/refresh.lock"),
         deploy=False,
         skip_build=True,
+        full_reconcile=True,
         force_min_closing_date="2026-07-04",
     )
     result = run_refresh_and_deploy(config)
     assert result.status == "success"
     mock_promote.assert_called_once()
     mock_subprocess.assert_not_called()
+
+
+@patch("scraper.refresh_and_deploy.run_discovery")
+@patch("scraper.refresh_and_deploy.batch_run")
+@patch("scraper.refresh_and_deploy.merge_batches")
+@patch("scraper.refresh_and_deploy.run_safety_gates")
+@patch("scraper.refresh_and_deploy.promote_export")
+@patch("scraper.refresh_and_deploy._run_subprocess")
+def test_refresh_uses_incremental_work_plan_by_default(
+    mock_subprocess,
+    mock_promote,
+    mock_gates,
+    mock_merge,
+    mock_batch,
+    mock_discovery,
+    tmp_path: Path,
+):
+    from scraper.models import AuctionRecord, AuctionsExport, LotRecord
+    from scraper.refresh_and_deploy import RefreshConfig, run_refresh_and_deploy
+    from scraper.safety_gates import SafetyGateResult
+
+    repo = tmp_path
+    (repo / "web" / "public" / "data").mkdir(parents=True)
+    production = repo / "web/public/data/auctions.json"
+    previous_record = _record_dict("1", source="mstc", closing="2026-07-10T10:00:00+05:30")
+    _write_export(production, [previous_record])
+
+    discovery_record = AuctionRecord(
+        id="1",
+        source="mstc",
+        source_auction_id="1",
+        auction_number="1",
+        region="JPR",
+        office="JPR",
+        closing=datetime(2026, 7, 10, 10, tzinfo=IST),
+        lots=[LotRecord(lot_id="1", item_title="Item")],
+    )
+    mock_discovery.return_value = AuctionsExport(
+        generated_at=datetime.now(IST),
+        count=1,
+        auctions=[discovery_record],
+        stats={
+            "discovery_only": True,
+            "by_source": {"mstc": 1},
+            "source_stats": {"mstc": {"complete": True}},
+        },
+    )
+    mock_batch.return_value = MagicMock(
+        data={"batches": [], "docs_budget_remaining": 10},
+        summary=lambda: {"done": 0, "total": 0},
+    )
+    mock_merge.return_value = AuctionsExport(
+        generated_at=datetime.now(IST),
+        count=1,
+        auctions=[discovery_record],
+        stats={"total_lots_in_export": 1, "by_source": {"mstc": 1}},
+    )
+    mock_gates.return_value = SafetyGateResult(
+        passed=True,
+        qa_report={"passed": True, "total_auctions": 1},
+        candidate_count=1,
+        production_count=1,
+        by_source={"mstc": 1},
+    )
+    mock_promote.return_value = repo / "work/backups/auctions_test.json"
+
+    config = RefreshConfig(
+        repo_root=repo,
+        lock_path=Path("work/refresh.lock"),
+        deploy=False,
+        skip_build=True,
+        force_min_closing_date="2026-07-04",
+        min_count=1,
+    )
+    result = run_refresh_and_deploy(config)
+
+    assert result.status == "success"
+    assert mock_batch.call_args.kwargs["work_plan_path"] is not None
+    assert (repo / "work" / "runs" / result.run_id / "incremental_work_plan.json").is_file()
+    assert (repo / "work" / "runs" / result.run_id / "future_full_auctions.json").is_file()

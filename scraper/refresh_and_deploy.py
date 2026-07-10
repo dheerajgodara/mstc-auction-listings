@@ -28,10 +28,13 @@ from scraper.config import (
     SITE_BASE_URL,
 )
 from scraper.deploy import deploy as deploy_to_hostinger
+from scraper.discovery import run_discovery
 from scraper.export_guard import ExportGuardError
 from scraper.filters import tomorrow_min_closing_date, make_run_id
 from scraper.http_verify import verify_live_site
 from scraper.import_tracking import finalize_export_payload
+from scraper.incremental_materialize import materialize_incremental_export
+from scraper.incremental_plan import build_work_plan, write_action_id_lists, write_work_plan
 from scraper.merge_batches import merge_batches
 from scraper.predeploy_verify import verify_predeploy_build
 from scraper.promote_export import promote_export
@@ -72,6 +75,7 @@ class RefreshConfig:
     allow_failed_batches: bool = False
     eauction_warn_only: bool = False
     fallback_sources: list[str] = field(default_factory=lambda: ["eauction"])
+    full_reconcile: bool = False
     repo_root: Path = REPO_ROOT
     lock_path: Path = DEFAULT_LOCK_PATH
 
@@ -288,6 +292,44 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
         payload["previous_production_summary"] = load_production_summary(production_json)
         previous_export = load_export(production_json)
 
+        work_plan_path: Path | None = None
+        parsed_deep_path = run_dir / "parsed_deep_auctions.json"
+        if not config.full_reconcile:
+            if not previous_export or int(previous_export.get("count", 0) or 0) <= 0:
+                raise RuntimeError(
+                    "incremental refresh requires previous production data; "
+                    "bootstrap failed and full scrape is disabled"
+                )
+
+            discovery_started = time.monotonic()
+            discovery_path = run_dir / "discovery_latest.json"
+            discovery_export = run_discovery(
+                sources=config.sources,
+                out_path=discovery_path,
+                min_closing_date=min_closing_date,
+                allow_small_output=True,
+            )
+            discovery_data = _export_to_payload(discovery_export, discovery_path)
+            payload["discovery"] = {
+                "duration_sec": round(time.monotonic() - discovery_started, 2),
+                "count": discovery_export.count,
+                "by_source": discovery_export.stats.get("by_source"),
+                "source_stats": discovery_export.stats.get("source_stats"),
+            }
+
+            plan_started = time.monotonic()
+            work_plan = build_work_plan(discovery_data, previous_export)
+            work_plan_path = run_dir / "incremental_work_plan.json"
+            write_work_plan(work_plan_path, work_plan)
+            write_action_id_lists(run_dir / "incremental_ids", work_plan)
+            payload["incremental_work_plan"] = {
+                "duration_sec": round(time.monotonic() - plan_started, 2),
+                "path": str(work_plan_path),
+                "counts": work_plan.counts,
+                "action_counts": work_plan.action_counts,
+                "by_source": work_plan.by_source,
+            }
+
         # 1. Batch scrape
         scrape_started = time.monotonic()
         manifest = batch_run(
@@ -301,6 +343,7 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             resume=bool(config.resume_run_id),
             force=False,
             skip_docs=config.skip_docs,
+            work_plan_path=work_plan_path,
         )
         failed_batches = [
             b.get("batch_id")
@@ -316,11 +359,11 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
         if failed_batches and not config.allow_failed_batches:
             raise RuntimeError(f"batch scrape had failures: {', '.join(failed_batches)}")
 
-        # 2. Merge
+        # 2. Merge parsed/deep records
         merge_started = time.monotonic()
         export = merge_batches(
             batch_dir=batches_dir,
-            out_path=candidate_path,
+            out_path=parsed_deep_path if work_plan_path else candidate_path,
             min_closing_date=min_closing_date,
         )
         payload["merge"] = {
@@ -342,12 +385,29 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             "failed_by_doc_type": doc_stats.get("failed_by_doc_type") or {},
         }
 
+        if work_plan_path:
+            materialize_started = time.monotonic()
+            work_plan = build_work_plan(discovery_data, previous_export)
+            parsed_deep_data = _export_to_payload(export, parsed_deep_path)
+            candidate_data = materialize_incremental_export(
+                work_plan=work_plan,
+                previous_export=previous_export,
+                parsed_export=parsed_deep_data,
+                allow_missing_deep_parse=False,
+            )
+            _write_candidate_payload(candidate_path, candidate_data)
+            payload["incremental_materialize"] = {
+                "duration_sec": round(time.monotonic() - materialize_started, 2),
+                **(candidate_data.get("stats", {}).get("incremental_materialize") or {}),
+            }
+        else:
+            candidate_data = _export_to_payload(export, candidate_path)
+
         # 2b. Fallback and finalization before gates.
         #
         # Safety gates validate import metadata, so candidate metadata must be
         # stamped before gates run. Also, a source-wide zero result for a flaky
         # source such as eAuction should not erase still-future production rows.
-        candidate_data = _export_to_payload(export, candidate_path)
         candidate_data, fallback_report = apply_missing_source_fallback(
             candidate_data,
             previous_export=previous_export,
@@ -581,6 +641,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-large-drop", action="store_true")
     parser.add_argument("--allow-failed-batches", action="store_true")
     parser.add_argument("--warn-missing-eauction", action="store_true")
+    parser.add_argument(
+        "--full-reconcile",
+        action="store_true",
+        help="Manual-only full deep scrape. Scheduled production runs should omit this.",
+    )
     args = parser.parse_args(argv)
 
     sources = [s.strip().lower() for s in args.sources.split(",") if s.strip()]
@@ -601,6 +666,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_large_drop=args.allow_large_drop,
         allow_failed_batches=args.allow_failed_batches,
         eauction_warn_only=args.warn_missing_eauction,
+        full_reconcile=args.full_reconcile,
     )
 
     try:

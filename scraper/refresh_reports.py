@@ -72,8 +72,11 @@ def render_final_report_md(payload: dict[str, Any]) -> str:
 
     lines.extend(["## Pipeline", ""])
     for step in (
+        "discovery",
+        "incremental_work_plan",
         "batch_scrape",
         "merge",
+        "incremental_materialize",
         "previous_production_bootstrap",
         "source_fallback",
         "candidate_finalization",
