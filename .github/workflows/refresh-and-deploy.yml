@@ -27,6 +27,14 @@ on:
         description: "Max auctions to deep scrape in this run"
         required: false
         default: "200"
+      full_reconcile:
+        description: "Manual catch-up: deep scrape every new/changed/repair listing"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   refresh-and-deploy:
@@ -105,6 +113,10 @@ jobs:
           if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ github.event.inputs.deploy }}" != "false" ]; then
             DEPLOY_FLAG="--deploy"
           fi
+          FULL_RECONCILE_FLAG=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.full_reconcile }}" = "true" ]; then
+            FULL_RECONCILE_FLAG="--full-reconcile"
+          fi
           PYTHONPATH=. python -m scraper.refresh_and_deploy \
             --sources mstc,gem_forward,eauction \
             --max-docs-per-run "${{ github.event.inputs.max_docs_per_run || '2000' }}" \
@@ -112,6 +124,7 @@ jobs:
             --min-count 1000 \
             --break-stale-lock \
             --warn-missing-eauction \
+            $FULL_RECONCILE_FLAG \
             $DEPLOY_FLAG
 
       - name: Post-deploy freshness check (warn-only)
