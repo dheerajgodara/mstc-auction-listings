@@ -3,9 +3,9 @@
 A lightweight, searchable listing site for [MSTC](https://www.mstcindia.co.in) e-auctions.  
 No VPS. No Google Sheets. Static site on Hostinger.
 
-**Current scope:** MSTC + GeM Forward + eAuction unified pipeline. Live site: https://lightcyan-camel-979846.hostingersite.com/auctions/ (automated daily refresh via GitHub Actions).
+**Current scope:** MSTC + GeM Forward + eAuction unified pipeline. Live site: https://scrapauctionindia.com/auctions/ (automated refresh via GitHub Actions).
 
-Live site: https://lightcyan-camel-979846.hostingersite.com/auctions/
+Live site: https://scrapauctionindia.com/auctions/
 
 ## What it does
 
@@ -185,7 +185,9 @@ pnpm run verify-build
 
 Deployment uses **SSH key authentication only**. The static export in `web/out/` is synced to Hostinger via `scraper/deploy.py` (rsync over SSH).
 
-Target: `/home/u268110164/domains/lightcyan-camel-979846.hostingersite.com/public_html/auctions`
+Target (production): `/home/u268110164/domains/scrapauctionindia.com/public_html/auctions`
+
+Do not deploy auction production builds to Hostinger preview subdomains. `scrapauctionindia.com` is the canonical production domain.
 
 ### Local deployment
 
@@ -194,7 +196,7 @@ export HOSTINGER_HOST=82.25.107.163
 export HOSTINGER_PORT=65002
 export HOSTINGER_USERNAME=u268110164
 export HOSTINGER_SSH_KEY=~/.ssh/cursor_mstc_auction_hostinger
-export HOSTINGER_REMOTE_DIR=/home/u268110164/domains/lightcyan-camel-979846.hostingersite.com/public_html/auctions
+export HOSTINGER_REMOTE_DIR=/home/u268110164/domains/scrapauctionindia.com/public_html/auctions
 
 PYTHONPATH=. python -m scraper.run_all \
   --sources mstc \
@@ -296,7 +298,7 @@ Required repository secrets:
 | `HOSTINGER_USERNAME` | SSH username |
 | `HOSTINGER_SSH_KEY` | Private key **contents** (not a path) |
 | `HOSTINGER_REMOTE_DIR` | Remote deploy path (`.../public_html/auctions`) |
-| `SITE_BASE_URL` | e.g. `https://lightcyan-camel-979846.hostingersite.com/auctions` |
+| `SITE_BASE_URL` | e.g. `https://scrapauctionindia.com/auctions` |
 | `OPENROUTER_API_KEY` | Optional AI fallback |
 | `OPENROUTER_MODEL` | Optional |
 | `OPENROUTER_FALLBACK_MODELS` | Optional |

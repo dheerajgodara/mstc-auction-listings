@@ -2,8 +2,9 @@
 
 ## Live site
 
-- **URL:** https://lightcyan-camel-979846.hostingersite.com/auctions/
-- **Host:** Hostinger static export at `/public_html/auctions`
+- **URL:** https://scrapauctionindia.com/auctions/
+- **Host:** Hostinger static export at `domains/scrapauctionindia.com/public_html/auctions`
+- **Canonical domain only:** `scrapauctionindia.com`. Hostinger preview subdomains are not production and must not receive scheduled auction deploys.
 
 ## Production workflow (authoritative)
 

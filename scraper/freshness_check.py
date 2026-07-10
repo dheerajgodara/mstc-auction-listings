@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check live auction export freshness")
     parser.add_argument(
         "--base-url",
-        default=SITE_BASE_URL or "https://lightcyan-camel-979846.hostingersite.com/auctions",
+        default=SITE_BASE_URL or "https://scrapauctionindia.com/auctions",
     )
     parser.add_argument("--max-age-hours", type=float, default=36.0)
     parser.add_argument("--min-count", type=int, default=1000)

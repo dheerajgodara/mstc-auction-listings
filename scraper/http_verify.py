@@ -68,7 +68,7 @@ def verify_live_site(
     warnings: list[str] = []
     checked: dict[str, str] = {}
 
-    site = (base_url or SITE_BASE_URL or "https://lightcyan-camel-979846.hostingersite.com/auctions").rstrip("/")
+    site = (base_url or SITE_BASE_URL or "https://scrapauctionindia.com/auctions").rstrip("/")
     index_url = f"{site}/"
     json_url = f"{site}/data/auctions.json"
     data_js_url = f"{site}/data/auctions-data.js"

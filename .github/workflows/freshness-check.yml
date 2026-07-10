@@ -23,5 +23,5 @@ jobs:
         env:
           SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
         run: |
-          BASE="${SITE_BASE_URL:-https://lightcyan-camel-979846.hostingersite.com/auctions}"
+          BASE="${SITE_BASE_URL:-https://scrapauctionindia.com/auctions}"
           PYTHONPATH=. python -m scraper.freshness_check --base-url "$BASE" --warn-only

@@ -42,7 +42,17 @@ def _load_config() -> dict[str, str]:
         _log(f"ERROR: Missing required environment variables: {', '.join(missing)}")
         sys.exit(1)
 
-    return {key: os.getenv(key, "").strip() for key in REQUIRED_ENV}
+    config = {key: os.getenv(key, "").strip() for key in REQUIRED_ENV}
+    remote_dir = config["HOSTINGER_REMOTE_DIR"]
+    expected = "/home/u268110164/domains/scrapauctionindia.com/public_html/auctions"
+    if remote_dir.rstrip("/") != expected:
+        _log("ERROR: Refusing auction deploy to non-production Hostinger path.")
+        _log(f"Expected HOSTINGER_REMOTE_DIR: {expected}")
+        _log(f"Actual HOSTINGER_REMOTE_DIR:   {remote_dir}")
+        _log("Production auction deploys must target scrapauctionindia.com only.")
+        sys.exit(1)
+
+    return config
 
 
 def _validate_build_dir(build_dir: Path) -> None:
