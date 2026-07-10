@@ -59,6 +59,17 @@ IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.refresh_and_deploy")
 
 
+def _repo_path(repo_root: Path, default_path: Path) -> Path:
+    """Resolve historical absolute config defaults under the active repo root."""
+    path = Path(default_path)
+    if path.is_absolute():
+        try:
+            path = path.relative_to(REPO_ROOT)
+        except ValueError:
+            return path
+    return repo_root / path
+
+
 @dataclass
 class RefreshConfig:
     sources: list[str] = field(default_factory=lambda: ["mstc", "gem_forward", "eauction"])
@@ -231,7 +242,7 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
     _setup_run_logging(logs_dir)
 
     min_closing_date = config.force_min_closing_date or tomorrow_min_closing_date()
-    production_json = config.repo_root / DEFAULT_JSON_OUT
+    production_json = _repo_path(config.repo_root, DEFAULT_JSON_OUT)
     web_dir = config.repo_root / "web"
     out_dir = web_dir / "out"
     backup_dir = config.repo_root / "work" / "backups"
@@ -356,9 +367,9 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
         manifest = batch_run(
             sources=config.sources,
             batch_dir=batches_dir,
-            pdf_dir=config.repo_root / DEFAULT_PDF_DIR,
-            docs_dir=config.repo_root / DEFAULT_DOCS_DIR,
-            thumbs_dir=config.repo_root / DEFAULT_THUMBS_DIR,
+            pdf_dir=_repo_path(config.repo_root, DEFAULT_PDF_DIR),
+            docs_dir=_repo_path(config.repo_root, DEFAULT_DOCS_DIR),
+            thumbs_dir=_repo_path(config.repo_root, DEFAULT_THUMBS_DIR),
             min_closing_date=min_closing_date,
             max_docs_per_run=config.max_docs_per_run,
             resume=bool(config.resume_run_id),
