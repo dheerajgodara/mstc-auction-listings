@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -194,6 +195,42 @@ def _export_count(path: Path) -> int:
     return int(data.get("count", len(data.get("auctions") or [])) or 0)
 
 
+def _parse_auctions_data_js(text: str) -> dict[str, Any] | None:
+    match = re.search(r"__AUCTIONS_EXPORT__\s*=\s*(\{.*\});?\s*$", text, re.S)
+    if not match:
+        return None
+    return json.loads(match.group(1))
+
+
+def _read_remote_production_bundle_via_ssh() -> str:
+    host = (os.environ.get("HOSTINGER_HOST") or "").strip()
+    port = (os.environ.get("HOSTINGER_PORT") or "22").strip()
+    username = (os.environ.get("HOSTINGER_USERNAME") or "").strip()
+    key_path = (os.environ.get("HOSTINGER_SSH_KEY") or "").strip()
+    remote_dir = (os.environ.get("HOSTINGER_REMOTE_DIR") or "").strip()
+    if not all([host, username, key_path, remote_dir]):
+        raise RuntimeError("Hostinger SSH bootstrap env is incomplete")
+
+    remote_file = f"{remote_dir.rstrip('/')}/data/auctions-data.js"
+    cmd = [
+        "ssh",
+        "-i",
+        key_path,
+        "-p",
+        port,
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        f"{username}@{host}",
+        f"cat {shlex.quote(remote_file)}",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "ssh bootstrap failed").strip())
+    return result.stdout
+
+
 def _bootstrap_previous_production_from_live(
     *,
     production_json: Path,
@@ -208,23 +245,26 @@ def _bootstrap_previous_production_from_live(
 
     clean_base = base_url.rstrip("/")
     url = f"{clean_base}/data/auctions-data.js?v=bootstrap"
+    data: dict[str, Any] | None = None
     try:
         with urllib.request.urlopen(url, timeout=60) as resp:
             text = resp.read().decode("utf-8")
+        data = _parse_auctions_data_js(text)
     except Exception as exc:
         warnings.append(f"could not bootstrap previous production from live site: {exc}")
-        return False
-
-    match = re.search(r"__AUCTIONS_EXPORT__\s*=\s*(\{.*\});?\s*$", text, re.S)
-    if not match:
-        warnings.append("could not bootstrap previous production: live data bundle parse failed")
-        return False
-
-    try:
-        data = json.loads(match.group(1))
-    except json.JSONDecodeError as exc:
-        warnings.append(f"could not bootstrap previous production: {exc}")
-        return False
+    if data is None:
+        if "live site" not in " ".join(warnings[-1:]):
+            warnings.append("could not bootstrap previous production: live data bundle parse failed")
+        try:
+            text = _read_remote_production_bundle_via_ssh()
+            data = _parse_auctions_data_js(text)
+            if data is None:
+                warnings.append("could not bootstrap previous production: SSH data bundle parse failed")
+                return False
+            warnings.append("HTTP bootstrap unavailable; used Hostinger SSH production bundle")
+        except Exception as exc:
+            warnings.append(f"could not bootstrap previous production via Hostinger SSH: {exc}")
+            return False
 
     count = int(data.get("count", len(data.get("auctions") or [])) or 0)
     if count <= 0:

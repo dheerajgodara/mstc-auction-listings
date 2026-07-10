@@ -96,6 +96,47 @@ def test_stale_lock_requires_break_flag(tmp_path: Path, monkeypatch):
     assert lock.run_id == "new"
 
 
+def test_bootstrap_previous_production_falls_back_to_hostinger_ssh(tmp_path: Path, monkeypatch):
+    from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
+
+    production = tmp_path / "web/public/data/auctions.json"
+    record = _record_dict("1")
+    bundle = "window.__AUCTIONS_EXPORT__ = " + json.dumps(
+        {
+            "generated_at": datetime.now(IST).isoformat(),
+            "count": 1,
+            "auctions": [record],
+            "stats": {"by_source": {"mstc": 1}},
+        }
+    ) + ";"
+    warnings: list[str] = []
+
+    monkeypatch.setenv("HOSTINGER_HOST", "example.com")
+    monkeypatch.setenv("HOSTINGER_PORT", "65002")
+    monkeypatch.setenv("HOSTINGER_USERNAME", "user")
+    monkeypatch.setenv("HOSTINGER_SSH_KEY", "/tmp/key")
+    monkeypatch.setenv("HOSTINGER_REMOTE_DIR", "/remote/auctions")
+    monkeypatch.setattr(
+        "scraper.refresh_and_deploy.urllib.request.urlopen",
+        MagicMock(side_effect=OSError("network unreachable")),
+    )
+    monkeypatch.setattr(
+        "scraper.refresh_and_deploy.subprocess.run",
+        MagicMock(return_value=MagicMock(returncode=0, stdout=bundle, stderr="")),
+    )
+
+    assert _bootstrap_previous_production_from_live(
+        production_json=production,
+        base_url="https://scrapauctionindia.com/auctions",
+        warnings=warnings,
+    ) is True
+
+    data = json.loads(production.read_text(encoding="utf-8"))
+    assert data["count"] == 1
+    assert data["auctions"][0]["source_auction_id"] == "1"
+    assert any("Hostinger SSH" in warning for warning in warnings)
+
+
 def test_safety_gate_rejects_one_record_candidate(tmp_path: Path):
     candidate = tmp_path / "candidate.json"
     production = tmp_path / "production.json"
