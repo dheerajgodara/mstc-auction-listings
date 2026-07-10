@@ -58,6 +58,15 @@ class AiLotOutput(BaseModel):
     tags: list[str] = Field(default_factory=list)
     confidence: AiConfidence = "medium"
 
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _coerce_tags(cls, value: Any) -> list[Any]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return value
+
 
 class AiListingOutput(BaseModel):
     clean_heading: str = Field(max_length=MAX_HEADING_LEN)
@@ -73,6 +82,15 @@ class AiListingOutput(BaseModel):
     @classmethod
     def _default_lots(cls, value: Any) -> list[Any]:
         return value if value is not None else []
+
+    @field_validator("material_tags", "buyer_intent_tags", "risk_notes", mode="before")
+    @classmethod
+    def _coerce_list_fields(cls, value: Any) -> list[Any]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return value
 
 
 class ValidationResult(BaseModel):

@@ -141,6 +141,33 @@ def test_validation_limits_tags_to_two():
     assert result.output.lots[0].tags == ["transmission_scrap", "aluminium_conductor"]
 
 
+def test_validation_coerces_single_string_lists():
+    raw = {
+        "clean_heading": "Transmission scrap lot",
+        "buyer_summary": "Transmission scrap near Ballia.",
+        "location_confidence": "high",
+        "material_tags": "transmission_scrap",
+        "buyer_intent_tags": "large_lot",
+        "risk_notes": "Verify official documents before bidding.",
+        "lots": [
+            {
+                "lot_id": "1",
+                "heading": "Tower Parts",
+                "summary": "Transmission tower material.",
+                "tags": "transmission_scrap",
+                "confidence": "high",
+            }
+        ],
+    }
+    result = validate_listing_enrichment(raw, expected_lot_ids={"1"})
+    assert result.ok
+    assert result.output is not None
+    assert result.output.material_tags == ["transmission_scrap"]
+    assert result.output.buyer_intent_tags == ["large_lot"]
+    assert result.output.risk_notes == ["Verify official documents before bidding."]
+    assert result.output.lots[0].tags == ["transmission_scrap"]
+
+
 def test_input_hash_stable():
     record = _auction()
     h1 = compute_input_hash(record)
