@@ -28,6 +28,28 @@ def _fmt_bool(value: object) -> str:
     return "n/a"
 
 
+def _fmt_duration(seconds: object) -> str:
+    try:
+        value = float(seconds)
+    except (TypeError, ValueError):
+        return "n/a"
+    if value < 60:
+        return f"{value:.1f}s"
+    minutes = int(value // 60)
+    secs = int(round(value % 60))
+    if minutes < 60:
+        return f"{minutes}m {secs}s"
+    hours = minutes // 60
+    minutes = minutes % 60
+    return f"{hours}h {minutes}m"
+
+
+def _fmt_source_counts(counts: dict[str, Any]) -> str:
+    if not counts:
+        return "n/a"
+    return ", ".join(f"{source}={count}" for source, count in sorted(counts.items()))
+
+
 def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
     status = payload.get("status") or event
     run_id = payload.get("run_id") or "unknown"
@@ -42,13 +64,14 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
     errors = payload.get("errors") or []
     warnings = payload.get("warnings") or []
 
-    icon = {
-        "started": "▶️",
-        "success": "✅",
-        "failed": "❌",
-        "blocked": "🚫",
-    }.get(event, "ℹ️")
-    title = f"{icon} Scrap Auction India refresh {status}"
+    title = {
+        "started": "▶️ Scrap Auction India refresh started",
+        "comparison_done": "📊 Scrap Auction India comparison complete",
+        "deep_scrape_done": "🧰 Scrap Auction India deep scrape complete",
+        "success": f"✅ Scrap Auction India refresh {status}",
+        "failed": f"❌ Scrap Auction India refresh {status}",
+        "blocked": f"🚫 Scrap Auction India refresh {status}",
+    }.get(event, f"ℹ️ Scrap Auction India refresh {status}")
 
     lines = [
         title,
@@ -64,10 +87,24 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
     if discovery:
         src = discovery.get("by_source") or {}
         if src:
-            lines.append("Discovery: " + ", ".join(f"{k}={v}" for k, v in sorted(src.items())))
+            lines.append(
+                f"Discovery: total={discovery.get('count', 'n/a')} "
+                f"runtime={_fmt_duration(discovery.get('duration_sec'))} "
+                f"({ _fmt_source_counts(src) })"
+            )
     if work_plan:
         actions = work_plan.get("selected_action_counts") or work_plan.get("action_counts") or {}
         full_actions = work_plan.get("full_action_counts") or {}
+        counts = work_plan.get("full_counts") or work_plan.get("counts") or {}
+        if counts:
+            lines.append(
+                "Compare: "
+                + f"new={counts.get('new', 0)} "
+                + f"changed={counts.get('changed', 0)} "
+                + f"repair={counts.get('needs_repair', 0)} "
+                + f"same={counts.get('unchanged', 0)} "
+                + f"removed={counts.get('removed', 0)}"
+            )
         if actions:
             lines.append(
                 "Plan: "
@@ -89,7 +126,12 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
                 + f"done={summary.get('done', 0)} "
                 + f"failed={summary.get('failed', 0)} "
                 + f"total={summary.get('total', 0)}"
+                + f" runtime={_fmt_duration(batch.get('duration_sec'))}"
             )
+        if batch.get("docs_budget_remaining") is not None:
+            lines.append(f"Docs budget left: {batch.get('docs_budget_remaining')}")
+        if batch.get("failed_batches"):
+            lines.append("Failed batches: " + ", ".join(str(x) for x in batch.get("failed_batches", [])[:8]))
     if payload.get("total_auctions") is not None:
         lines.append(f"Auctions: {payload.get('total_auctions')} | Lots: {payload.get('total_lots')}")
     if by_source:

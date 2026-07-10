@@ -349,6 +349,7 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
                 "selected_by_source": work_plan.by_source,
                 "queue": queue_state.model_dump(mode="json"),
             }
+            send_telegram_report(payload, event="comparison_done")
 
         # 1. Batch scrape
         scrape_started = time.monotonic()
@@ -376,6 +377,7 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             "failed_batches": failed_batches,
             "docs_budget_remaining": manifest.data.get("docs_budget_remaining"),
         }
+        send_telegram_report(payload, event="deep_scrape_done")
         if failed_batches and not config.allow_failed_batches:
             raise RuntimeError(f"batch scrape had failures: {', '.join(failed_batches)}")
 

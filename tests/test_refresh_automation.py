@@ -513,9 +513,16 @@ def test_refresh_uses_incremental_work_plan_by_default(
         force_min_closing_date="2026-07-04",
         min_count=1,
     )
-    result = run_refresh_and_deploy(config)
+    with patch("scraper.refresh_and_deploy.send_telegram_report") as mock_telegram:
+        result = run_refresh_and_deploy(config)
 
     assert result.status == "success"
+    assert [call.kwargs["event"] for call in mock_telegram.call_args_list] == [
+        "started",
+        "comparison_done",
+        "deep_scrape_done",
+        "success",
+    ]
     assert mock_batch.call_args.kwargs["work_plan_path"] is not None
     assert (repo / "work" / "runs" / result.run_id / "incremental_work_plan.full.json").is_file()
     assert (repo / "work" / "runs" / result.run_id / "incremental_work_plan.selected.json").is_file()

@@ -84,6 +84,67 @@ def test_telegram_message_includes_operational_counts():
     assert "Deploy: yes" in message
 
 
+def test_telegram_comparison_message_includes_queue_and_decisions():
+    message = build_telegram_message(
+        {
+            "run_id": "run_2",
+            "status": "running",
+            "started_at": "2026-07-10T02:00:00+05:30",
+            "min_closing_date": "2026-07-11",
+            "mode": "incremental_queue",
+            "max_deep_scrape_per_run": 200,
+            "discovery": {
+                "duration_sec": 31.2,
+                "count": 1860,
+                "by_source": {"mstc": 1700, "gem_forward": 90, "eauction": 70},
+            },
+            "incremental_work_plan": {
+                "full_counts": {
+                    "new": 120,
+                    "changed": 40,
+                    "needs_repair": 10,
+                    "unchanged": 1690,
+                    "removed": 5,
+                },
+                "selected_action_counts": {"deep_parse": 200, "reuse_discovery": 20},
+                "full_action_counts": {"deep_parse": 220, "reuse_previous": 1690},
+                "queue": {
+                    "selected_count": 200,
+                    "pending_after_selection": 20,
+                    "estimated_runs_to_clear": 1,
+                },
+            },
+        },
+        event="comparison_done",
+    )
+    assert "comparison complete" in message
+    assert "Discovery: total=1860" in message
+    assert "new=120 changed=40 repair=10 same=1690 removed=5" in message
+    assert "selected_deep=200 / full_deep=220" in message
+    assert "Queue: selected=200 pending=20 eta_runs=1" in message
+
+
+def test_telegram_deep_scrape_message_includes_runtime_and_failures():
+    message = build_telegram_message(
+        {
+            "run_id": "run_3",
+            "status": "running",
+            "started_at": "2026-07-10T02:00:00+05:30",
+            "batch_scrape": {
+                "duration_sec": 367.4,
+                "manifest_summary": {"done": 198, "failed": 2, "total": 200},
+                "docs_budget_remaining": 1400,
+                "failed_batches": ["mstc:123", "gem_forward:456"],
+            },
+        },
+        event="deep_scrape_done",
+    )
+    assert "deep scrape complete" in message
+    assert "done=198 failed=2 total=200 runtime=6m 7s" in message
+    assert "Docs budget left: 1400" in message
+    assert "Failed batches: mstc:123, gem_forward:456" in message
+
+
 def test_send_telegram_message_skips_without_credentials(monkeypatch):
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
