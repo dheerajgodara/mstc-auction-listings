@@ -442,6 +442,7 @@ def test_refresh_no_deploy_on_success_without_flag(
 
 
 @patch("scraper.refresh_and_deploy.run_discovery")
+@patch("scraper.refresh_and_deploy._bootstrap_previous_production_from_live", return_value=False)
 @patch("scraper.refresh_and_deploy.batch_run")
 @patch("scraper.refresh_and_deploy.merge_batches")
 @patch("scraper.refresh_and_deploy.run_safety_gates")
@@ -453,6 +454,7 @@ def test_refresh_uses_incremental_work_plan_by_default(
     mock_gates,
     mock_merge,
     mock_batch,
+    mock_bootstrap,
     mock_discovery,
     tmp_path: Path,
 ):
