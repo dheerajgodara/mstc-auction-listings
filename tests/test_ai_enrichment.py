@@ -14,11 +14,25 @@ from scraper.ai_enrichment.cli import build_parser
 from scraper.ai_enrichment.hydrate import build_ai_search_text, hydrate_auctions_export, merge_ai_into_auction
 from scraper.ai_enrichment.payload import build_listing_payload, build_enrichment_prompt, payload_stats
 from scraper.ai_enrichment.provider import MockEnrichmentProvider, OpenRouterEnrichmentProvider, get_provider
-from scraper.ai_enrichment.queue import EnrichmentQueue, ai_priority, compute_input_hash, read_cache, select_priority_auctions
+from scraper.ai_enrichment.queue import (
+    EnrichmentQueue,
+    ai_priority,
+    compute_input_hash,
+    count_cache_stats,
+    read_cache,
+    select_priority_auctions,
+)
 from scraper.ai_enrichment.schema import AI_SCHEMA_VERSION, PROMPT_VERSION, validate_listing_enrichment
 from scraper.ai_enrichment.taxonomy import normalize_tag, normalize_tags
 from scraper.display_enrichment import apply_display_enrichment
 from scraper.models import AuctionRecord, LotRecord
+
+
+class _AuthFailProvider:
+    last_error = "openrouter_auth_failed"
+
+    def enrich_listing(self, record, prompt):
+        return None, None
 
 
 def _auction(**kwargs) -> AuctionRecord:
@@ -302,6 +316,22 @@ def test_cache_skip_on_second_run(tmp_path, monkeypatch):
     second = queue.process_auction(record)
     assert second["status"] == "skipped"
     assert second["reason"] == "cache_hit"
+
+
+def test_auth_failure_stops_run_without_polluting_cache(tmp_path):
+    queue = EnrichmentQueue(
+        provider=_AuthFailProvider(),
+        allow_network=True,
+        mock=False,
+        no_network=False,
+        cache_dir=tmp_path,
+    )
+    report = queue.run([_auction(id="a"), _auction(id="b")], limit=2)
+    payload = report.to_dict()
+    assert payload["processed"] == 1
+    assert payload["failed"] == 1
+    assert payload["details"][0]["reason"] == "openrouter_auth_failed"
+    assert count_cache_stats(tmp_path)["total"] == 0
 
 
 def test_hydrate_merge_preserves_parser_fields(tmp_path):

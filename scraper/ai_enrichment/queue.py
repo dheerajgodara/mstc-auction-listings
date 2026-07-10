@@ -25,6 +25,7 @@ from scraper.models import AuctionRecord
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
+FATAL_PROVIDER_ERRORS = {"openrouter_auth_failed", "openrouter_api_key_missing"}
 
 
 @dataclass
@@ -391,6 +392,9 @@ class EnrichmentQueue:
 
         raw, model = self.provider.enrich_listing(record, prompt)
         if not raw:
+            reason = getattr(self.provider, "last_error", None) or "provider_empty"
+            if reason in FATAL_PROVIDER_ERRORS:
+                return {"auction_id": record.id, "status": "failed", "reason": reason, "fatal": True}
             failure = {
                 "auction_id": record.id,
                 "input_hash": input_hash,
@@ -400,7 +404,7 @@ class EnrichmentQueue:
                 "generated_at": datetime.now(IST).isoformat(),
             }
             write_cache(record.id, input_hash, failure, self.cache_dir)
-            return {"auction_id": record.id, "status": "failed", "reason": "provider_empty"}
+            return {"auction_id": record.id, "status": "failed", "reason": reason}
 
         validation = validate_listing_enrichment(raw, expected_lot_ids=expected_lot_ids)
         if not validation.ok or validation.output is None:
@@ -496,6 +500,8 @@ class EnrichmentQueue:
                 report.rejected += 1
             elif status == "failed":
                 report.failed += 1
+                if detail.get("fatal"):
+                    break
             elif status == "dry_run":
                 report.skipped += 1
                 prompt_chars = detail.get("prompt_chars")

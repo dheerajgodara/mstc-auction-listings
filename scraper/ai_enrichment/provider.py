@@ -133,6 +133,7 @@ class MockEnrichmentProvider(EnrichmentProvider):
 class OpenRouterEnrichmentProvider(EnrichmentProvider):
     def __init__(self, *, allow_network: bool = False) -> None:
         self.allow_network = allow_network
+        self.last_error: Optional[str] = None
 
     def _model_chain(self) -> list[str]:
         models: list[str] = []
@@ -142,11 +143,14 @@ class OpenRouterEnrichmentProvider(EnrichmentProvider):
         return models
 
     def enrich_listing(self, record: AuctionRecord, prompt: str) -> Tuple[Optional[dict[str, Any]], Optional[str]]:
+        self.last_error = None
         if not self.allow_network:
             logger.info("Network disabled; skipping OpenRouter call for %s", record.id)
+            self.last_error = "network_disabled"
             return None, None
         if not OPENROUTER_API_KEY:
             logger.info("OPENROUTER_API_KEY not configured; skipping %s", record.id)
+            self.last_error = "openrouter_api_key_missing"
             return None, None
 
         headers = {
@@ -181,11 +185,17 @@ class OpenRouterEnrichmentProvider(EnrichmentProvider):
                     json=body,
                     timeout=REQUEST_TIMEOUT,
                 )
+                if resp.status_code in {401, 403}:
+                    logger.warning("OpenRouter authentication failed: HTTP %s", resp.status_code)
+                    self.last_error = "openrouter_auth_failed"
+                    return None, None
                 if resp.status_code == 429:
                     logger.warning("OpenRouter rate limit for model %s", model)
+                    self.last_error = "openrouter_rate_limited"
                     continue
                 if resp.status_code != 200:
                     logger.warning("OpenRouter model %s failed: HTTP %s", model, resp.status_code)
+                    self.last_error = f"openrouter_http_{resp.status_code}"
                     continue
                 data = resp.json()
                 content = data["choices"][0]["message"]["content"]
@@ -194,6 +204,7 @@ class OpenRouterEnrichmentProvider(EnrichmentProvider):
                     return parsed, model
             except Exception as exc:
                 logger.warning("OpenRouter model %s error: %s", model, exc)
+                self.last_error = "openrouter_exception"
                 continue
         return None, None
 

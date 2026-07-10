@@ -313,6 +313,13 @@ def build_ai_enrichment_message(payload: dict[str, Any]) -> str:
                 )
             )
         lines.extend(_section("Top Selected", rows))
+    failure_reasons: dict[str, int] = {}
+    for detail in details:
+        if detail.get("status") == "failed":
+            reason = str(detail.get("reason") or "unknown")
+            failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
+    if failure_reasons:
+        lines.extend(_section("Failure Reasons", [_row("Reasons", _fmt_source_counts(failure_reasons))]))
     cache_rows = [
         _row("Ready cache", cache.get("ready", 0)),
         _row("Rejected cache", cache.get("rejected", 0)),
