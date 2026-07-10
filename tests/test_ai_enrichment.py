@@ -239,6 +239,7 @@ def test_priority_skips_current_cache(tmp_path):
     selected, summary = select_priority_auctions([record], cache_dir=tmp_path, limit=1)
     assert selected == []
     assert summary["already_ai_done"] == 1
+    assert read_done_registry(tmp_path)["items"][record.id]["status"] == "ready"
 
 
 def test_mock_provider_offline():

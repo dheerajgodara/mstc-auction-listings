@@ -259,7 +259,17 @@ def _parse_dt(value: Any) -> Optional[datetime]:
 def _has_current_cache(record: AuctionRecord, cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> bool:
     input_hash = compute_input_hash(record)
     cached = read_cache(record.id, input_hash, cache_dir)
-    return bool(cached and cache_is_current(cached, input_hash))
+    if cached and cache_is_current(cached, input_hash):
+        mark_ai_done(
+            record,
+            input_hash=input_hash,
+            cache_path=_cache_path(record.id, input_hash, cache_dir),
+            cache_dir=cache_dir,
+            model=cached.get("model"),
+            confidence=cached.get("confidence"),
+        )
+        return True
+    return False
 
 
 def ai_priority(record: AuctionRecord, cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> dict[str, Any]:
