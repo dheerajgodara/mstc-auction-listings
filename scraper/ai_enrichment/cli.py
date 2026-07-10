@@ -39,6 +39,7 @@ def cmd_enrich(args: argparse.Namespace) -> int:
         allow_network=allow_network,
         max_requests=args.limit,
         cache_dir=args.cache_dir,
+        daily_budget=args.daily_budget,
     )
     report = queue.run(
         auctions,
@@ -105,6 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     enrich.add_argument("--auction-id", default=None, help="Target one auction id/number")
     enrich.add_argument("--limit", type=int, default=None, help="Max auctions/requests")
+    enrich.add_argument("--daily-budget", type=int, default=950, help="Max provider calls per IST day")
     enrich.add_argument("--report-json", type=Path, default=None, help="Write run report JSON")
     enrich.add_argument("--telegram-report", action="store_true", help="Send Telegram summary when finished")
     enrich.set_defaults(func=cmd_enrich)

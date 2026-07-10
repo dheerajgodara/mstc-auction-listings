@@ -19,8 +19,11 @@ from scraper.ai_enrichment.queue import (
     ai_priority,
     compute_input_hash,
     count_cache_stats,
+    daily_budget_state,
     read_cache,
+    read_daily_usage,
     select_priority_auctions,
+    write_daily_usage,
 )
 from scraper.ai_enrichment.schema import AI_SCHEMA_VERSION, PROMPT_VERSION, validate_listing_enrichment
 from scraper.ai_enrichment.taxonomy import normalize_tag, normalize_tags
@@ -359,6 +362,45 @@ def test_auth_failure_stops_run_without_polluting_cache(tmp_path):
     assert payload["failed"] == 1
     assert payload["details"][0]["reason"] == "openrouter_auth_failed"
     assert count_cache_stats(tmp_path)["total"] == 0
+
+
+def test_daily_budget_blocks_provider_calls(tmp_path):
+    write_daily_usage(
+        {"date": read_daily_usage(tmp_path)["date"], "attempted": 2, "ready": 2, "rejected": 0, "failed": 0},
+        tmp_path,
+    )
+    queue = EnrichmentQueue(
+        provider=MockEnrichmentProvider(),
+        allow_network=True,
+        mock=False,
+        no_network=False,
+        cache_dir=tmp_path,
+        daily_budget=2,
+    )
+    report = queue.run([_auction(id="a"), _auction(id="b")], limit=2)
+    payload = report.to_dict()
+    assert payload["processed"] == 0
+    assert payload["skipped"] == 0
+    assert payload["details"] == []
+    assert payload["budget"]["remaining_today"] == 0
+
+
+def test_daily_budget_updates_after_ready_call(tmp_path):
+    queue = EnrichmentQueue(
+        provider=MockEnrichmentProvider(),
+        allow_network=True,
+        mock=False,
+        no_network=False,
+        cache_dir=tmp_path,
+        daily_budget=5,
+    )
+    report = queue.run([_auction(id="a")], limit=1)
+    payload = report.to_dict()
+    assert payload["ready"] == 1
+    usage = read_daily_usage(tmp_path)
+    assert usage["attempted"] == 1
+    assert usage["ready"] == 1
+    assert daily_budget_state(cache_dir=tmp_path, daily_budget=5)["remaining_today"] == 4
 
 
 def test_hydrate_merge_preserves_parser_fields(tmp_path):

@@ -1,12 +1,21 @@
 name: AI Enrichment Trial
 
 on:
+  schedule:
+    # Eight small AI enrichment passes per day, offset after scraper slots.
+    # IST: 01:05, 04:05, 07:05, 10:05, 13:05, 16:05, 19:05, 22:05
+    # UTC: 19:35 previous day, 22:35 previous day, 01:35, 04:35, 07:35, 10:35, 13:35, 16:35
+    - cron: "35 19,22,1,4,7,10,13,16 * * *"
   workflow_dispatch:
     inputs:
       limit:
         description: "Number of priority listings to enrich"
         required: false
         default: "100"
+      daily_budget:
+        description: "Max OpenRouter provider calls per IST day"
+        required: false
+        default: "900"
       allow_network:
         description: "Use live OpenRouter calls"
         required: false
@@ -20,6 +29,9 @@ jobs:
   ai-enrichment:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    concurrency:
+      group: ai-enrichment
+      cancel-in-progress: false
 
     steps:
       - name: Checkout repository
@@ -84,14 +96,18 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           mkdir -p work/ai-enrichment
+          LIMIT="${{ github.event.inputs.limit || '100' }}"
+          DAILY_BUDGET="${{ github.event.inputs.daily_budget || '900' }}"
+          ALLOW_NETWORK="${{ github.event.inputs.allow_network || 'true' }}"
           NETWORK_FLAG=""
-          if [ "${{ github.event.inputs.allow_network }}" = "true" ]; then
+          if [ "$ALLOW_NETWORK" = "true" ]; then
             NETWORK_FLAG="--allow-network"
           fi
           PYTHONPATH=. python -m scraper.ai_enrichment.cli \
             --json web/public/data/auctions.json \
             enrich \
-            --limit "${{ github.event.inputs.limit || '100' }}" \
+            --limit "$LIMIT" \
+            --daily-budget "$DAILY_BUDGET" \
             $NETWORK_FLAG \
             --report-json work/ai-enrichment/report.json \
             --telegram-report | tee work/ai-enrichment/report.stdout.json

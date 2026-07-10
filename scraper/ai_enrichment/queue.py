@@ -26,6 +26,7 @@ from scraper.models import AuctionRecord
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 FATAL_PROVIDER_ERRORS = {"openrouter_auth_failed", "openrouter_api_key_missing"}
+DEFAULT_DAILY_AI_CALL_BUDGET = 950
 
 
 @dataclass
@@ -45,6 +46,7 @@ class EnrichmentRunReport:
     schema_version: str = AI_SCHEMA_VERSION
     dry_run_estimate: Optional[dict[str, Any]] = None
     selection: Optional[dict[str, Any]] = None
+    budget: Optional[dict[str, Any]] = None
     details: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -68,7 +70,59 @@ class EnrichmentRunReport:
             payload["dry_run_estimate"] = self.dry_run_estimate
         if self.selection is not None:
             payload["selection"] = self.selection
+        if self.budget is not None:
+            payload["budget"] = self.budget
         return payload
+
+
+def _ledger_path(cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> Path:
+    return cache_dir / "_daily_usage.json"
+
+
+def _today_ist() -> str:
+    return datetime.now(IST).date().isoformat()
+
+
+def read_daily_usage(cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> dict[str, Any]:
+    path = _ledger_path(cache_dir)
+    if not path.is_file():
+        return {"date": _today_ist(), "attempted": 0, "ready": 0, "rejected": 0, "failed": 0}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"date": _today_ist(), "attempted": 0, "ready": 0, "rejected": 0, "failed": 0}
+    if payload.get("date") != _today_ist():
+        return {"date": _today_ist(), "attempted": 0, "ready": 0, "rejected": 0, "failed": 0}
+    return {
+        "date": payload.get("date") or _today_ist(),
+        "attempted": int(payload.get("attempted", 0) or 0),
+        "ready": int(payload.get("ready", 0) or 0),
+        "rejected": int(payload.get("rejected", 0) or 0),
+        "failed": int(payload.get("failed", 0) or 0),
+    }
+
+
+def write_daily_usage(payload: dict[str, Any], cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    _ledger_path(cache_dir).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def daily_budget_state(
+    *,
+    cache_dir: Path = AI_ENRICHMENT_CACHE_DIR,
+    daily_budget: int = DEFAULT_DAILY_AI_CALL_BUDGET,
+) -> dict[str, Any]:
+    usage = read_daily_usage(cache_dir)
+    remaining = max(0, int(daily_budget) - int(usage.get("attempted", 0)))
+    return {
+        "daily_budget": int(daily_budget),
+        "date": usage.get("date"),
+        "attempted_today": usage.get("attempted", 0),
+        "ready_today": usage.get("ready", 0),
+        "rejected_today": usage.get("rejected", 0),
+        "failed_today": usage.get("failed", 0),
+        "remaining_today": remaining,
+    }
 
 
 HIGH_VALUE_MATERIALS = {
@@ -348,6 +402,7 @@ class EnrichmentQueue:
         no_network: bool = True,
         allow_network: bool = False,
         max_requests: Optional[int] = None,
+        daily_budget: int = DEFAULT_DAILY_AI_CALL_BUDGET,
     ) -> None:
         self.cache_dir = cache_dir
         self.dry_run = dry_run
@@ -355,12 +410,22 @@ class EnrichmentQueue:
         self.no_network = no_network
         self.allow_network = allow_network
         self.max_requests = max_requests
+        self.daily_budget = daily_budget
         self.provider = provider or get_provider(mock=mock, allow_network=allow_network)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._requests = 0
+        self._daily_usage = read_daily_usage(self.cache_dir)
 
     def _should_stop(self) -> bool:
-        return self.max_requests is not None and self._requests >= self.max_requests
+        if self.max_requests is not None and self._requests >= self.max_requests:
+            return True
+        return int(self._daily_usage.get("attempted", 0) or 0) >= self.daily_budget
+
+    def _record_attempt_result(self, status: str) -> None:
+        self._daily_usage["attempted"] = int(self._daily_usage.get("attempted", 0) or 0) + 1
+        if status in {"ready", "rejected", "failed"}:
+            self._daily_usage[status] = int(self._daily_usage.get(status, 0) or 0) + 1
+        write_daily_usage(self._daily_usage, self.cache_dir)
 
     def process_auction(self, record: AuctionRecord) -> dict[str, Any]:
         input_hash = compute_input_hash(record)
@@ -383,7 +448,10 @@ class EnrichmentQueue:
             return {"auction_id": record.id, "status": "skipped", "reason": "cache_hit"}
 
         if self._should_stop():
-            return {"auction_id": record.id, "status": "skipped", "reason": "max_requests"}
+            reason = "daily_budget_exhausted"
+            if self.max_requests is not None and self._requests >= self.max_requests:
+                reason = "max_requests"
+            return {"auction_id": record.id, "status": "skipped", "reason": reason}
 
         self._requests += 1
         record = apply_display_enrichment(record)
@@ -394,6 +462,7 @@ class EnrichmentQueue:
         if not raw:
             reason = getattr(self.provider, "last_error", None) or "provider_empty"
             if reason in FATAL_PROVIDER_ERRORS:
+                self._record_attempt_result("failed")
                 return {"auction_id": record.id, "status": "failed", "reason": reason, "fatal": True}
             failure = {
                 "auction_id": record.id,
@@ -404,6 +473,7 @@ class EnrichmentQueue:
                 "generated_at": datetime.now(IST).isoformat(),
             }
             write_cache(record.id, input_hash, failure, self.cache_dir)
+            self._record_attempt_result("failed")
             return {"auction_id": record.id, "status": "failed", "reason": reason}
 
         validation = validate_listing_enrichment(raw, expected_lot_ids=expected_lot_ids)
@@ -420,6 +490,7 @@ class EnrichmentQueue:
                 "unknown_tags": validation.unknown_tags,
             }
             write_cache(record.id, input_hash, rejected, self.cache_dir)
+            self._record_attempt_result("rejected")
             return {
                 "auction_id": record.id,
                 "status": "rejected",
@@ -442,6 +513,7 @@ class EnrichmentQueue:
             "lots": [lot.model_dump() for lot in output.lots],
         }
         write_cache(record.id, input_hash, ready_payload, self.cache_dir)
+        self._record_attempt_result("ready")
         return {"auction_id": record.id, "status": "ready", "confidence": confidence, "model": model}
 
     def run(
@@ -460,6 +532,7 @@ class EnrichmentQueue:
             network_safe=network_safe,
             will_call_provider=not self.dry_run and self.allow_network and not self.mock,
         )
+        report.budget = daily_budget_state(cache_dir=self.cache_dir, daily_budget=self.daily_budget)
         selected_pairs: list[tuple[AuctionRecord, dict[str, Any]]]
         selection_summary: dict[str, Any]
         if auction_id:
@@ -516,6 +589,7 @@ class EnrichmentQueue:
                 "average_prompt_chars": round(total / len(prompt_char_counts), 1),
                 "max_prompt_chars": max(prompt_char_counts),
             }
+        report.budget = daily_budget_state(cache_dir=self.cache_dir, daily_budget=self.daily_budget)
         return report
 
 
@@ -524,6 +598,8 @@ def count_cache_stats(cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> dict[str, in
     if not cache_dir.is_dir():
         return stats
     for path in cache_dir.glob("*.json"):
+        if path.name.startswith("_"):
+            continue
         stats["total"] += 1
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))

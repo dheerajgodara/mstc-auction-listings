@@ -259,6 +259,7 @@ def send_telegram_report(payload: dict[str, Any], *, event: str) -> bool:
 def build_ai_enrichment_message(payload: dict[str, Any]) -> str:
     selection = payload.get("selection") or {}
     cache = payload.get("cache_stats") or {}
+    budget = payload.get("budget") or {}
     details = payload.get("details") or []
     ready_models: dict[str, int] = {}
     for detail in details:
@@ -293,6 +294,18 @@ def build_ai_enrichment_message(payload: dict[str, Any]) -> str:
             ],
         )
     )
+    if budget:
+        lines.extend(
+            _section(
+                "Daily Budget",
+                [
+                    _row("Date", budget.get("date", "n/a")),
+                    _row("Budget", budget.get("daily_budget", "n/a")),
+                    _row("Attempted today", budget.get("attempted_today", "n/a")),
+                    _row("Remaining today", budget.get("remaining_today", "n/a")),
+                ],
+            )
+        )
     reasons = selection.get("priority_reason_counts") or {}
     if reasons:
         top_reasons = sorted(reasons.items(), key=lambda x: x[1], reverse=True)[:8]
