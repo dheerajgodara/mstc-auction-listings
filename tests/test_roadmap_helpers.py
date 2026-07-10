@@ -79,9 +79,10 @@ def test_telegram_message_includes_operational_counts():
         event="success",
     )
     assert "run_1" in message
-    assert "Auctions: 1816" in message
+    assert "<b>Result</b>" in message
+    assert "<b>Auctions:</b> 1816" in message
     assert "eauction=61" in message
-    assert "Deploy: yes" in message
+    assert "<b>Deploy:</b> yes" in message
 
 
 def test_telegram_comparison_message_includes_queue_and_decisions():
@@ -118,10 +119,13 @@ def test_telegram_comparison_message_includes_queue_and_decisions():
         event="comparison_done",
     )
     assert "comparison complete" in message
-    assert "Discovery: total=1860" in message
-    assert "new=120 changed=40 repair=10 same=1690 removed=5" in message
-    assert "selected_deep=200 / full_deep=220" in message
-    assert "Queue: selected=200 pending=20 eta_runs=1" in message
+    assert "<b>Discovery</b>" in message
+    assert "<b>Total:</b> 1860" in message
+    assert "new=120, changed=40, repair=10, same=1690, removed=5" in message
+    assert "selected=200 / candidates=220" in message
+    assert "<b>Queue</b>" in message
+    assert "<b>Selected this run:</b> 200" in message
+    assert "<b>Pending after selection:</b> 20" in message
 
 
 def test_telegram_deep_scrape_message_includes_runtime_and_failures():
@@ -140,9 +144,25 @@ def test_telegram_deep_scrape_message_includes_runtime_and_failures():
         event="deep_scrape_done",
     )
     assert "deep scrape complete" in message
-    assert "done=198 failed=2 total=200 runtime=6m 7s" in message
-    assert "Docs budget left: 1400" in message
-    assert "Failed batches: mstc:123, gem_forward:456" in message
+    assert "<b>Deep Scrape</b>" in message
+    assert "<b>Batches:</b> 198 done / 2 failed / 200 total" in message
+    assert "<b>Runtime:</b> 6m 7s" in message
+    assert "<b>Docs budget left:</b> 1400" in message
+    assert "<b>Failed batches:</b> mstc:123, gem_forward:456" in message
+
+
+def test_telegram_message_escapes_html_values():
+    message = build_telegram_message(
+        {
+            "run_id": "run_<bad>",
+            "status": "failed",
+            "started_at": "now",
+            "errors": ["bad <tag> & broken"],
+        },
+        event="failed",
+    )
+    assert "run_&lt;bad&gt;" in message
+    assert "bad &lt;tag&gt; &amp; broken" in message
 
 
 def test_send_telegram_message_skips_without_credentials(monkeypatch):

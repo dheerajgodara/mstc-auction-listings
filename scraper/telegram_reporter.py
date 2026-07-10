@@ -7,6 +7,7 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+from html import escape
 from typing import Any
 
 logger = logging.getLogger("scraper.telegram_reporter")
@@ -50,6 +51,35 @@ def _fmt_source_counts(counts: dict[str, Any]) -> str:
     return ", ".join(f"{source}={count}" for source, count in sorted(counts.items()))
 
 
+def _h(value: object) -> str:
+    return escape(str(value), quote=False)
+
+
+def _section(title: str, rows: list[str]) -> list[str]:
+    if not rows:
+        return []
+    return [f"\n<b>{_h(title)}</b>", *rows]
+
+
+def _row(label: str, value: object) -> str:
+    return f"• <b>{_h(label)}:</b> {_h(value)}"
+
+
+def _link(label: str, url: object) -> str:
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    safe_url = escape(text, quote=True)
+    return f"• <b>{_h(label)}:</b> <a href=\"{safe_url}\">{_h(text)}</a>"
+
+
+def _short_join(values: list[Any], *, limit: int = 4, max_chars: int = 700) -> str:
+    text = "; ".join(str(v) for v in values[:limit])
+    if len(text) > max_chars:
+        return text[: max_chars - 1].rstrip() + "…"
+    return text
+
+
 def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
     status = payload.get("status") or event
     run_id = payload.get("run_id") or "unknown"
@@ -74,92 +104,124 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
     }.get(event, f"ℹ️ Scrap Auction India refresh {status}")
 
     lines = [
-        title,
-        f"Run: {run_id}",
-        f"Started: {payload.get('started_at') or 'n/a'}",
+        f"<b>{_h(title)}</b>",
+    ]
+
+    run_rows = [
+        _row("Run", run_id),
+        _row("Started", payload.get("started_at") or "n/a"),
     ]
     if payload.get("finished_at"):
-        lines.append(f"Finished: {payload.get('finished_at')}")
+        run_rows.append(_row("Finished", payload.get("finished_at")))
     if payload.get("min_closing_date"):
-        lines.append(f"Min closing: {payload.get('min_closing_date')}")
+        run_rows.append(_row("Min closing", payload.get("min_closing_date")))
     if payload.get("mode"):
-        lines.append(f"Mode: {payload.get('mode')} | cap={payload.get('max_deep_scrape_per_run', 'n/a')}")
+        run_rows.append(_row("Mode", f"{payload.get('mode')} | cap={payload.get('max_deep_scrape_per_run', 'n/a')}"))
+    lines.extend(_section("Run", run_rows))
+
     if discovery:
         src = discovery.get("by_source") or {}
+        discovery_rows = []
+        discovery_rows.append(_row("Total", discovery.get("count", "n/a")))
+        discovery_rows.append(_row("Runtime", _fmt_duration(discovery.get("duration_sec"))))
         if src:
-            lines.append(
-                f"Discovery: total={discovery.get('count', 'n/a')} "
-                f"runtime={_fmt_duration(discovery.get('duration_sec'))} "
-                f"({ _fmt_source_counts(src) })"
-            )
+            discovery_rows.append(_row("Sources", _fmt_source_counts(src)))
+        lines.extend(_section("Discovery", discovery_rows))
+
     if work_plan:
         actions = work_plan.get("selected_action_counts") or work_plan.get("action_counts") or {}
         full_actions = work_plan.get("full_action_counts") or {}
         counts = work_plan.get("full_counts") or work_plan.get("counts") or {}
+        compare_rows = []
         if counts:
-            lines.append(
-                "Compare: "
-                + f"new={counts.get('new', 0)} "
-                + f"changed={counts.get('changed', 0)} "
-                + f"repair={counts.get('needs_repair', 0)} "
-                + f"same={counts.get('unchanged', 0)} "
-                + f"removed={counts.get('removed', 0)}"
+            compare_rows.append(
+                _row(
+                    "Changes",
+                    f"new={counts.get('new', 0)}, changed={counts.get('changed', 0)}, "
+                    f"repair={counts.get('needs_repair', 0)}, same={counts.get('unchanged', 0)}, "
+                    f"removed={counts.get('removed', 0)}",
+                )
             )
         if actions:
-            lines.append(
-                "Plan: "
-                + f"selected_deep={actions.get('deep_parse', 0)}"
-                + f" / full_deep={full_actions.get('deep_parse', actions.get('deep_parse', 0))}"
+            compare_rows.append(
+                _row(
+                    "Deep scrape plan",
+                    f"selected={actions.get('deep_parse', 0)} / candidates={full_actions.get('deep_parse', actions.get('deep_parse', 0))}",
+                )
             )
+        lines.extend(_section("Comparison", compare_rows))
+
     if queue:
-        lines.append(
-            "Queue: "
-            + f"selected={queue.get('selected_count', 0)} "
-            + f"pending={queue.get('pending_after_selection', 0)} "
-            + f"eta_runs={queue.get('estimated_runs_to_clear', 0)}"
-        )
+        queue_rows = [
+            _row("Selected this run", queue.get("selected_count", 0)),
+            _row("Pending after selection", queue.get("pending_after_selection", 0)),
+            _row("Estimated runs to clear", queue.get("estimated_runs_to_clear", 0)),
+        ]
+        lines.extend(_section("Queue", queue_rows))
+
     if batch:
         summary = batch.get("manifest_summary") or {}
+        batch_rows = []
+        selected = (queue or {}).get("selected_count")
+        if selected is not None:
+            batch_rows.append(_row("Selected auctions", selected))
         if summary:
-            lines.append(
-                "Deep scrape: "
-                + f"done={summary.get('done', 0)} "
-                + f"failed={summary.get('failed', 0)} "
-                + f"total={summary.get('total', 0)}"
-                + f" runtime={_fmt_duration(batch.get('duration_sec'))}"
+            batch_rows.append(
+                _row(
+                    "Batches",
+                    f"{summary.get('done', 0)} done / {summary.get('failed', 0)} failed / {summary.get('total', 0)} total",
+                )
             )
+            batch_rows.append(_row("Runtime", _fmt_duration(batch.get("duration_sec"))))
         if batch.get("docs_budget_remaining") is not None:
-            lines.append(f"Docs budget left: {batch.get('docs_budget_remaining')}")
+            batch_rows.append(_row("Docs budget left", batch.get("docs_budget_remaining")))
         if batch.get("failed_batches"):
-            lines.append("Failed batches: " + ", ".join(str(x) for x in batch.get("failed_batches", [])[:8]))
+            batch_rows.append(_row("Failed batches", ", ".join(str(x) for x in batch.get("failed_batches", [])[:8])))
+        lines.extend(_section("Deep Scrape", batch_rows))
+
+    result_rows = []
     if payload.get("total_auctions") is not None:
-        lines.append(f"Auctions: {payload.get('total_auctions')} | Lots: {payload.get('total_lots')}")
+        result_rows.append(_row("Auctions", payload.get("total_auctions")))
+        result_rows.append(_row("Lots", payload.get("total_lots")))
     if by_source:
-        lines.append(
-            "Sources: "
-            + ", ".join(f"{source}={count}" for source, count in sorted(by_source.items()))
-        )
+        result_rows.append(_row("Sources", _fmt_source_counts(by_source)))
     if gates:
-        lines.append(f"Safety gates: {_fmt_bool(gates.get('passed'))}")
+        result_rows.append(_row("Safety gates", _fmt_bool(gates.get("passed"))))
     if fallback.get("applied"):
-        parts = []
-        for source, info in (fallback.get("sources") or {}).items():
-            parts.append(f"{source}+{info.get('carried_forward', 0)} carried")
-        lines.append("Fallback: " + ", ".join(parts))
+        parts = [
+            f"{source}+{info.get('carried_forward', 0)} carried"
+            for source, info in (fallback.get("sources") or {}).items()
+        ]
+        result_rows.append(_row("Fallback", ", ".join(parts)))
     if deploy:
-        lines.append(f"Deploy: {_fmt_bool(deploy.get('deployed'))}")
+        result_rows.append(_row("Deploy", _fmt_bool(deploy.get("deployed"))))
+    lines.extend(_section("Result", result_rows))
+
+    link_rows = []
     if payload.get("github_run_url"):
-        lines.append(f"GitHub: {payload['github_run_url']}")
+        link_rows.append(_link("GitHub", payload["github_run_url"]))
     if payload.get("site_base_url"):
-        lines.append(f"Site: {payload['site_base_url']}")
+        link_rows.append(_link("Site", payload["site_base_url"]))
+    lines.extend(_section("Links", link_rows))
+
     if errors:
-        lines.append("Errors: " + "; ".join(str(e) for e in errors[:4]))
+        lines.extend(
+            _section(
+                "Errors",
+                [_row("Details", _short_join(errors, limit=4, max_chars=900))],
+            )
+        )
     elif warnings:
-        lines.append("Warnings: " + "; ".join(str(w) for w in warnings[:3]))
+        lines.extend(
+            _section(
+                "Warnings",
+                [_row("Details", _short_join(warnings, limit=3, max_chars=700))],
+            )
+        )
     return "\n".join(lines)
 
 
-def send_telegram_message(text: str, *, timeout: int = 15) -> bool:
+def send_telegram_message(text: str, *, timeout: int = 15, parse_mode: str = "HTML") -> bool:
     creds = _credentials()
     if not creds:
         return False
@@ -169,6 +231,7 @@ def send_telegram_message(text: str, *, timeout: int = 15) -> bool:
         {
             "chat_id": chat_id,
             "text": text,
+            "parse_mode": parse_mode,
             "disable_web_page_preview": "true",
         }
     ).encode("utf-8")
