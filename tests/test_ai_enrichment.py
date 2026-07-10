@@ -26,6 +26,8 @@ from scraper.ai_enrichment.queue import (
     count_cache_stats,
     daily_budget_state,
     read_cache,
+    read_done_cache,
+    read_done_registry,
     read_daily_usage,
     select_priority_auctions,
     write_daily_usage,
@@ -236,7 +238,7 @@ def test_priority_skips_current_cache(tmp_path):
     assert priority["eligible"] is False
     selected, summary = select_priority_auctions([record], cache_dir=tmp_path, limit=1)
     assert selected == []
-    assert summary["current_cache_skipped"] == 1
+    assert summary["already_ai_done"] == 1
 
 
 def test_mock_provider_offline():
@@ -350,7 +352,50 @@ def test_cache_skip_on_second_run(tmp_path, monkeypatch):
     provider.enrich_listing = MagicMock(side_effect=AssertionError("provider should not be called"))
     second = queue.process_auction(record)
     assert second["status"] == "skipped"
-    assert second["reason"] == "cache_hit"
+    assert second["reason"] == "ai_done_registry"
+
+
+def test_ready_ai_marks_auction_permanently_done(tmp_path):
+    record = apply_display_enrichment(_auction())
+    queue = EnrichmentQueue(provider=MockEnrichmentProvider(), allow_network=True, mock=False, no_network=False, cache_dir=tmp_path)
+    result = queue.process_auction(record)
+    assert result["status"] == "ready"
+
+    registry = read_done_registry(tmp_path)
+    assert registry["items"][record.id]["status"] == "ready"
+    assert registry["items"][record.id]["cache_file"].endswith(f"_{PROMPT_VERSION}.json")
+    assert read_done_cache(record, tmp_path)["status"] == "ready"
+
+
+def test_done_registry_blocks_changed_input_forever(tmp_path):
+    original = apply_display_enrichment(_auction(id="done1", item_summary="Original title"))
+    queue = EnrichmentQueue(provider=MockEnrichmentProvider(), allow_network=True, mock=False, no_network=False, cache_dir=tmp_path)
+    assert queue.process_auction(original)["status"] == "ready"
+
+    changed = apply_display_enrichment(_auction(id="done1", item_summary="Changed title after scrape"))
+    provider = MockEnrichmentProvider()
+    provider.enrich_listing = MagicMock(side_effect=AssertionError("provider must not be called for done auction"))
+    second_queue = EnrichmentQueue(provider=provider, allow_network=True, mock=False, no_network=False, cache_dir=tmp_path)
+    result = second_queue.process_auction(changed)
+    assert result["status"] == "skipped"
+    assert result["reason"] == "ai_done_registry"
+
+    priority = ai_priority(changed, tmp_path)
+    assert priority["eligible"] is False
+    assert priority["reasons"] == ["ai_done_registry"]
+
+
+def test_hydrate_uses_done_cache_even_when_input_hash_changed(tmp_path):
+    original = apply_display_enrichment(_auction(id="hydrate-done", item_summary="Original title"))
+    queue = EnrichmentQueue(provider=MockEnrichmentProvider(), allow_network=True, mock=False, no_network=False, cache_dir=tmp_path)
+    assert queue.process_auction(original)["status"] == "ready"
+
+    changed = _auction(id="hydrate-done", item_summary="Changed parser title")
+    cached = read_done_cache(changed, tmp_path)
+    assert cached is not None
+    merged = merge_ai_into_auction(changed, cached)
+    assert merged.ai_status == "ready"
+    assert merged.ai_clean_heading
 
 
 def test_auth_failure_stops_run_without_polluting_cache(tmp_path):

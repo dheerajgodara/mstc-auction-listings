@@ -79,6 +79,10 @@ def _ledger_path(cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> Path:
     return cache_dir / "_daily_usage.json"
 
 
+def _done_registry_path(cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> Path:
+    return cache_dir / "_done_registry.json"
+
+
 def _today_ist() -> str:
     return datetime.now(IST).date().isoformat()
 
@@ -105,6 +109,110 @@ def read_daily_usage(cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> dict[str, Any
 def write_daily_usage(payload: dict[str, Any], cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     _ledger_path(cache_dir).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def read_done_registry(cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> dict[str, Any]:
+    path = _done_registry_path(cache_dir)
+    if not path.is_file():
+        return {"version": 1, "items": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"version": 1, "items": {}}
+    items = payload.get("items")
+    if not isinstance(items, dict):
+        items = {}
+    return {"version": int(payload.get("version", 1) or 1), "items": items}
+
+
+def write_done_registry(payload: dict[str, Any], cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    _done_registry_path(cache_dir).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _auction_registry_keys(record: AuctionRecord | str) -> list[str]:
+    if isinstance(record, str):
+        return [record]
+    keys = [record.id]
+    if record.source and record.source_auction_id:
+        keys.append(f"{record.source}:{record.source_auction_id}")
+    if record.auction_number:
+        keys.append(record.auction_number)
+    return list(dict.fromkeys(k for k in keys if k))
+
+
+def done_registry_entry(record: AuctionRecord, cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> Optional[dict[str, Any]]:
+    items = read_done_registry(cache_dir).get("items") or {}
+    for key in _auction_registry_keys(record):
+        entry = items.get(key)
+        if isinstance(entry, dict) and entry.get("status") == "ready":
+            return entry
+    return None
+
+
+def is_ai_done(record: AuctionRecord, cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> bool:
+    return done_registry_entry(record, cache_dir) is not None
+
+
+def mark_ai_done(
+    record: AuctionRecord,
+    *,
+    input_hash: str,
+    cache_path: Path,
+    cache_dir: Path = AI_ENRICHMENT_CACHE_DIR,
+    model: Optional[str] = None,
+    confidence: Optional[str] = None,
+) -> None:
+    registry = read_done_registry(cache_dir)
+    items = registry.setdefault("items", {})
+    now = datetime.now(IST).isoformat()
+    primary_key = record.id
+    entry = {
+        "auction_id": record.id,
+        "source": record.source,
+        "source_auction_id": record.source_auction_id,
+        "auction_number": record.auction_number,
+        "status": "ready",
+        "input_hash": input_hash,
+        "cache_file": cache_path.name,
+        "prompt_version": PROMPT_VERSION,
+        "schema_version": AI_SCHEMA_VERSION,
+        "model": model,
+        "confidence": confidence,
+        "done_at": now,
+        "primary_key": primary_key,
+    }
+    items[primary_key] = entry
+    for alias in _auction_registry_keys(record):
+        if alias != primary_key:
+            items[alias] = {"status": "ready", "primary_key": primary_key}
+    write_done_registry(registry, cache_dir)
+
+
+def read_done_cache(record: AuctionRecord, cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> Optional[dict[str, Any]]:
+    registry = read_done_registry(cache_dir)
+    items = registry.get("items") or {}
+    entry = done_registry_entry(record, cache_dir)
+    if not entry:
+        return None
+    primary_key = entry.get("primary_key") or record.id
+    primary_entry = items.get(primary_key, entry)
+    cache_file = primary_entry.get("cache_file") if isinstance(primary_entry, dict) else None
+    if not cache_file:
+        return None
+    path = cache_dir / str(cache_file)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if payload.get("status") != "ready":
+        return None
+    return payload
 
 
 def daily_budget_state(
@@ -159,6 +267,9 @@ def ai_priority(record: AuctionRecord, cache_dir: Path = AI_ENRICHMENT_CACHE_DIR
     record = apply_display_enrichment(record)
     score = 0
     reasons: list[str] = []
+
+    if is_ai_done(record, cache_dir):
+        return {"score": -1, "reasons": ["ai_done_registry"], "eligible": False}
 
     if _has_current_cache(record, cache_dir):
         return {"score": -1, "reasons": ["current_ai_cache"], "eligible": False}
@@ -256,10 +367,14 @@ def select_priority_auctions(
 ) -> tuple[list[tuple[AuctionRecord, dict[str, Any]]], dict[str, Any]]:
     scored: list[tuple[AuctionRecord, dict[str, Any]]] = []
     skipped_current = 0
+    skipped_done = 0
     for record in auctions:
         priority = ai_priority(record, cache_dir)
         if not priority.get("eligible"):
-            skipped_current += 1
+            if "ai_done_registry" in (priority.get("reasons") or []):
+                skipped_done += 1
+            else:
+                skipped_current += 1
             continue
         scored.append((record, priority))
     scored.sort(
@@ -283,6 +398,7 @@ def select_priority_auctions(
         "eligible": len(scored),
         "selected": len(selected),
         "current_cache_skipped": skipped_current,
+        "already_ai_done": skipped_done,
         "priority_reason_counts": reason_counts,
         "selected_by_source": source_counts,
         "top_selected": [
@@ -429,8 +545,20 @@ class EnrichmentQueue:
 
     def process_auction(self, record: AuctionRecord) -> dict[str, Any]:
         input_hash = compute_input_hash(record)
+        if is_ai_done(record, self.cache_dir):
+            return {"auction_id": record.id, "status": "skipped", "reason": "ai_done_registry"}
+
         cached = read_cache(record.id, input_hash, self.cache_dir)
         if cached and cache_is_current(cached, input_hash):
+            cache_path = _cache_path(record.id, input_hash, self.cache_dir)
+            mark_ai_done(
+                record,
+                input_hash=input_hash,
+                cache_path=cache_path,
+                cache_dir=self.cache_dir,
+                model=cached.get("model"),
+                confidence=cached.get("confidence"),
+            )
             return {"auction_id": record.id, "status": "skipped", "reason": "cache_hit"}
 
         if self.dry_run:
@@ -512,7 +640,15 @@ class EnrichmentQueue:
             "listing": output.model_dump(),
             "lots": [lot.model_dump() for lot in output.lots],
         }
-        write_cache(record.id, input_hash, ready_payload, self.cache_dir)
+        cache_path = write_cache(record.id, input_hash, ready_payload, self.cache_dir)
+        mark_ai_done(
+            record,
+            input_hash=input_hash,
+            cache_path=cache_path,
+            cache_dir=self.cache_dir,
+            model=model,
+            confidence=confidence,
+        )
         self._record_attempt_result("ready")
         return {"auction_id": record.id, "status": "ready", "confidence": confidence, "model": model}
 

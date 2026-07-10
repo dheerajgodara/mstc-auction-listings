@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-from scraper.ai_enrichment.queue import compute_input_hash, read_cache
+from scraper.ai_enrichment.queue import compute_input_hash, read_cache, read_done_cache
 from scraper.ai_enrichment.schema import validate_listing_enrichment
 from scraper.config import AI_ENRICHMENT_CACHE_DIR, DEFAULT_JSON_OUT
 from scraper.models import AuctionRecord, LotRecord
@@ -110,6 +110,9 @@ def merge_ai_into_auction(record: AuctionRecord, cached: dict[str, Any]) -> Auct
 
 
 def load_cached_enrichment(record: AuctionRecord, cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> Optional[dict[str, Any]]:
+    done_cached = read_done_cache(record, cache_dir)
+    if done_cached:
+        return done_cached
     input_hash = compute_input_hash(record)
     return read_cache(record.id, input_hash, cache_dir)
 

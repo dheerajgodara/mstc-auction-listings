@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from scraper.ai_enrichment.queue import _ledger_path
+from scraper.ai_enrichment.queue import _done_registry_path, _ledger_path
 
 
 @dataclass
@@ -92,18 +92,25 @@ def _scp_base(env: dict[str, str]) -> list[str]:
     ]
 
 
+def _state_files(cache_dir: Path) -> list[tuple[str, Path]]:
+    return [
+        ("_daily_usage.json", _ledger_path(cache_dir)),
+        ("_done_registry.json", _done_registry_path(cache_dir)),
+    ]
+
+
 def pull_remote_daily_usage(cache_dir: Path) -> LedgerSyncResult:
-    """Pull today's ledger from Hostinger, creating an empty remote file if needed."""
+    """Pull durable AI state from Hostinger, creating empty remote files if needed."""
     try:
         env = _required_env()
-        remote_path = default_remote_ledger_path(env["HOSTINGER_REMOTE_DIR"])
-        local_path = _ledger_path(cache_dir)
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        remote_dir = remote_path.rsplit("/", 1)[0]
-        target = f"{env['HOSTINGER_USERNAME']}@{env['HOSTINGER_HOST']}:{remote_path}"
+        ledger_remote_path = default_remote_ledger_path(env["HOSTINGER_REMOTE_DIR"])
+        remote_dir = ledger_remote_path.rsplit("/", 1)[0]
+        cache_dir.mkdir(parents=True, exist_ok=True)
 
         ensure_cmd = _ssh_base(env) + [
-            f"mkdir -p {remote_dir} && test -f {remote_path} || printf '{{}}\\n' > {remote_path}"
+            f"mkdir -p {remote_dir} "
+            f"&& test -f {remote_dir}/_daily_usage.json || printf '{{}}\\n' > {remote_dir}/_daily_usage.json "
+            f"&& test -f {remote_dir}/_done_registry.json || printf '{{\"version\":1,\"items\":{{}}}}\\n' > {remote_dir}/_done_registry.json"
         ]
         ensure = subprocess.run(ensure_cmd, capture_output=True, text=True, check=False)
         if ensure.returncode != 0:
@@ -111,47 +118,49 @@ def pull_remote_daily_usage(cache_dir: Path) -> LedgerSyncResult:
                 mode="hostinger",
                 ok=False,
                 action="pull",
-                remote_path=remote_path,
+                remote_path=ledger_remote_path,
                 message=(ensure.stderr or ensure.stdout or "remote ledger mkdir/read failed").strip(),
             )
 
-        pull_cmd = _scp_base(env) + [target, str(local_path)]
-        pulled = subprocess.run(pull_cmd, capture_output=True, text=True, check=False)
-        if pulled.returncode != 0:
-            return LedgerSyncResult(
-                mode="hostinger",
-                ok=False,
-                action="pull",
-                remote_path=remote_path,
-                message=(pulled.stderr or pulled.stdout or "remote ledger pull failed").strip(),
-            )
+        for filename, local_path in _state_files(cache_dir):
+            remote_path = f"{remote_dir}/{filename}"
+            target = f"{env['HOSTINGER_USERNAME']}@{env['HOSTINGER_HOST']}:{remote_path}"
+            pull_cmd = _scp_base(env) + [target, str(local_path)]
+            pulled = subprocess.run(pull_cmd, capture_output=True, text=True, check=False)
+            if pulled.returncode != 0:
+                return LedgerSyncResult(
+                    mode="hostinger",
+                    ok=False,
+                    action="pull",
+                    remote_path=remote_path,
+                    message=(pulled.stderr or pulled.stdout or "remote AI state pull failed").strip(),
+                )
         return LedgerSyncResult(
             mode="hostinger",
             ok=True,
             action="pull",
-            remote_path=remote_path,
-            message="remote ledger pulled",
+            remote_path=remote_dir,
+            message="remote AI state pulled",
         )
     except Exception as exc:
         return LedgerSyncResult(mode="hostinger", ok=False, action="pull", message=str(exc))
 
 
 def push_remote_daily_usage(cache_dir: Path) -> LedgerSyncResult:
-    """Push the updated local ledger to Hostinger."""
+    """Push updated durable AI state to Hostinger."""
     try:
         env = _required_env()
-        remote_path = default_remote_ledger_path(env["HOSTINGER_REMOTE_DIR"])
-        local_path = _ledger_path(cache_dir)
-        if not local_path.is_file():
+        ledger_remote_path = default_remote_ledger_path(env["HOSTINGER_REMOTE_DIR"])
+        remote_dir = ledger_remote_path.rsplit("/", 1)[0]
+        missing = [str(path) for _filename, path in _state_files(cache_dir) if not path.is_file()]
+        if missing:
             return LedgerSyncResult(
                 mode="hostinger",
                 ok=False,
                 action="push",
-                remote_path=remote_path,
-                message=f"local ledger missing: {local_path}",
+                remote_path=remote_dir,
+                message=f"local AI state missing: {', '.join(missing)}",
             )
-        remote_dir = remote_path.rsplit("/", 1)[0]
-        target = f"{env['HOSTINGER_USERNAME']}@{env['HOSTINGER_HOST']}:{remote_path}"
 
         ensure_cmd = _ssh_base(env) + [f"mkdir -p {remote_dir}"]
         ensure = subprocess.run(ensure_cmd, capture_output=True, text=True, check=False)
@@ -160,26 +169,29 @@ def push_remote_daily_usage(cache_dir: Path) -> LedgerSyncResult:
                 mode="hostinger",
                 ok=False,
                 action="push",
-                remote_path=remote_path,
+                remote_path=remote_dir,
                 message=(ensure.stderr or ensure.stdout or "remote ledger mkdir failed").strip(),
             )
 
-        push_cmd = _scp_base(env) + [str(local_path), target]
-        pushed = subprocess.run(push_cmd, capture_output=True, text=True, check=False)
-        if pushed.returncode != 0:
-            return LedgerSyncResult(
-                mode="hostinger",
-                ok=False,
-                action="push",
-                remote_path=remote_path,
-                message=(pushed.stderr or pushed.stdout or "remote ledger push failed").strip(),
-            )
+        for filename, local_path in _state_files(cache_dir):
+            remote_path = f"{remote_dir}/{filename}"
+            target = f"{env['HOSTINGER_USERNAME']}@{env['HOSTINGER_HOST']}:{remote_path}"
+            push_cmd = _scp_base(env) + [str(local_path), target]
+            pushed = subprocess.run(push_cmd, capture_output=True, text=True, check=False)
+            if pushed.returncode != 0:
+                return LedgerSyncResult(
+                    mode="hostinger",
+                    ok=False,
+                    action="push",
+                    remote_path=remote_path,
+                    message=(pushed.stderr or pushed.stdout or "remote AI state push failed").strip(),
+                )
         return LedgerSyncResult(
             mode="hostinger",
             ok=True,
             action="push",
-            remote_path=remote_path,
-            message="remote ledger pushed",
+            remote_path=remote_dir,
+            message="remote AI state pushed",
         )
     except Exception as exc:
         return LedgerSyncResult(mode="hostinger", ok=False, action="push", message=str(exc))
