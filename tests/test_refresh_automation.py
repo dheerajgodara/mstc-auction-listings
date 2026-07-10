@@ -25,7 +25,7 @@ def _record_dict(
     rid: str,
     *,
     source: str = "mstc",
-    closing: str = "2026-07-10T10:00:00+05:30",
+    closing: str = "2030-07-10T10:00:00+05:30",
 ) -> dict:
     now = datetime.now(IST).isoformat()
     return {
@@ -409,7 +409,7 @@ def test_refresh_no_deploy_on_success_without_flag(
         auction_number="1",
         region="JPR",
         office="JPR",
-        closing=datetime(2026, 7, 10, tzinfo=IST),
+        closing=datetime(2030, 7, 10, tzinfo=IST),
         lots=[LotRecord(lot_id="1", item_title="x")],
     )
     mock_merge.return_value = AuctionsExport(
@@ -463,7 +463,7 @@ def test_refresh_uses_incremental_work_plan_by_default(
     repo = tmp_path
     (repo / "web" / "public" / "data").mkdir(parents=True)
     production = repo / "web/public/data/auctions.json"
-    previous_record = _record_dict("1", source="mstc", closing="2026-07-10T10:00:00+05:30")
+    previous_record = _record_dict("1", source="mstc", closing="2030-07-10T10:00:00+05:30")
     _write_export(production, [previous_record])
 
     discovery_record = AuctionRecord(
@@ -473,7 +473,7 @@ def test_refresh_uses_incremental_work_plan_by_default(
         auction_number="1",
         region="JPR",
         office="JPR",
-        closing=datetime(2026, 7, 10, 10, tzinfo=IST),
+        closing=datetime(2030, 7, 10, 10, tzinfo=IST),
         lots=[LotRecord(lot_id="1", item_title="Item")],
     )
     mock_discovery.return_value = AuctionsExport(
