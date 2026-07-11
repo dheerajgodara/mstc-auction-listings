@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Calendar, Clock, Download, Filter, Search, Star, X } from "lucide-react";
+import { Calendar, Clock, Filter, Search, Star, X } from "lucide-react";
 import { AuctionCard } from "@/components/auction-card";
 import { PaginationBar } from "@/components/pagination-bar";
 import { Chip, Input, Select } from "@/components/ui/primitives";
@@ -34,7 +34,6 @@ import {
   enrichAuctionDisplay,
   materialCategoryLabel,
 } from "@/lib/display-enrichment";
-import { auctionsToCsv, downloadCsv } from "@/lib/export-csv";
 import { rankAuctionsBySearch } from "@/lib/search";
 import {
   deleteSavedSearch,
@@ -448,22 +447,6 @@ export function AuctionListings({
     setWatchlist(toggleWatchlist(id));
   };
 
-  const handleExportVisible = () => {
-    trackEvent("csv_export", { count: sorted.length });
-    downloadCsv(
-      `auctions-visible-${new Date().toISOString().slice(0, 10)}.csv`,
-      auctionsToCsv(sorted),
-    );
-  };
-
-  const handleExportWatchlist = () => {
-    const saved = auctions.filter((a) => watchlist.has(a.id));
-    downloadCsv(
-      `auctions-watchlist-${new Date().toISOString().slice(0, 10)}.csv`,
-      auctionsToCsv(saved),
-    );
-  };
-
   const handleSaveCurrentSearch = () => {
     const name = query.trim() || `Search ${new Date().toLocaleString("en-IN")}`;
     const entry: SavedSearch = {
@@ -775,14 +758,6 @@ export function AuctionListings({
               <option value="price_desc">Price high → low</option>
               <option value="best_opportunities">Best opportunities</option>
             </Select>
-            <button
-              type="button"
-              onClick={handleExportVisible}
-              className="btn-glass inline-flex h-9 items-center gap-1.5 px-3 text-sm"
-            >
-              <Download className="h-4 w-4" />
-              Export CSV
-            </button>
             <button
               type="button"
               onClick={handleSaveCurrentSearch}
@@ -1203,15 +1178,6 @@ export function AuctionListings({
                   <option value="photos">Has photos</option>
                 </Select>
               </div>
-              {watchlist.size > 0 && (
-                <button
-                  type="button"
-                  onClick={handleExportWatchlist}
-                  className="text-xs font-medium text-cyan-800 hover:underline"
-                >
-                  Export watchlist CSV
-                </button>
-              )}
               {savedSearches.length > 0 && (
                 <div className="flex flex-wrap items-center gap-2 sm:col-span-2">
                   <span className="text-xs font-medium text-slate-600">Saved:</span>
