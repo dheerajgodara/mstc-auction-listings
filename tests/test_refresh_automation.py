@@ -114,20 +114,21 @@ def test_bootstrap_previous_production_falls_back_to_hostinger_ssh(tmp_path: Pat
     monkeypatch.setenv("HOSTINGER_HOST", "example.com")
     monkeypatch.setenv("HOSTINGER_PORT", "65002")
     monkeypatch.setenv("HOSTINGER_USERNAME", "user")
-    monkeypatch.setenv("HOSTINGER_SSH_KEY", "/tmp/key")
+    monkeypatch.setenv("HOSTINGER_SSH_KEY", "~/.ssh/hostinger_key")
     monkeypatch.setenv("HOSTINGER_REMOTE_DIR", "/remote/auctions")
     monkeypatch.setattr(
         "scraper.refresh_and_deploy.urllib.request.urlopen",
         MagicMock(side_effect=OSError("network unreachable")),
     )
+    subprocess_run = MagicMock(return_value=MagicMock(returncode=0, stdout=bundle, stderr=""))
     monkeypatch.setattr(
         "scraper.refresh_and_deploy.subprocess.run",
-        MagicMock(return_value=MagicMock(returncode=0, stdout=bundle, stderr="")),
+        subprocess_run,
     )
 
     assert _bootstrap_previous_production_from_live(
         production_json=production,
-        base_url="https://scrapauctionindia.com/auctions",
+        base_url="",
         warnings=warnings,
     ) is True
 
@@ -135,6 +136,8 @@ def test_bootstrap_previous_production_falls_back_to_hostinger_ssh(tmp_path: Pat
     assert data["count"] == 1
     assert data["auctions"][0]["source_auction_id"] == "1"
     assert any("Hostinger SSH" in warning for warning in warnings)
+    ssh_cmd = subprocess_run.call_args.args[0]
+    assert ssh_cmd[2] == str(Path("~/.ssh/hostinger_key").expanduser())
 
 
 def test_safety_gate_rejects_one_record_candidate(tmp_path: Path):

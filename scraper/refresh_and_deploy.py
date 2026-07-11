@@ -202,11 +202,24 @@ def _parse_auctions_data_js(text: str) -> dict[str, Any] | None:
     return json.loads(match.group(1))
 
 
+def _bootstrap_base_urls(base_url: str | None) -> list[str]:
+    candidates: list[str] = []
+    for raw in [
+        os.environ.get("SITE_BASE_URL"),
+        base_url,
+        "https://scrapauctionindia.com/auctions",
+    ]:
+        value = (raw or "").strip().rstrip("/")
+        if value and value not in candidates:
+            candidates.append(value)
+    return candidates
+
+
 def _read_remote_production_bundle_via_ssh() -> str:
     host = (os.environ.get("HOSTINGER_HOST") or "").strip()
     port = (os.environ.get("HOSTINGER_PORT") or "22").strip()
     username = (os.environ.get("HOSTINGER_USERNAME") or "").strip()
-    key_path = (os.environ.get("HOSTINGER_SSH_KEY") or "").strip()
+    key_path = os.path.expanduser((os.environ.get("HOSTINGER_SSH_KEY") or "").strip())
     remote_dir = (os.environ.get("HOSTINGER_REMOTE_DIR") or "").strip()
     if not all([host, username, key_path, remote_dir]):
         raise RuntimeError("Hostinger SSH bootstrap env is incomplete")
@@ -239,22 +252,32 @@ def _bootstrap_previous_production_from_live(
 ) -> bool:
     if _export_count(production_json) > 0:
         return False
-    if not base_url:
+    base_urls = _bootstrap_base_urls(base_url)
+    if not base_urls:
         warnings.append("no local production export and SITE_BASE_URL unavailable for bootstrap")
         return False
 
-    clean_base = base_url.rstrip("/")
-    url = f"{clean_base}/data/auctions-data.js?v=bootstrap"
     data: dict[str, Any] | None = None
-    try:
-        with urllib.request.urlopen(url, timeout=60) as resp:
-            text = resp.read().decode("utf-8")
-        data = _parse_auctions_data_js(text)
-    except Exception as exc:
-        warnings.append(f"could not bootstrap previous production from live site: {exc}")
+    for clean_base in base_urls:
+        url = f"{clean_base}/data/auctions-data.js?v=bootstrap-{int(time.time())}"
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "ScrapAuctionIndiaRefresh/1.0 (+https://scrapauctionindia.com/auctions)",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=90) as resp:
+                text = resp.read().decode("utf-8")
+            data = _parse_auctions_data_js(text)
+            if data is not None:
+                break
+            warnings.append(f"could not bootstrap previous production: live data bundle parse failed at {clean_base}")
+        except Exception as exc:
+            warnings.append(f"could not bootstrap previous production from {clean_base}: {exc}")
     if data is None:
-        if "live site" not in " ".join(warnings[-1:]):
-            warnings.append("could not bootstrap previous production: live data bundle parse failed")
         try:
             text = _read_remote_production_bundle_via_ssh()
             data = _parse_auctions_data_js(text)
