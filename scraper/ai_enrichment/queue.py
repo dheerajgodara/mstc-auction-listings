@@ -407,6 +407,12 @@ def select_priority_auctions(
     summary = {
         "eligible": len(scored),
         "selected": len(selected),
+        "remaining_after_selection": max(0, len(scored) - len(selected)),
+        "estimated_runs_to_clear": (
+            0
+            if not selected
+            else (max(0, len(scored) - len(selected)) + max(1, len(selected)) - 1) // max(1, len(selected))
+        ),
         "current_cache_skipped": skipped_current,
         "already_ai_done": skipped_done,
         "priority_reason_counts": reason_counts,
@@ -679,6 +685,13 @@ class EnrichmentQueue:
             will_call_provider=not self.dry_run and self.allow_network and not self.mock,
         )
         report.budget = daily_budget_state(cache_dir=self.cache_dir, daily_budget=self.daily_budget)
+        effective_limit = limit
+        if not self.dry_run:
+            remaining_today = int(report.budget.get("remaining_today", 0) or 0)
+            if effective_limit is None:
+                effective_limit = remaining_today
+            else:
+                effective_limit = min(int(effective_limit), remaining_today)
         selected_pairs: list[tuple[AuctionRecord, dict[str, Any]]]
         selection_summary: dict[str, Any]
         if auction_id:
@@ -697,7 +710,7 @@ class EnrichmentQueue:
             selected_pairs, selection_summary = select_priority_auctions(
                 auctions,
                 cache_dir=self.cache_dir,
-                limit=limit,
+                limit=effective_limit,
             )
         report.selection = selection_summary
 

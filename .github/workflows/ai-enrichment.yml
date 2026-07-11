@@ -3,9 +3,13 @@ name: AI Enrichment Trial
 on:
   schedule:
     # Eight small AI enrichment passes per day, offset after scraper slots.
-    # IST: 01:05, 04:05, 07:05, 10:05, 13:05, 16:05, 19:05, 22:05
-    # UTC: 19:35 previous day, 22:35 previous day, 01:35, 04:35, 07:35, 10:35, 13:35, 16:35
-    - cron: "35 19,22,1,4,7,10,13,16 * * *"
+    # Each slot has target + 10m + 20m backup ticks because GitHub scheduled
+    # events can be delayed or dropped. scraper.ai_schedule_guard allows only
+    # the first successful/running tick per slot.
+    # IST: 01:05/15/25, 04:05/15/25, 07:05/15/25, 10:05/15/25,
+    #      13:05/15/25, 16:05/15/25, 19:05/15/25, 22:05/15/25
+    # UTC minutes: :35/:45/:55 for hours 19,22,01,04,07,10,13,16
+    - cron: "35,45,55 19,22,1,4,7,10,13,16 * * *"
   workflow_dispatch:
     inputs:
       limit:
@@ -37,15 +41,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: AI scheduled slot guard
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: PYTHONPATH=. python -m scraper.ai_schedule_guard --workflow ai-enrichment.yml
+
       - name: Set up Python
+        if: env.AI_SHOULD_RUN != 'false'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install Python dependencies
+        if: env.AI_SHOULD_RUN != 'false'
         run: pip install -r requirements.txt
 
       - name: Restore AI enrichment cache
+        if: env.AI_SHOULD_RUN != 'false'
         uses: actions/cache@v4
         with:
           path: data/ai_enrichment_cache
@@ -54,12 +66,14 @@ jobs:
             ai-enrichment-${{ runner.os }}-
 
       - name: Configure SSH key for production data fallback
+        if: env.AI_SHOULD_RUN != 'false'
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
 
       - name: Bootstrap live production data
+        if: env.AI_SHOULD_RUN != 'false'
         env:
           SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
           HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
@@ -87,6 +101,7 @@ jobs:
           PY
 
       - name: Run AI enrichment priority trial
+        if: env.AI_SHOULD_RUN != 'false'
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL }}
@@ -99,6 +114,7 @@ jobs:
           HOSTINGER_USERNAME: ${{ secrets.HOSTINGER_USERNAME }}
           HOSTINGER_SSH_KEY: ~/.ssh/hostinger_key
           HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
+          AI_SLOT_IST: ${{ env.AI_SLOT_IST }}
         run: |
           mkdir -p work/ai-enrichment
           LIMIT="${{ github.event.inputs.limit || '100' }}"
@@ -119,7 +135,7 @@ jobs:
             --telegram-report | tee work/ai-enrichment/report.stdout.json
 
       - name: Upload AI enrichment report and cache snapshot
-        if: always()
+        if: always() && env.AI_SHOULD_RUN != 'false'
         uses: actions/upload-artifact@v4
         with:
           name: ai-enrichment-${{ github.run_id }}

@@ -434,6 +434,17 @@ def test_daily_budget_blocks_provider_calls(tmp_path):
     assert payload["skipped"] == 0
     assert payload["details"] == []
     assert payload["budget"]["remaining_today"] == 0
+    assert payload["selection"]["selected"] == 0
+
+
+def test_selection_summary_reports_remaining_after_budget_cap(tmp_path):
+    auctions = [_auction(id=f"a{i}") for i in range(5)]
+    selected, summary = select_priority_auctions(auctions, cache_dir=tmp_path, limit=2)
+    assert len(selected) == 2
+    assert summary["eligible"] == 5
+    assert summary["selected"] == 2
+    assert summary["remaining_after_selection"] == 3
+    assert summary["estimated_runs_to_clear"] == 2
 
 
 def test_daily_budget_updates_after_ready_call(tmp_path):
@@ -518,6 +529,39 @@ def test_cli_remote_ledger_failure_fails_closed_before_provider(tmp_path, monkey
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["error"] == "remote_ledger_pull_failed"
     assert payload["will_call_provider"] is False
+
+
+def test_cli_sends_started_selection_and_complete_reports(tmp_path, monkeypatch):
+    json_path = tmp_path / "auctions.json"
+    json_path.write_text(
+        json.dumps({"count": 1, "auctions": [_auction().model_dump(mode="json")]}),
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "report.json"
+    events: list[str] = []
+    monkeypatch.setattr(
+        "scraper.ai_enrichment.cli.send_ai_enrichment_report",
+        lambda _payload, *, event="report": events.append(event) or True,
+    )
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--json",
+            str(json_path),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+            "enrich",
+            "--mock",
+            "--limit",
+            "1",
+            "--report-json",
+            str(report_path),
+            "--telegram-report",
+        ]
+    )
+    assert args.func(args) == 0
+    assert events == ["started", "selection_done", "complete"]
+    assert report_path.with_name("report.plan.json").is_file()
 
 
 def test_hydrate_merge_preserves_parser_fields(tmp_path):

@@ -41,7 +41,7 @@ def _required_env() -> dict[str, str]:
         "HOSTINGER_HOST": os.environ.get("HOSTINGER_HOST", "").strip(),
         "HOSTINGER_PORT": os.environ.get("HOSTINGER_PORT", "").strip(),
         "HOSTINGER_USERNAME": os.environ.get("HOSTINGER_USERNAME", "").strip(),
-        "HOSTINGER_SSH_KEY": os.environ.get("HOSTINGER_SSH_KEY", "").strip(),
+        "HOSTINGER_SSH_KEY": os.path.expanduser(os.environ.get("HOSTINGER_SSH_KEY", "").strip()),
         "HOSTINGER_REMOTE_DIR": os.environ.get("HOSTINGER_REMOTE_DIR", "").strip(),
     }
     missing = [key for key, value in values.items() if not value]

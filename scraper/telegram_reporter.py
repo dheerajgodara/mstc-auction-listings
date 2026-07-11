@@ -256,7 +256,7 @@ def send_telegram_report(payload: dict[str, Any], *, event: str) -> bool:
     return send_telegram_message(build_telegram_message(payload, event=event))
 
 
-def build_ai_enrichment_message(payload: dict[str, Any]) -> str:
+def build_ai_enrichment_message(payload: dict[str, Any], *, event: str = "report") -> str:
     selection = payload.get("selection") or {}
     cache = payload.get("cache_stats") or {}
     budget = payload.get("budget") or {}
@@ -267,12 +267,23 @@ def build_ai_enrichment_message(payload: dict[str, Any]) -> str:
         if model:
             ready_models[str(model)] = ready_models.get(str(model), 0) + 1
 
-    title = "🤖 Scrap Auction India AI enrichment report"
+    title = {
+        "started": "▶️ Scrap Auction India AI enrichment started",
+        "selection_done": "📊 Scrap Auction India AI selection complete",
+        "complete": "🤖 Scrap Auction India AI enrichment complete",
+        "failed": "❌ Scrap Auction India AI enrichment failed",
+        "skipped": "⏭️ Scrap Auction India AI enrichment skipped",
+        "report": "🤖 Scrap Auction India AI enrichment report",
+    }.get(event, "🤖 Scrap Auction India AI enrichment report")
     lines = [f"<b>{_h(title)}</b>"]
     lines.extend(
         _section(
             "Run",
             [
+                _row("Run", payload.get("run_id", "n/a")),
+                _row("Started", payload.get("started_at", "n/a")),
+                *([_row("Finished", payload.get("finished_at"))] if payload.get("finished_at") else []),
+                *([_row("Slot", payload.get("slot_ist"))] if payload.get("slot_ist") else []),
                 _row("Mode", "live OpenRouter" if payload.get("allow_network") else "mock/no-network"),
                 _row("Processed", payload.get("processed", 0)),
                 _row("Ready", payload.get("ready", 0)),
@@ -280,6 +291,7 @@ def build_ai_enrichment_message(payload: dict[str, Any]) -> str:
                 _row("Rejected", payload.get("rejected", 0)),
                 _row("Failed", payload.get("failed", 0)),
                 _row("Prompt/schema", f"{payload.get('prompt_version')} / {payload.get('schema_version')}"),
+                *([_row("Runtime", _fmt_duration(payload.get("duration_sec")))] if payload.get("duration_sec") is not None else []),
             ],
         )
     )
@@ -289,7 +301,10 @@ def build_ai_enrichment_message(payload: dict[str, Any]) -> str:
             [
                 _row("Eligible", selection.get("eligible", "n/a")),
                 _row("Selected", selection.get("selected", "n/a")),
+                _row("Already enriched", selection.get("already_ai_done", "n/a")),
                 _row("Current cache skipped", selection.get("current_cache_skipped", "n/a")),
+                _row("Remaining after selection", selection.get("remaining_after_selection", "n/a")),
+                _row("Estimated runs left", selection.get("estimated_runs_to_clear", "n/a")),
                 _row("Sources", _fmt_source_counts(selection.get("selected_by_source") or {})),
             ],
         )
@@ -353,8 +368,13 @@ def build_ai_enrichment_message(payload: dict[str, Any]) -> str:
     lines.extend(_section("Cache", cache_rows))
     if ready_models:
         lines.extend(_section("Models", [_row("Used", _fmt_source_counts(ready_models))]))
+    links = []
+    if payload.get("github_run_url"):
+        links.append(_link("GitHub", payload.get("github_run_url")))
+    if links:
+        lines.extend(_section("Links", links))
     return "\n".join(lines)
 
 
-def send_ai_enrichment_report(payload: dict[str, Any]) -> bool:
-    return send_telegram_message(build_ai_enrichment_message(payload))
+def send_ai_enrichment_report(payload: dict[str, Any], *, event: str = "report") -> bool:
+    return send_telegram_message(build_ai_enrichment_message(payload, event=event))

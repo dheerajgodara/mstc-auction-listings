@@ -4,6 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from scraper.schedule_guard import latest_slot_start, should_skip_for_existing_run
+from scraper.ai_schedule_guard import latest_ai_slot_start
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -18,6 +19,18 @@ def test_latest_slot_start_rolls_to_previous_day():
     now = datetime(2026, 7, 10, 0, 12, tzinfo=IST)
     slot = latest_slot_start(now)
     assert slot == datetime(2026, 7, 9, 21, 30, tzinfo=IST)
+
+
+def test_latest_ai_slot_start_uses_offset_slots():
+    now = datetime(2026, 7, 10, 10, 18, tzinfo=IST)
+    slot = latest_ai_slot_start(now)
+    assert slot == datetime(2026, 7, 10, 10, 5, tzinfo=IST)
+
+
+def test_latest_ai_slot_start_rolls_to_previous_day():
+    now = datetime(2026, 7, 10, 0, 45, tzinfo=IST)
+    slot = latest_ai_slot_start(now)
+    assert slot == datetime(2026, 7, 9, 22, 5, tzinfo=IST)
 
 
 def test_schedule_guard_skips_if_slot_already_succeeded():

@@ -5,19 +5,47 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from scraper.ai_enrichment.hydrate import hydrate_json_file
 from scraper.ai_enrichment.ledger_sync import pull_remote_daily_usage, push_remote_daily_usage
-from scraper.ai_enrichment.queue import EnrichmentQueue, count_cache_stats
+from scraper.ai_enrichment.queue import EnrichmentQueue, count_cache_stats, daily_budget_state, select_priority_auctions
 from scraper.ai_enrichment.schema import AI_SCHEMA_VERSION, PROMPT_VERSION
 from scraper.config import AI_ENRICHMENT_CACHE_DIR, DEFAULT_JSON_OUT
 from scraper.models import AuctionRecord
 from scraper.telegram_reporter import send_ai_enrichment_report
 
 logger = logging.getLogger(__name__)
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def _github_run_url() -> str | None:
+    server = os.environ.get("GITHUB_SERVER_URL")
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if server and repo and run_id:
+        return f"{server}/{repo}/actions/runs/{run_id}"
+    return None
+
+
+def _base_payload(args: argparse.Namespace, *, allow_network: bool, started_at: str) -> dict[str, object]:
+    return {
+        "run_id": os.environ.get("GITHUB_RUN_ID") or datetime.now(IST).strftime("%Y%m%d_%H%M%S_IST"),
+        "started_at": started_at,
+        "slot_ist": os.environ.get("AI_SLOT_IST"),
+        "allow_network": allow_network,
+        "prompt_version": PROMPT_VERSION,
+        "schema_version": AI_SCHEMA_VERSION,
+        "limit": args.limit,
+        "daily_budget_requested": args.daily_budget,
+        "github_run_url": _github_run_url(),
+    }
 
 
 def _load_auctions(json_path: Path) -> list[AuctionRecord]:
@@ -28,9 +56,27 @@ def _load_auctions(json_path: Path) -> list[AuctionRecord]:
 
 
 def cmd_enrich(args: argparse.Namespace) -> int:
+    started = time.monotonic()
+    started_at = datetime.now(IST).isoformat()
     allow_network = bool(args.allow_network)
     mock = bool(args.mock or not allow_network)
     no_network = not allow_network
+    base_payload = _base_payload(args, allow_network=allow_network, started_at=started_at)
+
+    if args.telegram_report:
+        send_ai_enrichment_report(
+            {
+                **base_payload,
+                "processed": 0,
+                "ready": 0,
+                "skipped": 0,
+                "rejected": 0,
+                "failed": 0,
+                "budget": daily_budget_state(cache_dir=args.cache_dir, daily_budget=args.daily_budget),
+                "cache_stats": count_cache_stats(args.cache_dir),
+            },
+            event="started",
+        )
 
     ledger_sync_events: list[dict[str, object]] = []
     if args.ledger_sync == "hostinger" and allow_network and not args.dry_run:
@@ -38,6 +84,7 @@ def cmd_enrich(args: argparse.Namespace) -> int:
         ledger_sync_events.append(pull.to_dict())
         if not pull.ok and not args.allow_local_ledger_fallback:
             payload = {
+                **base_payload,
                 "processed": 0,
                 "ready": 0,
                 "skipped": 0,
@@ -53,11 +100,55 @@ def cmd_enrich(args: argparse.Namespace) -> int:
                 args.report_json.parent.mkdir(parents=True, exist_ok=True)
                 args.report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
             if args.telegram_report:
-                send_ai_enrichment_report(payload)
+                send_ai_enrichment_report(payload, event="failed")
             print(json.dumps(payload, indent=2))
             return 2
 
     auctions = _load_auctions(args.json)
+    budget_before = daily_budget_state(cache_dir=args.cache_dir, daily_budget=args.daily_budget)
+    effective_limit = args.limit
+    if not args.dry_run:
+        remaining_today = int(budget_before.get("remaining_today", 0) or 0)
+        effective_limit = remaining_today if effective_limit is None else min(int(effective_limit), remaining_today)
+    selected_pairs, selection_summary = select_priority_auctions(
+        auctions,
+        cache_dir=args.cache_dir,
+        limit=effective_limit,
+    )
+    selection_payload = {
+        **base_payload,
+        "processed": 0,
+        "ready": 0,
+        "skipped": 0,
+        "rejected": 0,
+        "failed": 0,
+        "allow_network": allow_network,
+        "will_call_provider": bool(allow_network and not mock and not args.dry_run and selected_pairs),
+        "selection": selection_summary,
+        "budget": budget_before,
+        "cache_stats": count_cache_stats(args.cache_dir),
+        "ledger_sync": ledger_sync_events,
+    }
+    if args.telegram_report:
+        event = "skipped" if not selected_pairs else "selection_done"
+        send_ai_enrichment_report(selection_payload, event=event)
+    if args.report_json:
+        args.report_json.parent.mkdir(parents=True, exist_ok=True)
+        plan_path = args.report_json.with_name(args.report_json.stem + ".plan.json")
+        plan_path.write_text(json.dumps(selection_payload, indent=2) + "\n", encoding="utf-8")
+
+    if not selected_pairs:
+        payload = {
+            **selection_payload,
+            "finished_at": datetime.now(IST).isoformat(),
+            "duration_sec": round(time.monotonic() - started, 2),
+        }
+        if args.report_json:
+            args.report_json.parent.mkdir(parents=True, exist_ok=True)
+            args.report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(payload, indent=2))
+        return 0
+
     queue = EnrichmentQueue(
         dry_run=args.dry_run,
         mock=mock,
@@ -73,6 +164,9 @@ def cmd_enrich(args: argparse.Namespace) -> int:
         limit=args.limit,
     )
     payload = report.to_dict()
+    payload.update(base_payload)
+    payload["finished_at"] = datetime.now(IST).isoformat()
+    payload["duration_sec"] = round(time.monotonic() - started, 2)
     payload["cache_stats"] = count_cache_stats(args.cache_dir)
     if args.ledger_sync == "hostinger" and allow_network and not args.dry_run:
         push = push_remote_daily_usage(args.cache_dir)
@@ -84,7 +178,7 @@ def cmd_enrich(args: argparse.Namespace) -> int:
                 args.report_json.parent.mkdir(parents=True, exist_ok=True)
                 args.report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
             if args.telegram_report:
-                send_ai_enrichment_report(payload)
+                send_ai_enrichment_report(payload, event="failed")
             print(json.dumps(payload, indent=2))
             return 3
     elif ledger_sync_events:
@@ -93,7 +187,7 @@ def cmd_enrich(args: argparse.Namespace) -> int:
         args.report_json.parent.mkdir(parents=True, exist_ok=True)
         args.report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     if args.telegram_report:
-        send_ai_enrichment_report(payload)
+        send_ai_enrichment_report(payload, event="complete" if not payload.get("error") else "failed")
     print(json.dumps(payload, indent=2))
     return 0
 
