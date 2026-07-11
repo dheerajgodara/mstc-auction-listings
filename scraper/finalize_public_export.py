@@ -27,6 +27,10 @@ def finalize_public_export(
 ) -> dict:
     if not json_path.is_file():
         raise FileNotFoundError(f"Export not found: {json_path}")
+    if json_path.stat().st_size == 0:
+        raise ValueError(
+            f"Export is zero bytes: {json_path} — restore from web/out or promote a valid candidate",
+        )
 
     previous = json.loads(json_path.read_text(encoding="utf-8"))
     automation_ran_at = automation_ran_at or datetime.now(IST)
@@ -37,6 +41,11 @@ def finalize_public_export(
         run_id=run_id,
         history_path=history_path,
     )
+    missing_pdf_count = remove_missing_local_pdf_links(finalized, public_dir=json_path.parent.parent)
+    if missing_pdf_count:
+        stats = dict(finalized.get("stats") or {})
+        stats["missing_local_pdf_links_removed"] = missing_pdf_count
+        finalized["stats"] = stats
     json_path.write_text(json.dumps(finalized, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     logger.info(
         "Finalized %s (%d auctions, run_id=%s)",
@@ -45,6 +54,42 @@ def finalize_public_export(
         finalized.get("run_id"),
     )
     return finalized
+
+
+def remove_missing_local_pdf_links(export: dict, *, public_dir: Path) -> int:
+    """Remove local pdf_url values that do not exist in web/public.
+
+    Incremental discovery can safely publish listing-only records before their
+    catalogue PDF has been deep-scraped. Those records must not point at
+    `pdfs/*.pdf` until the file exists, otherwise build/deploy verification
+    correctly refuses the export. External/source links are preserved.
+    """
+    removed = 0
+    for auction in export.get("auctions", []) or []:
+        pdf_url = auction.get("pdf_url")
+        if not _is_local_pdf_url(pdf_url):
+            continue
+        rel = str(pdf_url).lstrip("/")
+        if (public_dir / rel).is_file():
+            continue
+        auction["pdf_url"] = None
+        warnings = list(auction.get("warnings") or [])
+        note = f"local PDF not cached yet: {rel}"
+        if note not in warnings:
+            warnings.append(note)
+        auction["warnings"] = warnings
+        document_urls = auction.get("document_urls")
+        if isinstance(document_urls, list):
+            auction["document_urls"] = [url for url in document_urls if str(url).lstrip("/") != rel]
+        removed += 1
+    return removed
+
+
+def _is_local_pdf_url(value: object) -> bool:
+    if not value:
+        return False
+    text = str(value)
+    return text.startswith("pdfs/") or text.startswith("/pdfs/")
 
 
 def main(argv: list[str] | None = None) -> int:

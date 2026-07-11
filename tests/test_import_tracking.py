@@ -14,6 +14,7 @@ from scraper.import_tracking import (
     merge_import_history,
     stable_auction_key,
 )
+from scraper.finalize_public_export import finalize_public_export
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -176,3 +177,39 @@ def test_daily_import_entry_shape():
     assert entry["date"] == "2026-07-04"
     assert entry["mstc_auctions"] == 1681
     assert entry["new_auctions_first_seen"] == 3
+
+
+def test_finalize_public_export_removes_missing_local_pdf_links(tmp_path: Path):
+    public_dir = tmp_path / "public"
+    data_dir = public_dir / "data"
+    pdf_dir = public_dir / "pdfs"
+    data_dir.mkdir(parents=True)
+    pdf_dir.mkdir()
+    (pdf_dir / "exists.pdf").write_bytes(b"%PDF-1.4\n")
+    json_path = data_dir / "auctions.json"
+    history_path = data_dir / "import-history.json"
+    payload = {
+        "generated_at": datetime(2026, 7, 4, 10, 0, tzinfo=IST).isoformat(),
+        "count": 2,
+        "auctions": [
+            {**_auction("exists"), "pdf_url": "pdfs/exists.pdf", "document_urls": ["pdfs/exists.pdf"]},
+            {**_auction("missing"), "pdf_url": "pdfs/missing.pdf", "document_urls": ["pdfs/missing.pdf"]},
+        ],
+        "stats": {},
+    }
+    json_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    out = finalize_public_export(
+        json_path=json_path,
+        history_path=history_path,
+        automation_ran_at=datetime(2026, 7, 4, 11, 0, tzinfo=IST),
+        run_id="test_run",
+    )
+
+    by_id = {a["id"]: a for a in out["auctions"]}
+    assert by_id["exists"]["pdf_url"] == "pdfs/exists.pdf"
+    assert by_id["exists"]["document_urls"] == ["pdfs/exists.pdf"]
+    assert by_id["missing"]["pdf_url"] is None
+    assert by_id["missing"]["document_urls"] == []
+    assert "local PDF not cached yet: pdfs/missing.pdf" in by_id["missing"]["warnings"]
+    assert out["stats"]["missing_local_pdf_links_removed"] == 1
