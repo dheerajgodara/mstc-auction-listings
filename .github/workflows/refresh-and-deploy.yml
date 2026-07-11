@@ -2,10 +2,9 @@ name: Refresh and Deploy
 
 on:
   schedule:
-    # Production incremental refresh every 20 minutes.
-    # scraper.schedule_guard prevents overlap/backlog: if any previous refresh
-    # is queued or running, this tick exits cleanly.
-    - cron: "*/20 * * * *"
+    # Catch-up cadence: hourly at :00 IST (30 * * * * UTC).
+    # schedule_guard skips if a prior run is still queued/running.
+    - cron: "30 * * * *"
   workflow_dispatch:
     inputs:
       deploy:
@@ -23,7 +22,7 @@ on:
       max_deep_scrape:
         description: "Max auctions to deep scrape in this run"
         required: false
-        default: "25"
+        default: "250"
       full_reconcile:
         description: "Manual catch-up: deep scrape every new/changed/repair listing"
         required: false
@@ -117,7 +116,7 @@ jobs:
           PYTHONPATH=. python -m scraper.refresh_and_deploy \
             --sources mstc,gem_forward,eauction \
             --max-docs-per-run "${{ github.event.inputs.max_docs_per_run || '2000' }}" \
-            --max-deep-scrape "${{ github.event.inputs.max_deep_scrape || '25' }}" \
+            --max-deep-scrape "${{ github.event.inputs.max_deep_scrape || '250' }}" \
             --min-count 1000 \
             --break-stale-lock \
             --warn-missing-eauction \

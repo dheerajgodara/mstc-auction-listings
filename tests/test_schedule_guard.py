@@ -12,7 +12,7 @@ IST = ZoneInfo("Asia/Kolkata")
 def test_latest_slot_start_uses_ist_slots():
     now = datetime(2026, 7, 10, 18, 44, tzinfo=IST)
     slot = latest_slot_start(now)
-    assert slot == datetime(2026, 7, 10, 18, 40, tzinfo=IST)
+    assert slot == datetime(2026, 7, 10, 18, 0, tzinfo=IST)
 
 
 def test_latest_slot_start_rolls_to_previous_day():

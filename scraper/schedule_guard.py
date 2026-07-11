@@ -12,9 +12,7 @@ from zoneinfo import ZoneInfo
 IST = ZoneInfo("Asia/Kolkata")
 
 TARGET_SLOTS_IST: tuple[tuple[int, int], ...] = tuple(
-    (hour, minute)
-    for hour in range(24)
-    for minute in (0, 20, 40)
+    (hour, 0) for hour in range(24)
 )
 
 

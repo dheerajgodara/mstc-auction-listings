@@ -102,7 +102,7 @@ class RefreshConfig:
     eauction_warn_only: bool = False
     fallback_sources: list[str] = field(default_factory=lambda: ["mstc", "gem_forward", "eauction"])
     full_reconcile: bool = False
-    max_deep_scrape_per_run: int = 25
+    max_deep_scrape_per_run: int = 250
     repo_root: Path = REPO_ROOT
     lock_path: Path = DEFAULT_LOCK_PATH
 
@@ -850,7 +850,7 @@ def build_parser_for_tests() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Full refresh pipeline: scrape, QA, promote, build, deploy")
     parser.add_argument("--sources", default="mstc,gem_forward,eauction")
     parser.add_argument("--max-docs-per-run", type=int, default=2000)
-    parser.add_argument("--max-deep-scrape", type=int, default=25)
+    parser.add_argument("--max-deep-scrape", type=int, default=250)
     parser.add_argument("--min-count", type=int, default=1000)
     parser.add_argument("--deploy", action="store_true", help="Deploy to Hostinger after successful build")
     parser.add_argument("--no-deploy", action="store_true", help="Do not deploy (default)")
