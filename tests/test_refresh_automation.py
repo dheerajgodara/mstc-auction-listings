@@ -271,6 +271,24 @@ def test_safety_gate_rejects_failed_mstc_batches(tmp_path: Path):
     assert any("failed MSTC" in e for e in result.errors)
 
 
+def test_refresh_classifies_failed_batches_by_source():
+    from scraper.refresh_and_deploy import _classify_failed_batches
+
+    result = _classify_failed_batches(
+        {
+            "batches": [
+                {"batch_id": "mstc_JPR", "source": "mstc", "status": BATCH_STATUS_FAILED},
+                {"batch_id": "gem_forward_latest", "source": "gem_forward", "status": BATCH_STATUS_FAILED},
+                {"batch_id": "eauction_latest", "source": "eauction", "status": BATCH_STATUS_FAILED},
+                {"batch_id": "mstc_HO", "source": "mstc", "status": BATCH_STATUS_DONE},
+            ]
+        }
+    )
+    assert result["mstc"] == ["mstc_JPR"]
+    assert result["non_mstc"] == ["gem_forward_latest", "eauction_latest"]
+    assert result["all"] == ["mstc_JPR", "gem_forward_latest", "eauction_latest"]
+
+
 def test_predeploy_verify_rejects_capped_mstc_only_build(tmp_path: Path):
     out_dir = tmp_path / "out"
     data_dir = out_dir / "data"

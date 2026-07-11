@@ -195,6 +195,20 @@ def _export_count(path: Path) -> int:
     return int(data.get("count", len(data.get("auctions") or [])) or 0)
 
 
+def _classify_failed_batches(manifest_data: dict[str, Any]) -> dict[str, list[str]]:
+    failed_mstc: list[str] = []
+    failed_non_mstc: list[str] = []
+    for batch in manifest_data.get("batches", []) or []:
+        if batch.get("status") != BATCH_STATUS_FAILED:
+            continue
+        batch_id = str(batch.get("batch_id") or "unknown")
+        if batch.get("source") == "mstc":
+            failed_mstc.append(batch_id)
+        else:
+            failed_non_mstc.append(batch_id)
+    return {"mstc": failed_mstc, "non_mstc": failed_non_mstc, "all": failed_mstc + failed_non_mstc}
+
+
 def _parse_auctions_data_js(text: str) -> dict[str, Any] | None:
     match = re.search(r"__AUCTIONS_EXPORT__\s*=\s*(\{.*\});?\s*$", text, re.S)
     if not match:
@@ -440,20 +454,24 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             skip_docs=config.skip_docs,
             work_plan_path=work_plan_path,
         )
-        failed_batches = [
-            b.get("batch_id")
-            for b in manifest.data.get("batches", [])
-            if b.get("status") == BATCH_STATUS_FAILED
-        ]
+        failed_batch_groups = _classify_failed_batches(manifest.data)
+        failed_batches = failed_batch_groups["all"]
         payload["batch_scrape"] = {
             "duration_sec": round(time.monotonic() - scrape_started, 2),
             "manifest_summary": manifest.summary(),
             "failed_batches": failed_batches,
+            "failed_mstc_batches": failed_batch_groups["mstc"],
+            "failed_non_mstc_batches": failed_batch_groups["non_mstc"],
             "docs_budget_remaining": manifest.data.get("docs_budget_remaining"),
         }
         send_telegram_report(payload, event="deep_scrape_done")
-        if failed_batches and not config.allow_failed_batches:
-            raise RuntimeError(f"batch scrape had failures: {', '.join(failed_batches)}")
+        if failed_batch_groups["mstc"] and not config.allow_failed_batches:
+            raise RuntimeError(f"MSTC batch scrape had failures: {', '.join(failed_batch_groups['mstc'])}")
+        if failed_batch_groups["non_mstc"]:
+            warnings.append(
+                "non-MSTC batch scrape failed; continuing with previous/discovery fallback: "
+                + ", ".join(failed_batch_groups["non_mstc"])
+            )
 
         # 2. Merge parsed/deep records
         merge_started = time.monotonic()
