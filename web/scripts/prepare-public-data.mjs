@@ -89,3 +89,29 @@ const jsBytes = fs.statSync(jsPath).size;
 console.log(
   `prepare-public-data: wrote ${jsPath} (${jsBytes} bytes) from ${sourcePath} (${jsonBytes} bytes), ${meta.count} auctions`,
 );
+
+// Minimal production sitemap so post-deploy HTTP verify and crawlers have a live map.
+// Detail pages are client-routed today; include discover + status only.
+const siteRoot = "https://scrapauctionindia.com/auctions";
+const lastmod = String(data.automation_ran_at || data.generated_at || new Date().toISOString()).slice(0, 10);
+const sitemapUrls = [
+  { loc: `${siteRoot}/`, priority: "1.0" },
+  { loc: `${siteRoot}/status/`, priority: "0.3" },
+];
+const sitemapXml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${sitemapUrls
+  .map(
+    (u) => `  <url>
+    <loc>${u.loc}</loc>
+    <lastmod>${lastmod}</lastmod>
+    <changefreq>hourly</changefreq>
+    <priority>${u.priority}</priority>
+  </url>`,
+  )
+  .join("\n")}
+</urlset>
+`;
+const sitemapPath = path.join(webRoot, "out", "sitemap.xml");
+fs.writeFileSync(sitemapPath, sitemapXml, "utf8");
+console.log(`prepare-public-data: wrote ${sitemapPath} (${sitemapUrls.length} URLs)`);
