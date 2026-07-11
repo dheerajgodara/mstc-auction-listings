@@ -170,7 +170,9 @@ def verify_live_site(
     detail_url = f"{site}/mstc/582972/"
     detail_status, detail_body = _http_status(detail_url)
     checked["detail_sample"] = detail_url
-    if detail_status != 200:
+    if detail_status == 404:
+        warnings.append(f"sample detail page aged out (HTTP 404): {detail_url}")
+    elif detail_status != 200:
         warnings.append(f"sample detail page returned HTTP {detail_status}: {detail_url}")
     elif b"<h1" not in detail_body:
         warnings.append("sample detail page missing H1")

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from scraper.asset_bootstrap import bootstrap_production_assets
 from scraper.batch_manifest import BATCH_STATUS_FAILED
 from scraper.batch_run import batch_run
 from scraper.config import (
@@ -53,11 +54,23 @@ from scraper.refresh_reports import (
 )
 from scraper.notify import send_failure_notification
 from scraper.safety_gates import SafetyGateConfig, run_safety_gates
-from scraper.source_fallback import apply_missing_source_fallback, load_export
+from scraper.source_fallback import apply_missing_source_fallback, load_export, source_counts
 from scraper.telegram_reporter import send_telegram_report
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.refresh_and_deploy")
+
+MAX_DISCOVERY_DROP_PCT = 0.40
+
+
+class SubprocessStepError(RuntimeError):
+    """Raised when a build/verify subprocess fails; carries captured output for reports."""
+
+    def __init__(self, step: str, returncode: int, output: dict[str, Any]):
+        self.step = step
+        self.returncode = returncode
+        self.output = output
+        super().__init__(f"{step} failed (exit {returncode})")
 
 
 def _repo_path(repo_root: Path, default_path: Path) -> Path:
@@ -118,7 +131,7 @@ def _run_subprocess(cmd: list[str], *, cwd: Path, step: str) -> dict[str, Any]:
     started = time.monotonic()
     result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     duration = round(time.monotonic() - started, 2)
-    output = {
+    output: dict[str, Any] = {
         "command": " ".join(cmd),
         "returncode": result.returncode,
         "duration_sec": duration,
@@ -126,8 +139,42 @@ def _run_subprocess(cmd: list[str], *, cwd: Path, step: str) -> dict[str, Any]:
     if result.returncode != 0:
         output["stderr_tail"] = (result.stderr or "")[-2000:]
         output["stdout_tail"] = (result.stdout or "")[-2000:]
-        raise RuntimeError(f"{step} failed (exit {result.returncode})")
+        raise SubprocessStepError(step, result.returncode, output)
     return output
+
+
+def _assert_discovery_completeness(
+    *,
+    sources: list[str],
+    discovery_data: dict[str, Any],
+    previous_export: dict[str, Any] | None,
+    allow_large_drop: bool,
+) -> None:
+    """Abort before work-plan when post-fallback discovery would wipe MSTC / crash counts."""
+    previous_counts = source_counts(previous_export)
+    current_counts = source_counts(discovery_data)
+    previous_total = int((previous_export or {}).get("count") or sum(previous_counts.values()) or 0)
+    current_total = int(discovery_data.get("count") or sum(current_counts.values()) or 0)
+
+    if "mstc" in sources:
+        prev_mstc = int(previous_counts.get("mstc") or 0)
+        cur_mstc = int(current_counts.get("mstc") or 0)
+        if prev_mstc > 0 and cur_mstc == 0:
+            raise RuntimeError(
+                f"discovery completeness gate failed: MSTC count is 0 after source fallback "
+                f"(previous MSTC={prev_mstc}); refusing to mark MSTC listings removed"
+            )
+
+    if (
+        not allow_large_drop
+        and previous_total > 0
+        and current_total < previous_total * (1.0 - MAX_DISCOVERY_DROP_PCT)
+    ):
+        drop_pct = 100.0 * (previous_total - current_total) / previous_total
+        raise RuntimeError(
+            f"discovery completeness gate failed: total count dropped {drop_pct:.0f}% "
+            f"({previous_total} -> {current_total}); refusing work plan"
+        )
 
 
 def _prepare_run_dirs(config: RefreshConfig) -> tuple[str, Path, Path, Path, Path, Path]:
@@ -423,6 +470,12 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
                 "source_stats": discovery_data.get("stats", {}).get("source_stats") or discovery_export.stats.get("source_stats"),
                 "source_fallback": discovery_fallback_report,
             }
+            _assert_discovery_completeness(
+                sources=config.sources,
+                discovery_data=discovery_data,
+                previous_export=previous_export,
+                allow_large_drop=config.allow_large_drop,
+            )
 
             plan_started = time.monotonic()
             full_work_plan = build_work_plan(discovery_data, previous_export)
@@ -433,6 +486,7 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
                 queue_path=queue_path,
                 max_deep_scrape_per_run=config.max_deep_scrape_per_run,
                 previous_export=previous_export,
+                public_dir=config.repo_root / "web" / "public",
             )
             selected_keys = set(queue_state.selected_keys)
             work_plan_path = run_dir / "incremental_work_plan.selected.json"
@@ -633,15 +687,35 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             errors.append(str(exc))
             raise
 
-        # 6. Build
+        # 6. Bootstrap production media, then build (finalize_public_export runs inside build:prod)
         if not config.skip_build:
+            public_dir = config.repo_root / "web" / "public"
+            asset_boot = bootstrap_production_assets(public_dir=public_dir)
+            payload["asset_bootstrap"] = asset_boot.to_dict()
+            warnings.extend(asset_boot.warnings)
+            if asset_boot.attempted and not asset_boot.ok:
+                warnings.append(f"asset bootstrap weak: {asset_boot.message}")
+            elif asset_boot.ok:
+                warnings.append(asset_boot.message)
+
             build_started = time.monotonic()
-            _run_subprocess(["pnpm", "run", "build:prod"], cwd=web_dir, step="build:prod")
-            verify_out = _run_subprocess(["pnpm", "run", "verify-build"], cwd=web_dir, step="verify-build")
-            payload["build"] = {
-                "duration_sec": round(time.monotonic() - build_started, 2),
-                "verify_build": verify_out,
-            }
+            try:
+                _run_subprocess(["pnpm", "run", "build:prod"], cwd=web_dir, step="build:prod")
+                verify_out = _run_subprocess(["pnpm", "run", "verify-build"], cwd=web_dir, step="verify-build")
+                payload["build"] = {
+                    "duration_sec": round(time.monotonic() - build_started, 2),
+                    "verify_build": verify_out,
+                }
+            except SubprocessStepError as exc:
+                payload["build"] = {
+                    "duration_sec": round(time.monotonic() - build_started, 2),
+                    "failed_step": exc.step,
+                    "returncode": exc.returncode,
+                    "stderr_tail": exc.output.get("stderr_tail"),
+                    "stdout_tail": exc.output.get("stdout_tail"),
+                    "output": exc.output,
+                }
+                raise
         else:
             payload["build"] = {"skipped": True}
 
@@ -726,7 +800,23 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
 
     except Exception as exc:
         logger.exception("refresh_and_deploy failed: %s", exc)
-        errors.append(str(exc))
+        if isinstance(exc, SubprocessStepError):
+            detail = (
+                f"{exc.step} failed (exit {exc.returncode}); "
+                f"stderr={(exc.output.get('stderr_tail') or '')[-800:]}"
+            )
+            errors.append(detail)
+            payload.setdefault("build", {})
+            if not payload.get("build"):
+                payload["build"] = {
+                    "failed_step": exc.step,
+                    "returncode": exc.returncode,
+                    "stderr_tail": exc.output.get("stderr_tail"),
+                    "stdout_tail": exc.output.get("stdout_tail"),
+                    "output": exc.output,
+                }
+        else:
+            errors.append(str(exc))
         payload["status"] = "failed"
         payload["finished_at"] = datetime.now(IST).isoformat()
         payload["errors"] = errors

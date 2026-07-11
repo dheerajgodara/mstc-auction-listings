@@ -498,6 +498,7 @@ def test_cli_remote_ledger_failure_fails_closed_before_provider(tmp_path, monkey
     report_path = tmp_path / "report.json"
     provider = MockEnrichmentProvider()
     provider.enrich_listing = MagicMock(side_effect=AssertionError("provider must not be called"))
+    monkeypatch.setattr("scraper.config.OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr("scraper.ai_enrichment.queue.get_provider", lambda **_kwargs: provider)
     monkeypatch.setattr(
         "scraper.ai_enrichment.cli.pull_remote_daily_usage",

@@ -17,6 +17,8 @@ logger = logging.getLogger("scraper.finalize_public_export")
 DEFAULT_JSON = REPO_ROOT / "web" / "public" / "data" / "auctions.json"
 DEFAULT_HISTORY = REPO_ROOT / "web" / "public" / "data" / "import-history.json"
 
+LOCAL_ASSET_PREFIXES = ("pdfs/", "docs/", "thumbs/")
+
 
 def finalize_public_export(
     *,
@@ -41,55 +43,161 @@ def finalize_public_export(
         run_id=run_id,
         history_path=history_path,
     )
-    missing_pdf_count = remove_missing_local_pdf_links(finalized, public_dir=json_path.parent.parent)
-    if missing_pdf_count:
+    public_dir = json_path.parent.parent
+    removed = remove_missing_local_asset_links(finalized, public_dir=public_dir)
+    if any(removed.values()):
         stats = dict(finalized.get("stats") or {})
-        stats["missing_local_pdf_links_removed"] = missing_pdf_count
+        stats["missing_local_pdf_links_removed"] = removed["pdfs"]
+        stats["missing_local_docs_links_removed"] = removed["docs"]
+        stats["missing_local_thumbs_links_removed"] = removed["thumbs"]
+        stats["missing_local_asset_links_removed"] = sum(removed.values())
         finalized["stats"] = stats
     json_path.write_text(json.dumps(finalized, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     logger.info(
-        "Finalized %s (%d auctions, run_id=%s)",
+        "Finalized %s (%d auctions, run_id=%s, stripped pdfs=%d docs=%d thumbs=%d)",
         json_path,
         finalized.get("count"),
         finalized.get("run_id"),
+        removed["pdfs"],
+        removed["docs"],
+        removed["thumbs"],
     )
     return finalized
 
 
 def remove_missing_local_pdf_links(export: dict, *, public_dir: Path) -> int:
-    """Remove local pdf_url values that do not exist in web/public.
+    """Backward-compatible wrapper: strip missing pdfs/ links only."""
+    return remove_missing_local_asset_links(export, public_dir=public_dir)["pdfs"]
 
-    Incremental discovery can safely publish listing-only records before their
-    catalogue PDF has been deep-scraped. Those records must not point at
-    `pdfs/*.pdf` until the file exists, otherwise build/deploy verification
-    correctly refuses the export. External/source links are preserved.
+
+def remove_missing_local_asset_links(export: dict, *, public_dir: Path) -> dict[str, int]:
+    """Remove local pdfs/, docs/, and thumbs/ URLs that do not exist under public_dir.
+
+    Incremental discovery can publish listing-only records before catalogue media
+    is deep-scraped. Those records must not point at missing local paths, otherwise
+    build/deploy verification correctly refuses the export. External URLs are kept.
     """
-    removed = 0
+    removed = {"pdfs": 0, "docs": 0, "thumbs": 0}
     for auction in export.get("auctions", []) or []:
         pdf_url = auction.get("pdf_url")
-        if not _is_local_pdf_url(pdf_url):
-            continue
-        rel = str(pdf_url).lstrip("/")
-        if (public_dir / rel).is_file():
-            continue
-        auction["pdf_url"] = None
-        warnings = list(auction.get("warnings") or [])
-        note = f"local PDF not cached yet: {rel}"
-        if note not in warnings:
-            warnings.append(note)
-        auction["warnings"] = warnings
+        if _is_local_asset_url(pdf_url, prefix="pdfs/"):
+            rel = _normalize_rel(pdf_url)
+            if not (public_dir / rel).is_file():
+                auction["pdf_url"] = None
+                _append_warning(auction, f"local PDF not cached yet: {rel}")
+                document_urls = auction.get("document_urls")
+                if isinstance(document_urls, list):
+                    auction["document_urls"] = [
+                        url for url in document_urls if _normalize_rel(url) != rel
+                    ]
+                removed["pdfs"] += 1
+
         document_urls = auction.get("document_urls")
         if isinstance(document_urls, list):
-            auction["document_urls"] = [url for url in document_urls if str(url).lstrip("/") != rel]
-        removed += 1
+            kept_docs: list = []
+            for url in document_urls:
+                kind = _local_asset_kind(url)
+                if kind is None:
+                    kept_docs.append(url)
+                    continue
+                rel = _normalize_rel(url)
+                if (public_dir / rel).is_file():
+                    kept_docs.append(url)
+                    continue
+                _append_warning(auction, f"local {kind} asset not cached yet: {rel}")
+                removed[kind] += 1
+            auction["document_urls"] = kept_docs
+
+        for lot in auction.get("lots") or []:
+            if not isinstance(lot, dict):
+                continue
+            previews = lot.get("preview_images")
+            if not isinstance(previews, list):
+                continue
+            kept_previews: list = []
+            for img in previews:
+                url = _preview_url(img)
+                if url is None:
+                    kept_previews.append(img)
+                    continue
+                kind = _local_asset_kind(url)
+                if kind is None:
+                    kept_previews.append(img)
+                    continue
+                rel = _normalize_rel(url)
+                if (public_dir / rel).is_file():
+                    kept_previews.append(img)
+                    continue
+                _append_warning(auction, f"local {kind} asset not cached yet: {rel}")
+                removed[kind] += 1
+            lot["preview_images"] = kept_previews
     return removed
 
 
-def _is_local_pdf_url(value: object) -> bool:
+def auction_has_missing_local_assets(auction: dict, *, public_dir: Path) -> bool:
+    """True if auction JSON points at a missing local pdfs/docs/thumbs path."""
+    candidates: list[object] = []
+    if auction.get("pdf_url"):
+        candidates.append(auction.get("pdf_url"))
+    candidates.extend(auction.get("document_urls") or [])
+    for lot in auction.get("lots") or []:
+        if not isinstance(lot, dict):
+            continue
+        candidates.extend(lot.get("preview_images") or [])
+    for value in candidates:
+        url = _preview_url(value) if not isinstance(value, str) else value
+        if url is None:
+            url = value if isinstance(value, str) else None
+        kind = _local_asset_kind(url)
+        if kind is None:
+            continue
+        rel = _normalize_rel(url)
+        if not (public_dir / rel).is_file():
+            return True
+    return False
+
+
+def _preview_url(img: object) -> str | None:
+    if isinstance(img, str) and img.strip():
+        return img.strip()
+    if isinstance(img, dict):
+        for key in ("url", "thumbnail_url", "src"):
+            value = img.get(key)
+            if value:
+                return str(value)
+    return None
+
+
+def _append_warning(auction: dict, note: str) -> None:
+    warnings = list(auction.get("warnings") or [])
+    if note not in warnings:
+        warnings.append(note)
+    auction["warnings"] = warnings
+
+
+def _normalize_rel(value: object) -> str:
+    return str(value).lstrip("/")
+
+
+def _is_local_asset_url(value: object, *, prefix: str) -> bool:
     if not value:
         return False
-    text = str(value)
-    return text.startswith("pdfs/") or text.startswith("/pdfs/")
+    text = str(value).lstrip("/")
+    return text.startswith(prefix)
+
+
+def _local_asset_kind(value: object) -> str | None:
+    if not value:
+        return None
+    text = str(value).lstrip("/")
+    for prefix in LOCAL_ASSET_PREFIXES:
+        if text.startswith(prefix):
+            return prefix.rstrip("/")
+    return None
+
+
+def _is_local_pdf_url(value: object) -> bool:
+    return _is_local_asset_url(value, prefix="pdfs/")
 
 
 def main(argv: list[str] | None = None) -> int:

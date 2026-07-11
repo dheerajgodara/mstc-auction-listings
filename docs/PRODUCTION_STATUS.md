@@ -12,8 +12,10 @@ Use **only** this workflow for scheduled and production deploys:
 
 - **File:** `.github/workflows/refresh-and-deploy.yml`
 - **Pipeline:** `scraper.refresh_and_deploy --sources mstc,gem_forward,eauction`
-- **Schedule:** `0 20 * * *` UTC (01:30 IST next calendar day)
+- **Schedule:** `*/20 * * * *` UTC (every 20 minutes); `scraper.schedule_guard` skips overlapping ticks
+- **Deep scrape cap:** default `25` per run (`workflow_dispatch` may raise for catch-up; large caps like `400` are manual only)
 - **Safety gates:** min count 1000, multi-source required, capped MSTC-only guard, large-drop protection
+- **Assets:** CI bootstraps Hostinger `pdfs/`, `docs/`, `thumbs/` before build; deploy rsync protects those dirs from `--delete`
 
 ## Legacy workflow (manual diagnostic only)
 

@@ -80,6 +80,13 @@ def _short_join(values: list[Any], *, limit: int = 4, max_chars: int = 700) -> s
     return text
 
 
+def _clip(text: str, max_chars: int = 500) -> str:
+    value = str(text or "")
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 1].rstrip() + "…"
+
+
 def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
     status = payload.get("status") or event
     run_id = payload.get("run_id") or "unknown"
@@ -126,6 +133,14 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
         discovery_rows.append(_row("Runtime", _fmt_duration(discovery.get("duration_sec"))))
         if src:
             discovery_rows.append(_row("Sources", _fmt_source_counts(src)))
+        discovery_fallback = discovery.get("source_fallback") or {}
+        if discovery_fallback.get("applied"):
+            discovery_rows.append(
+                _row(
+                    "Source fallback",
+                    ", ".join(str(s) for s in (discovery_fallback.get("sources") or {}).keys()) or "yes",
+                )
+            )
         lines.extend(_section("Discovery", discovery_rows))
 
     if work_plan:
@@ -205,12 +220,13 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
     lines.extend(_section("Links", link_rows))
 
     if errors:
-        lines.extend(
-            _section(
-                "Errors",
-                [_row("Details", _short_join(errors, limit=4, max_chars=900))],
-            )
-        )
+        error_rows = [_row("Details", _short_join(errors, limit=4, max_chars=900))]
+        build = payload.get("build") or {}
+        if build.get("failed_step"):
+            error_rows.append(_row("Failed step", build.get("failed_step")))
+        if build.get("stderr_tail"):
+            error_rows.append(_row("Build stderr", _clip(str(build.get("stderr_tail")), 500)))
+        lines.extend(_section("Errors", error_rows))
     elif warnings:
         lines.extend(
             _section(

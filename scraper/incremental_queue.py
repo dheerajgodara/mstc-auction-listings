@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
+from scraper.import_tracking import stable_auction_key
 from scraper.incremental_plan import IncrementalWorkPlan, WorkPlanItem
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -66,6 +67,7 @@ def apply_queue_limit(
     max_deep_scrape_per_run: int,
     previous_export: Optional[dict[str, Any]] = None,
     now: Optional[datetime] = None,
+    public_dir: Optional[Path] = None,
 ) -> Tuple[IncrementalWorkPlan, QueueState]:
     if max_deep_scrape_per_run <= 0:
         raise ValueError("max_deep_scrape_per_run must be positive")
@@ -75,6 +77,9 @@ def apply_queue_limit(
     prior_items = {item.stable_key: item for item in (prior.items if prior else [])}
     current_deep_items = [item for item in plan.items if item.action == "deep_parse"]
     current_deep_keys = {item.stable_key for item in current_deep_items}
+    previous_by_key = {
+        stable_auction_key(a): a for a in (previous_export or {}).get("auctions", []) or []
+    }
 
     queue_items: list[QueueItem] = []
     for item in current_deep_items:
@@ -95,7 +100,12 @@ def apply_queue_limit(
                 source=item.source,
                 source_auction_id=item.source_auction_id,
                 decision=item.decision,
-                priority_score=priority_score(item, now=now),
+                priority_score=priority_score(
+                    item,
+                    now=now,
+                    previous_record=previous_by_key.get(item.stable_key),
+                    public_dir=public_dir,
+                ),
                 closing=_as_text(item.metadata.get("closing")),
                 first_queued_at=first_queued_at,
                 last_attempted_at=last_attempted_at,
@@ -211,7 +221,13 @@ def build_queue_state(
     )
 
 
-def priority_score(item: WorkPlanItem, *, now: datetime) -> int:
+def priority_score(
+    item: WorkPlanItem,
+    *,
+    now: datetime,
+    previous_record: Optional[dict[str, Any]] = None,
+    public_dir: Optional[Path] = None,
+) -> int:
     score = 0
     closing = _parse_dt(item.metadata.get("closing"))
     if closing:
@@ -226,7 +242,39 @@ def priority_score(item: WorkPlanItem, *, now: datetime) -> int:
     score += {"mstc": 30, "gem_forward": 20, "eauction": 10}.get(item.source, 0)
     if item.reasons:
         score += 5
+    if item.source == "mstc" and item.decision == "needs_repair":
+        score += 40
+    if any(r in {"missing_lots", "status_listing_only", "status_partial"} for r in item.reasons):
+        score += 25
+    if public_dir is not None and previous_record and _record_has_missing_local_assets(previous_record, public_dir):
+        score += 60
     return score
+
+
+def _record_has_missing_local_assets(record: dict[str, Any], public_dir: Path) -> bool:
+    from scraper.finalize_public_export import _local_asset_kind, _normalize_rel, _preview_url
+
+    candidates: list[str] = []
+    pdf_url = record.get("pdf_url")
+    if pdf_url:
+        candidates.append(str(pdf_url))
+    for url in record.get("document_urls") or []:
+        if url:
+            candidates.append(str(url))
+    for lot in record.get("lots") or []:
+        if not isinstance(lot, dict):
+            continue
+        for img in lot.get("preview_images") or []:
+            preview = _preview_url(img)
+            if preview:
+                candidates.append(preview)
+    for url in candidates:
+        if _local_asset_kind(url) is None:
+            continue
+        rel = _normalize_rel(url)
+        if not (public_dir / rel).is_file():
+            return True
+    return False
 
 
 def retry_due(item: QueueItem, now: datetime) -> bool:

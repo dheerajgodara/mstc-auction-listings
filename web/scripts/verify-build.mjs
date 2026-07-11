@@ -13,6 +13,46 @@ const INDEX_FAIL_BYTES = 2_000_000;
 
 const checks = [];
 
+/** Public UI must not expose bulk CSV/watchlist export (Forge 006 / Anvil Phase 001). */
+const PUBLIC_EXPORT_FORBIDDEN = [
+  { label: "export-csv import", pattern: /@\/lib\/export-csv/ },
+  { label: "csv_export analytics", pattern: /csv_export/ },
+  { label: "Export CSV copy", pattern: /Export CSV/i },
+  { label: "watchlist calendar export", pattern: /Export calendar/i },
+  { label: "onExport prop", pattern: /\bonExport\b/ },
+];
+
+function collectSourceFiles(dir) {
+  const files = [];
+  if (!fs.existsSync(dir)) return files;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...collectSourceFiles(full));
+    else if (/\.(tsx|ts|jsx|js)$/.test(entry.name)) files.push(full);
+  }
+  return files;
+}
+
+function scanPublicExportControls() {
+  const srcRoots = [
+    path.join(webRoot, "src", "components"),
+    path.join(webRoot, "src", "app"),
+  ];
+  const hits = [];
+  for (const root of srcRoots) {
+    for (const file of collectSourceFiles(root)) {
+      const rel = path.relative(webRoot, file);
+      const body = fs.readFileSync(file, "utf8");
+      for (const rule of PUBLIC_EXPORT_FORBIDDEN) {
+        if (rule.pattern.test(body)) {
+          hits.push(`${rel}: ${rule.label}`);
+        }
+      }
+    }
+  }
+  return hits;
+}
+
 function ok(label, pass, detail = "") {
   checks.push({ label, pass, detail });
   const mark = pass ? "OK" : "FAIL";
@@ -27,6 +67,13 @@ if (!fs.existsSync(outDir)) {
   console.error("out/ directory not found. Run pnpm run build:prod first.");
   process.exit(1);
 }
+
+const exportHits = scanPublicExportControls();
+ok(
+  "public export controls absent in web/src",
+  exportHits.length === 0,
+  exportHits.length ? exportHits.slice(0, 5).join("; ") : "",
+);
 
 const indexPath = path.join(outDir, "index.html");
 ok("index.html exists", fs.existsSync(indexPath));
@@ -96,9 +143,9 @@ const pdfDir = path.join(outDir, "pdfs");
 const pdfCount = fs.existsSync(pdfDir)
   ? fs.readdirSync(pdfDir).filter((f) => f.endsWith(".pdf")).length
   : 0;
-ok("pdfs/ directory has PDFs", pdfCount > 0, `${pdfCount} files`);
 
 const jsonPath = path.join(outDir, "data", "auctions.json");
+let localPdfLinkCount = 0;
 if (fs.existsSync(jsonPath)) {
   const data = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
   ok("JSON has generated_at", Boolean(data.generated_at));
@@ -112,13 +159,20 @@ if (fs.existsSync(jsonPath)) {
     missingImport === 0,
     missingImport ? `${missingImport} missing` : "",
   );
-  const a582972 = (data.auctions || []).find((a) => String(a.id) === "582972");
-  ok("auction 582972 has imported_at", Boolean(a582972?.imported_at || a582972?.first_seen_at));
+
   const regressionIds = ["582972", "584985", "588051"];
   for (const rid of regressionIds) {
-    const found = (data.auctions || []).some((a) => String(a.id) === rid);
-    ok(`regression auction ${rid} present`, found || data.auctions?.length === 0, found ? "" : "missing from export");
+    const found = (data.auctions || []).find((a) => String(a.id) === rid);
+    if (!found) {
+      warn(`regression auction ${rid}`, "skipped (not in current export)");
+      continue;
+    }
+    ok(
+      `regression auction ${rid} has imported_at`,
+      Boolean(found.imported_at || found.first_seen_at),
+    );
   }
+
   const badPdf = (data.auctions || []).filter(
     (a) => a.pdf_url && a.pdf_url.startsWith("/pdfs/"),
   );
@@ -128,10 +182,66 @@ if (fs.existsSync(jsonPath)) {
     badPdf.length ? `${badPdf.length} still absolute` : "all relative or base-path safe",
   );
 
+  const missingPdfRefs = (data.auctions || []).filter((a) => {
+    if (!a.pdf_url || !String(a.pdf_url).startsWith("pdfs/")) return false;
+    localPdfLinkCount += 1;
+    return !fs.existsSync(path.join(outDir, a.pdf_url));
+  });
+  ok(
+    "all relative auction PDF links exist in output",
+    missingPdfRefs.length === 0,
+    missingPdfRefs.length
+      ? missingPdfRefs.slice(0, 10).map((a) => `${a.id}:${a.pdf_url}`).join(", ")
+      : "",
+  );
+
+  const missingDocRefs = [];
+  const missingThumbRefs = [];
+  for (const auction of data.auctions || []) {
+    for (const url of auction.document_urls || []) {
+      const rel = String(url || "").replace(/^\//, "");
+      if (rel.startsWith("docs/") || rel.startsWith("pdfs/")) {
+        if (rel.startsWith("pdfs/")) localPdfLinkCount += 1;
+        if (!fs.existsSync(path.join(outDir, rel))) {
+          missingDocRefs.push(`${auction.id}:${rel}`);
+        }
+      }
+    }
+    for (const lot of auction.lots || []) {
+      for (const img of lot.preview_images || []) {
+        const url =
+          typeof img === "string"
+            ? img
+            : img?.url || img?.thumbnail_url || img?.src || "";
+        const rel = String(url || "").replace(/^\//, "");
+        if (!rel.startsWith("thumbs/") && !rel.startsWith("docs/")) continue;
+        if (!fs.existsSync(path.join(outDir, rel))) {
+          missingThumbRefs.push(`${auction.id}:${rel}`);
+        }
+      }
+    }
+  }
+  ok(
+    "all relative docs/pdf document links exist in output",
+    missingDocRefs.length === 0,
+    missingDocRefs.slice(0, 10).join(", "),
+  );
+  ok(
+    "all relative thumbs links exist in output",
+    missingThumbRefs.length === 0,
+    missingThumbRefs.slice(0, 10).join(", "),
+  );
+
   const serialized = JSON.stringify(data);
   ok("no absolute /docs/ links in JSON", !serialized.includes('"/docs/'));
   ok("no absolute /thumbs/ links in JSON", !serialized.includes('"/thumbs/'));
 }
+
+ok(
+  "pdfs/ directory has PDFs or export has no local PDF links",
+  pdfCount > 0 || localPdfLinkCount === 0,
+  `${pdfCount} files, ${localPdfLinkCount} local PDF links`,
+);
 
 if (fs.existsSync(indexPath)) {
   const indexHtml = fs.readFileSync(indexPath, "utf8");
@@ -198,13 +308,23 @@ ok(
 
 const pyTests = spawnSync(
   "python3",
-  ["-m", "pytest", "tests/test_deploy_safety.py", "tests/test_display_enrichment.py", "tests/test_import_tracking.py", "-q"],
+  ["-m", "pytest", "tests/test_deploy_safety.py", "tests/test_display_enrichment.py", "tests/test_import_tracking.py", "tests/test_ai_enrichment.py", "-q"],
   { cwd: repoRoot, encoding: "utf8" },
 );
 ok(
   "display/deploy python tests",
   pyTests.status === 0,
   pyTests.status === 0 ? "" : (pyTests.stdout || pyTests.stderr || "").trim().slice(-200),
+);
+
+const aiDisplayCheck = spawnSync("node", ["scripts/verify-ai-display.mjs"], {
+  cwd: webRoot,
+  encoding: "utf8",
+});
+ok(
+  "AI display fallback verification",
+  aiDisplayCheck.status === 0,
+  aiDisplayCheck.status === 0 ? "" : (aiDisplayCheck.stdout || aiDisplayCheck.stderr || "").trim(),
 );
 
 const failed = checks.filter((c) => !c.pass);

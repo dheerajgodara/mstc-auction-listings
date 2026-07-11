@@ -59,7 +59,54 @@ def cmd_enrich(args: argparse.Namespace) -> int:
     started = time.monotonic()
     started_at = datetime.now(IST).isoformat()
     allow_network = bool(args.allow_network)
+    from scraper.config import OPENROUTER_API_KEY
+
+    # Fail closed: --allow-network without a key must not silently fall back to mock.
+    if allow_network and not args.mock and not args.dry_run and not OPENROUTER_API_KEY:
+        payload = {
+            **_base_payload(args, allow_network=allow_network, started_at=started_at),
+            "processed": 0,
+            "ready": 0,
+            "skipped": 0,
+            "rejected": 0,
+            "failed": 0,
+            "error": "OPENROUTER_API_KEY missing while --allow-network was set",
+            "will_call_provider": False,
+            "cache_stats": count_cache_stats(args.cache_dir),
+            "finished_at": datetime.now(IST).isoformat(),
+        }
+        if args.report_json:
+            args.report_json.parent.mkdir(parents=True, exist_ok=True)
+            args.report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        if args.telegram_report:
+            send_ai_enrichment_report(payload, event="failed")
+        print(json.dumps(payload, indent=2))
+        return 2
+
     mock = bool(args.mock or not allow_network)
+    # Never treat mock as a successful live production enrichment for durable ledger.
+    if mock and args.ledger_sync == "hostinger" and not args.dry_run:
+        payload = {
+            **_base_payload(args, allow_network=allow_network, started_at=started_at),
+            "processed": 0,
+            "ready": 0,
+            "skipped": 0,
+            "rejected": 0,
+            "failed": 0,
+            "error": "refusing hostinger ledger sync in mock/no-network mode",
+            "mock": True,
+            "will_call_provider": False,
+            "cache_stats": count_cache_stats(args.cache_dir),
+            "finished_at": datetime.now(IST).isoformat(),
+        }
+        if args.report_json:
+            args.report_json.parent.mkdir(parents=True, exist_ok=True)
+            args.report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        if args.telegram_report:
+            send_ai_enrichment_report(payload, event="failed")
+        print(json.dumps(payload, indent=2))
+        return 2
+
     no_network = not allow_network
     base_payload = _base_payload(args, allow_network=allow_network, started_at=started_at)
 

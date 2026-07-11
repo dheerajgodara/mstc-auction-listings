@@ -166,16 +166,24 @@ def _deploy_rsync(
         f"ssh -i {key_path} -p {port} "
         "-o StrictHostKeyChecking=accept-new -o BatchMode=yes"
     )
+    # Keep --delete for HTML/data/app files, but never wipe production media
+    # when CI has a sparse/empty pdfs|docs|thumbs tree.
     cmd = [
         "rsync",
         "-avz",
         "--delete",
+        "--filter=P pdfs/",
+        "--filter=P docs/",
+        "--filter=P thumbs/",
         "-e",
         ssh_cmd,
         f"{build_dir}/",
         f"{target}:{remote_dir}/",
     ]
-    _log(f"Deploying with rsync to {target}:{remote_dir}")
+    _log(
+        f"Deploying with rsync to {target}:{remote_dir} "
+        "(protecting remote pdfs/, docs/, thumbs/ from --delete)"
+    )
     result = subprocess.run(cmd, text=True)
     if result.returncode != 0:
         _log("ERROR: rsync deployment failed.")
