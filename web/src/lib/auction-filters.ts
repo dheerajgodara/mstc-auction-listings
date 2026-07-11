@@ -1,13 +1,17 @@
 import type { AuctionRecord } from "@/types/auction";
-import { auctionTotalMt } from "@/lib/display-enrichment";
+import { auctionTotalMt, enrichAuctionDisplay } from "@/lib/display-enrichment";
 import { countAuctionDocuments } from "@/lib/auction-documents";
 import { sortByOpportunity } from "@/lib/opportunity-score";
+import { auctionDistanceKm } from "@/lib/geo-radius";
+import { parseEmdInr } from "@/lib/emd-calculator";
+import { auctionMatchesMaterialIds } from "@/lib/material-taxonomy";
 
 const IST = "Asia/Kolkata";
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export type DatePreset = "all" | "today" | "tomorrow" | "next3" | "next7" | "custom";
+export type DatePreset =
+  "all" | "today" | "tomorrow" | "next3" | "next7" | "custom";
 
 export type SortOption =
   | "closing_asc"
@@ -19,32 +23,23 @@ export type SortOption =
   | "imported_desc"
   | "quantity_desc"
   | "lots_desc"
-  | "documents_desc";
+  | "documents_desc"
+  | "distance_asc";
 
 export type DocumentsFilter = "any" | "documents" | "photos";
 
 export type QuantityMinFilter = "any" | "10" | "50" | "100" | "500" | "1000";
 
 export type ListedPreset =
-  | "all"
-  | "today"
-  | "yesterday"
-  | "last3"
-  | "last7"
-  | "last14"
-  | "custom";
+  "all" | "today" | "yesterday" | "last3" | "last7" | "last14" | "custom";
 
 export type ImportedPreset =
-  | "all"
-  | "today"
-  | "yesterday"
-  | "last3"
-  | "last7"
-  | "custom";
+  "all" | "today" | "yesterday" | "last3" | "last7" | "custom";
 
 export interface ClosingUrgency {
   label: string;
   chipClass: string;
+  pulse?: boolean;
 }
 
 function ymdFormatter() {
@@ -92,6 +87,19 @@ export function parseClosingMs(
   if (!closing) return null;
   const t = Date.parse(closing);
   return Number.isNaN(t) ? null : t;
+}
+
+/** Human-readable time until closing from an absolute epoch ms. */
+export function formatCountdown(closingMs: number): string {
+  const diff = closingMs - Date.now();
+  if (diff <= 0) return "Closed";
+  const totalMin = Math.floor(diff / 60_000);
+  const days = Math.floor(totalMin / (60 * 24));
+  const hours = Math.floor((totalMin % (60 * 24)) / 60);
+  const mins = totalMin % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
 }
 
 export function parseAuctionMs(iso: string | null | undefined): number {
@@ -145,7 +153,9 @@ function resolveDateRange(
     case "custom": {
       if (!customFrom && !customTo) return null;
       return {
-        start: customFrom ? istYmdStartMs(customFrom) : Number.NEGATIVE_INFINITY,
+        start: customFrom
+          ? istYmdStartMs(customFrom)
+          : Number.NEGATIVE_INFINITY,
         end: customTo ? istYmdEndMs(customTo) : Number.POSITIVE_INFINITY,
       };
     }
@@ -237,7 +247,9 @@ function resolveListedRange(
     case "custom": {
       if (!customFrom && !customTo) return null;
       return {
-        start: customFrom ? istYmdStartMs(customFrom) : Number.NEGATIVE_INFINITY,
+        start: customFrom
+          ? istYmdStartMs(customFrom)
+          : Number.NEGATIVE_INFINITY,
         end: customTo ? istYmdEndMs(customTo) : Number.POSITIVE_INFINITY,
       };
     }
@@ -311,7 +323,9 @@ function resolveImportedRange(
     case "custom": {
       if (!customFrom && !customTo) return null;
       return {
-        start: customFrom ? istYmdStartMs(customFrom) : Number.NEGATIVE_INFINITY,
+        start: customFrom
+          ? istYmdStartMs(customFrom)
+          : Number.NEGATIVE_INFINITY,
         end: customTo ? istYmdEndMs(customTo) : Number.POSITIVE_INFINITY,
       };
     }
@@ -344,12 +358,20 @@ export function matchesMaterialCategoryFilter(
   return auction.display_material_category === materialCategory;
 }
 
-export function matchesCityFilter(auction: AuctionRecord, city: string): boolean {
+export function matchesCityFilter(
+  auction: AuctionRecord,
+  city: string,
+): boolean {
   if (city === "All") return true;
-  return (auction.display_location_city ?? "").toLowerCase() === city.toLowerCase();
+  return (
+    (auction.display_location_city ?? "").toLowerCase() === city.toLowerCase()
+  );
 }
 
-export function matchesDisplayStateFilter(auction: AuctionRecord, state: string): boolean {
+export function matchesDisplayStateFilter(
+  auction: AuctionRecord,
+  state: string,
+): boolean {
   if (state === "All") return true;
   const displayState = auction.display_location_state ?? auction.state;
   return (displayState ?? "").toLowerCase() === state.toLowerCase();
@@ -365,7 +387,10 @@ export function matchesQuantityMinFilter(
   return total >= Number.parseFloat(minMt);
 }
 
-export function matchesLargeLotsOnly(auction: AuctionRecord, enabled: boolean): boolean {
+export function matchesLargeLotsOnly(
+  auction: AuctionRecord,
+  enabled: boolean,
+): boolean {
   if (!enabled) return true;
   const total = auctionTotalMt(auction);
   return total != null && total >= 100;
@@ -392,6 +417,7 @@ export function isActiveOrUpcoming(
 
 export function getClosingUrgency(
   closing: string | null | undefined,
+  _opts?: { opening?: string | null },
 ): ClosingUrgency | null {
   const closingMs = parseClosingMs(closing);
   const closingYmd = closingIstYmd(closing);
@@ -399,18 +425,19 @@ export function getClosingUrgency(
 
   const today = istTodayYmd();
   const now = Date.now();
+  const pulse = closingMs > now && closingMs - now < 2 * 60 * 60 * 1000;
 
   if (closingMs < now) {
     const daysSince = ymdDiffDays(closingYmd, today);
     if (daysSince <= 7) {
       return {
         label: "Closed recently",
-        chipClass: "bg-slate-100 text-slate-700 border-slate-200/80",
+        chipClass: "bg-muted text-muted-foreground border-border",
       };
     }
     return {
       label: "Closed",
-      chipClass: "bg-slate-100 text-slate-500 border-slate-200/80",
+      chipClass: "bg-muted text-muted-foreground border-border",
     };
   }
 
@@ -419,17 +446,20 @@ export function getClosingUrgency(
     return {
       label: "Closing today",
       chipClass: "bg-rose-50 text-rose-800 border-rose-200/80",
+      pulse,
     };
   }
   if (daysLeft === 1) {
     return {
       label: "Closing tomorrow",
       chipClass: "bg-amber-50 text-amber-800 border-amber-200/80",
+      pulse,
     };
   }
   return {
     label: `${daysLeft} days left`,
-    chipClass: "bg-cyan-50 text-cyan-800 border-cyan-200/80",
+    chipClass: "bg-muted text-action border-border",
+    pulse,
   };
 }
 
@@ -513,10 +543,14 @@ export function sortAuctions(
         return lb - la || parseAuctionMs(a.closing) - parseAuctionMs(b.closing);
       }
       case "documents_desc": {
-        const da = countAuctionDocuments(a).documents + countAuctionDocuments(a).photos;
-        const db = countAuctionDocuments(b).documents + countAuctionDocuments(b).photos;
+        const da =
+          countAuctionDocuments(a).documents + countAuctionDocuments(a).photos;
+        const db =
+          countAuctionDocuments(b).documents + countAuctionDocuments(b).photos;
         return db - da || parseAuctionMs(a.closing) - parseAuctionMs(b.closing);
       }
+      case "distance_asc":
+        return 0;
       default:
         return 0;
     }
@@ -526,11 +560,67 @@ export function sortAuctions(
 export function applySortOption(
   list: AuctionRecord[],
   sort: SortOption,
+  pinCode?: string,
 ): AuctionRecord[] {
   if (sort === "best_opportunities") {
     return sortByOpportunity(list);
   }
+  if (sort === "distance_asc" && pinCode?.trim()) {
+    return [...list].sort((a, b) => {
+      const da =
+        auctionDistanceKm(enrichAuctionDisplay(a), pinCode) ??
+        Number.MAX_SAFE_INTEGER;
+      const db =
+        auctionDistanceKm(enrichAuctionDisplay(b), pinCode) ??
+        Number.MAX_SAFE_INTEGER;
+      return da - db || parseAuctionMs(a.closing) - parseAuctionMs(b.closing);
+    });
+  }
   return sortAuctions(list, sort);
+}
+
+export function matchesRadiusFilter(
+  auction: AuctionRecord,
+  pinCode: string,
+  radiusKm: number,
+): boolean {
+  if (!pinCode.trim() || radiusKm <= 0) return true;
+  const dist = auctionDistanceKm(enrichAuctionDisplay(auction), pinCode);
+  if (dist === null) return false;
+  return dist <= radiusKm;
+}
+
+export function matchesEmdEligibleFilter(
+  auction: AuctionRecord,
+  balance: number,
+): boolean {
+  const emd = parseEmdInr(auction.emd_summary);
+  if (emd === null) return true;
+  return balance >= emd;
+}
+
+export function matchesGstFilter(
+  auction: AuctionRecord,
+  gstFilter: string,
+): boolean {
+  if (!gstFilter || gstFilter === "all") return true;
+  const summary = (auction.tax_summary ?? "").toLowerCase();
+  if (gstFilter === "gst") return summary.includes("gst");
+  if (gstFilter === "no_gst") return !summary.includes("gst");
+  return true;
+}
+
+export function matchesMaterialTreeFilter(
+  auction: AuctionRecord,
+  materialTreeIds: Set<string>,
+): boolean {
+  if (materialTreeIds.size === 0) return true;
+  const display = enrichAuctionDisplay(auction);
+  return auctionMatchesMaterialIds(
+    display.display_material_category,
+    display.display_title ?? display.item_summary,
+    materialTreeIds,
+  );
 }
 
 /** Lightweight self-checks for IST date filtering (no test runner required). */

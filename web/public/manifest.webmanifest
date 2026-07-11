@@ -1,0 +1,57 @@
+{
+  "name": "Scrap Auction India",
+  "short_name": "SAI",
+  "description": "Installable discovery app for MSTC, GeM Forward, and eAuction.gov.in scrap auctions.",
+  "id": "/auctions/",
+  "start_url": "/auctions/?utm_source=pwa",
+  "scope": "/auctions/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f5f5f7",
+  "theme_color": "#f5f5f7",
+  "categories": ["business", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/auctions/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/auctions/app-maskable-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Discover auctions",
+      "short_name": "Discover",
+      "description": "Open the auction discovery terminal.",
+      "url": "/auctions/?utm_source=pwa_shortcut",
+      "icons": [{ "src": "/auctions/app-icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Watchlist",
+      "short_name": "Watchlist",
+      "description": "Open saved auctions on this device.",
+      "url": "/auctions/watchlist/?utm_source=pwa_shortcut",
+      "icons": [{ "src": "/auctions/app-icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Saved searches",
+      "short_name": "Saved",
+      "description": "Open saved auction searches.",
+      "url": "/auctions/saved/?utm_source=pwa_shortcut",
+      "icons": [{ "src": "/auctions/app-icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Account",
+      "short_name": "Account",
+      "description": "Open account and access status.",
+      "url": "/auctions/account/?utm_source=pwa_shortcut",
+      "icons": [{ "src": "/auctions/app-icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    }
+  ]
+}

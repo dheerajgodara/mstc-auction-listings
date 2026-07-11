@@ -9,10 +9,19 @@ const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH || "").replace(/\/$/, "");
 
 /** Resolve public asset URLs for static export under optional basePath (e.g. /auctions). */
 export function resolvePublicUrl(path: string | null | undefined): string {
-  if (!path) return "";
+  if (path == null) return "";
+  if (path === "") return BASE_PATH ? `${BASE_PATH}/` : "/";
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
   const relative = path.replace(/^\//, "");
   if (BASE_PATH) return `${BASE_PATH}/${relative}`;
+  return `/${relative}`;
+}
+
+/** Resolve a route for Next's Link/router APIs. Next applies basePath itself. */
+export function resolveAppPath(path: string | null | undefined): string {
+  if (path == null || path === "") return "/";
+  if (path.startsWith("http://") || path.startsWith("https://")) return path;
+  const relative = path.replace(/^\/+/, "");
   return `/${relative}`;
 }
 

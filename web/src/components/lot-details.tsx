@@ -30,7 +30,7 @@ const RAW_SECTION_KEYS = [
 
 function hasLotSectionContent(
   lot: LotRecord,
-  key: (typeof RAW_SECTION_KEYS)[number]
+  key: (typeof RAW_SECTION_KEYS)[number],
 ): boolean {
   return getLotSectionDisplayText(lot, key) !== "Not available";
 }
@@ -45,10 +45,12 @@ function LotField({
   if (!value || value === "—") return null;
   return (
     <div className="min-w-0">
-      <dt className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+      <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
         {label}
       </dt>
-      <dd className="mt-0.5 break-words text-sm text-slate-800">{value}</dd>
+      <dd className="mt-0.5 break-words text-sm tabular-nums text-foreground">
+        {value}
+      </dd>
     </div>
   );
 }
@@ -57,12 +59,12 @@ function RawSection({ label, text }: { label: string; text: string }) {
   const unavailable = text === "Not available";
   return (
     <div className="min-w-0">
-      <h5 className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+      <h5 className="text-caption font-medium text-muted-foreground">
         {label}
       </h5>
       <pre
-        className={`mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-white/60 bg-white/50 p-2 text-xs leading-relaxed text-slate-800 ${
-          unavailable ? "italic text-slate-500" : "font-mono"
+        className={`mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-card p-2 text-xs leading-relaxed text-foreground ${
+          unavailable ? "italic text-muted-foreground" : "tabular-nums"
         }`}
       >
         {text}
@@ -78,14 +80,14 @@ function FileChip({ label, filename }: { label: string; filename: string }) {
         href={filename}
         target="_blank"
         rel="noopener noreferrer"
-        className="btn-glass px-2 py-1 text-xs"
+        className="btn-secondary px-2 py-1 text-xs"
       >
         {label}
       </a>
     );
   }
   return (
-    <Chip className="border-slate-200/80 bg-white/70 text-slate-700 normal-case tracking-normal">
+    <Chip className="border-border bg-card text-muted-foreground normal-case tracking-normal">
       {label}: {filename}
     </Chip>
   );
@@ -100,16 +102,18 @@ function LotCard({ lot }: { lot: LotRecord }) {
     Boolean(lot.lot_parse_warnings?.length);
 
   return (
-    <article className="rounded-lg border border-white/60 bg-white/55 p-3 backdrop-blur-sm">
-      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-        <h4 className="text-sm font-semibold text-slate-900">Lot {lot.lot_id}</h4>
+    <article className="surface-elevated p-4">
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <h4 className="text-title text-foreground">Lot {lot.lot_id}</h4>
         {lot.item_title && lot.item_title !== lot.lot_id && (
-          <span className="text-sm text-slate-600">{lot.item_title}</span>
+          <span className="text-sm text-muted-foreground">
+            {lot.item_title}
+          </span>
         )}
       </div>
 
       {lot.item_description && (
-        <p className="mb-3 line-clamp-2 text-sm text-slate-600">
+        <p className="mb-3 line-clamp-2 text-sm text-muted-foreground">
           {lot.item_description}
         </p>
       )}
@@ -124,7 +128,9 @@ function LotCard({ lot }: { lot: LotRecord }) {
         <LotField
           label="Bid increment"
           value={
-            lot.bid_increment != null ? formatInrOrDash(lot.bid_increment) : null
+            lot.bid_increment != null
+              ? formatInrOrDash(lot.bid_increment)
+              : null
           }
         />
         <LotField
@@ -145,7 +151,7 @@ function LotCard({ lot }: { lot: LotRecord }) {
       )}
 
       {lot.lot_parse_warnings && lot.lot_parse_warnings.length > 0 && (
-        <p className="mt-2 text-xs text-amber-800">
+        <p className="mt-2 text-xs text-muted-foreground">
           Parse notes: {lot.lot_parse_warnings.join(", ")}
         </p>
       )}
@@ -153,11 +159,11 @@ function LotCard({ lot }: { lot: LotRecord }) {
       <LotDocumentsPanel lot={lot} />
 
       {hasRawSections && (
-        <div className="mt-3 border-t border-white/50 pt-3">
+        <div className="mt-3 border-t border-border pt-3">
           <button
             type="button"
             onClick={() => setFullOpen((v) => !v)}
-            className="btn-glass w-full text-sm"
+            className="btn-secondary w-full text-sm"
           >
             {fullOpen ? "Hide full lot data" : "Show full lot data"}
           </button>
@@ -196,9 +202,7 @@ export function LotDetails({ lots }: { lots: LotRecord[] }) {
     return lots.filter((lot) => matchesLotSearch(lot, search));
   }, [lots, search]);
 
-  const visibleLots = showAll
-    ? filtered
-    : filtered.slice(0, INITIAL_LOT_COUNT);
+  const visibleLots = showAll ? filtered : filtered.slice(0, INITIAL_LOT_COUNT);
 
   const toggleOpen = () => {
     setOpen((v) => {
@@ -214,7 +218,7 @@ export function LotDetails({ lots }: { lots: LotRecord[] }) {
 
   if (lots.length === 0) {
     return (
-      <p className="border-t border-white/50 pt-3 text-xs text-slate-500">
+      <p className="border-t border-border pt-3 text-xs text-muted-foreground">
         No lot details available
       </p>
     );
@@ -223,13 +227,15 @@ export function LotDetails({ lots }: { lots: LotRecord[] }) {
   const countLabel = `(${lots.length})`;
 
   return (
-    <div className="border-t border-white/50 pt-3">
+    <div className="border-t border-border pt-3">
       <button
         type="button"
         onClick={toggleOpen}
-        className="btn-glass flex w-full items-center justify-between px-3 py-2"
+        className="btn-secondary flex w-full items-center justify-between px-3 py-2"
       >
-        <span>{open ? `Hide lots ${countLabel}` : `View lots ${countLabel}`}</span>
+        <span>
+          {open ? `Hide lots ${countLabel}` : `View lots ${countLabel}`}
+        </span>
         {open ? (
           <ChevronUp className="h-4 w-4 shrink-0" />
         ) : (
@@ -238,7 +244,7 @@ export function LotDetails({ lots }: { lots: LotRecord[] }) {
       </button>
 
       {open && (
-        <div className="glass-nested mt-3 space-y-3 p-3">
+        <div className="surface-elevated mt-3 space-y-3 p-3">
           {lots.length > 5 && (
             <Input
               type="search"
@@ -250,7 +256,9 @@ export function LotDetails({ lots }: { lots: LotRecord[] }) {
           )}
 
           {filtered.length === 0 ? (
-            <p className="text-sm text-slate-600">No lots match your search.</p>
+            <p className="text-sm text-muted-foreground">
+              No lots match your search.
+            </p>
           ) : (
             <>
               <div className="space-y-3">
@@ -263,7 +271,7 @@ export function LotDetails({ lots }: { lots: LotRecord[] }) {
                 <button
                   type="button"
                   onClick={() => setShowAll((v) => !v)}
-                  className="btn-glass w-full text-sm"
+                  className="btn-secondary w-full text-sm"
                 >
                   {showAll
                     ? "Show first 10"

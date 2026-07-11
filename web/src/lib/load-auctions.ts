@@ -46,7 +46,11 @@ function loadViaScript(version: string): Promise<AuctionsExport> {
   return new Promise((resolve, reject) => {
     const cacheKey = `auctions-data:${version}`;
     const cached = window.__AUCTIONS_EXPORT__;
-    if (cached && (cached as AuctionsExport & { __cacheKey?: string }).__cacheKey === cacheKey) {
+    if (
+      cached &&
+      (cached as AuctionsExport & { __cacheKey?: string }).__cacheKey ===
+        cacheKey
+    ) {
       resolve(cached);
       return;
     }
@@ -58,7 +62,9 @@ function loadViaScript(version: string): Promise<AuctionsExport> {
       if (window.__AUCTIONS_EXPORT__) {
         resolve(window.__AUCTIONS_EXPORT__);
       } else {
-        reject(new Error("auctions-data.js loaded without __AUCTIONS_EXPORT__"));
+        reject(
+          new Error("auctions-data.js loaded without __AUCTIONS_EXPORT__"),
+        );
       }
     };
     script.onerror = () => reject(new Error(`Failed to load ${script.src}`));
@@ -67,7 +73,9 @@ function loadViaScript(version: string): Promise<AuctionsExport> {
 }
 
 async function loadViaJson(version: string): Promise<AuctionsExport> {
-  const response = await fetch(withCacheBust(jsonUrl(), version), { cache: "no-store" });
+  const response = await fetch(withCacheBust(jsonUrl(), version), {
+    cache: "no-store",
+  });
   if (!response.ok) {
     throw new Error(`auctions.json HTTP ${response.status}`);
   }
@@ -78,7 +86,10 @@ async function loadViaJson(version: string): Promise<AuctionsExport> {
 export async function loadAuctionsExport(): Promise<AuctionsExport> {
   const meta = await loadExportMeta();
   const version =
-    meta?.data_version ?? meta?.run_id ?? meta?.automation_ran_at ?? String(Date.now());
+    meta?.data_version ??
+    meta?.run_id ??
+    meta?.automation_ran_at ??
+    String(Date.now());
 
   try {
     return await loadViaJson(version);

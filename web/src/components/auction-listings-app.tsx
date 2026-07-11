@@ -1,16 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AuctionListings } from "@/components/auction-listings";
-import { SiteDisclaimer } from "@/components/site-disclaimer";
+import { AuctionDiscoveryView } from "@/components/auction-discovery-view";
+import { AppShell } from "@/components/app-shell";
+import { SiteFooter } from "@/components/site-footer";
 import { enrichAuctions } from "@/lib/display-enrichment";
 import { loadAuctionsExport } from "@/lib/load-auctions";
 import { trackPageView } from "@/lib/analytics";
+import { formatDateTime } from "@/lib/utils";
 import type { AuctionsExport } from "@/types/auction";
 
 export function AuctionListingsApp() {
   const [data, setData] = useState<AuctionsExport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   useEffect(() => {
     trackPageView("/auctions/");
@@ -29,7 +32,9 @@ export function AuctionListingsApp() {
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load auctions");
+          setError(
+            err instanceof Error ? err.message : "Failed to load auctions",
+          );
         }
       });
     return () => {
@@ -37,34 +42,47 @@ export function AuctionListingsApp() {
     };
   }, []);
 
+  const freshnessLabel = data?.automation_ran_at
+    ? `Updated ${formatDateTime(data.automation_ran_at)}`
+    : undefined;
+
   if (error) {
     return (
-      <div className="mx-auto max-w-2xl p-8 text-center">
-        <p className="text-lg font-semibold text-rose-800">Could not load auction data</p>
-        <p className="mt-2 text-sm text-slate-600">{error}</p>
-      </div>
+      <AppShell>
+        <div className="container-marketplace py-section text-center">
+          <p className="text-headline text-foreground">
+            Could not load auction data
+          </p>
+          <p className="mt-2 text-body text-muted-foreground">{error}</p>
+        </div>
+      </AppShell>
     );
   }
 
   if (!data) {
     return (
-      <div className="mx-auto max-w-2xl p-12 text-center">
-        <p className="text-slate-600">Loading auctions…</p>
-      </div>
+      <AppShell>
+        <div className="container-marketplace py-section text-center">
+          <p className="text-body text-muted-foreground">Loading auctions…</p>
+        </div>
+      </AppShell>
     );
   }
 
   return (
-    <>
-      <AuctionListings
+    <AppShell
+      freshnessLabel={freshnessLabel}
+      onOpenSearch={() => setPaletteOpen(true)}
+    >
+      <AuctionDiscoveryView
         auctions={data.auctions}
         generatedAt={data.export_generated_at ?? data.generated_at}
         automationRanAt={data.automation_ran_at ?? undefined}
         total={data.count}
+        paletteOpen={paletteOpen}
+        onPaletteOpenChange={setPaletteOpen}
       />
-      <div className="mx-auto max-w-6xl px-4 pb-8">
-        <SiteDisclaimer />
-      </div>
-    </>
+      <SiteFooter automationRanAt={data.automation_ran_at ?? undefined} />
+    </AppShell>
   );
 }

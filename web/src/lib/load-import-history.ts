@@ -6,8 +6,9 @@ export async function loadImportHistory(): Promise<DailyImportSummaryRow[]> {
   try {
     const response = await fetch(url, { cache: "no-store" });
     if (!response.ok) return [];
-    const data = (await response.json()) as DailyImportSummaryRow[] | { entries?: DailyImportSummaryRow[] };
-    return Array.isArray(data) ? data : data.entries ?? [];
+    const data = (await response.json()) as
+      DailyImportSummaryRow[] | { entries?: DailyImportSummaryRow[] };
+    return Array.isArray(data) ? data : (data.entries ?? []);
   } catch {
     return [];
   }

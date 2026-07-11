@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowLeft, Clock } from "lucide-react";
+import { Clock } from "lucide-react";
+import { AppShell } from "@/components/app-shell";
+import { SiteFooter } from "@/components/site-footer";
 import { Chip } from "@/components/ui/primitives";
 import { SiteDisclaimer } from "@/components/site-disclaimer";
 import { trackEvent, trackPageView } from "@/lib/analytics";
@@ -30,9 +32,9 @@ function StatusTable({
   rows: (string | number | null | undefined)[][];
 }) {
   return (
-    <div className="overflow-x-auto rounded-xl border border-slate-200/80 bg-white/80">
+    <div className="overflow-x-auto rounded-xl border border-border bg-card">
       <table className="min-w-full text-left text-sm">
-        <thead className="border-b border-slate-200 bg-slate-50/90 text-xs uppercase tracking-wide text-slate-500">
+        <thead className="border-b border-border bg-muted text-xs uppercase tracking-wide text-muted-foreground">
           <tr>
             {headers.map((h) => (
               <th key={h} className="px-3 py-2 font-medium">
@@ -43,9 +45,9 @@ function StatusTable({
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i} className="border-b border-slate-100 last:border-0">
+            <tr key={i} className="border-b border-border last:border-0">
               {row.map((cell, j) => (
-                <td key={j} className="px-3 py-2 text-slate-700">
+                <td key={j} className="px-3 py-2 text-muted-foreground">
                   {cell ?? "—"}
                 </td>
               ))}
@@ -73,12 +75,14 @@ export function StatusPageApp() {
       .then(([data, hist]) => {
         if (!cancelled) {
           setExportData(data);
-          setHistory(hist.length ? hist : data.daily_import_summary ?? []);
+          setHistory(hist.length ? hist : (data.daily_import_summary ?? []));
         }
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load status data");
+          setError(
+            err instanceof Error ? err.message : "Failed to load status data",
+          );
         }
       });
     return () => {
@@ -86,49 +90,71 @@ export function StatusPageApp() {
     };
   }, []);
 
-  const homeHref = resolvePublicUrl("");
-
   if (error) {
     return (
-      <div className="mx-auto max-w-3xl p-8 text-center">
-        <p className="text-lg font-semibold text-rose-800">Could not load status</p>
-        <p className="mt-2 text-sm text-slate-600">{error}</p>
-      </div>
+      <AppShell>
+        <main className="container-marketplace py-section text-center">
+          <p className="text-headline text-foreground">Could not load status</p>
+          <p className="mt-2 text-body text-muted-foreground">{error}</p>
+        </main>
+      </AppShell>
     );
   }
 
   if (!exportData) {
     return (
-      <div className="mx-auto max-w-3xl p-12 text-center text-slate-600">
-        Loading import status…
-      </div>
+      <AppShell>
+        <main className="container-marketplace py-section text-center text-muted-foreground">
+          Loading import status…
+        </main>
+      </AppShell>
     );
   }
 
   const lots = totalLots(exportData);
   const sources = exportData.sources ?? {};
-  const importTracking = (exportData.stats?.import_tracking ?? {}) as Record<string, number>;
-  const documentsStats = (exportData.stats?.documents ?? {}) as Record<string, unknown>;
-  const failedByReason = (documentsStats.failed_by_reason ?? {}) as Record<string, number>;
-  const failedByType = (documentsStats.failed_by_doc_type ?? {}) as Record<string, number>;
+  const importTracking = (exportData.stats?.import_tracking ?? {}) as Record<
+    string,
+    number
+  >;
+  const documentsStats = (exportData.stats?.documents ?? {}) as Record<
+    string,
+    unknown
+  >;
+  const failedByReason = (documentsStats.failed_by_reason ?? {}) as Record<
+    string,
+    number
+  >;
+  const failedByType = (documentsStats.failed_by_doc_type ?? {}) as Record<
+    string,
+    number
+  >;
   const documentsFailed =
     typeof documentsStats.failed === "number" ? documentsStats.failed : 0;
-  const dailyRows = [...history].sort(
-    (a, b) => (b.automation_ran_at || "").localeCompare(a.automation_ran_at || ""),
+  const aiEnrichment = (exportData.stats?.ai_enrichment ?? {}) as Record<
+    string,
+    number
+  >;
+  const aiReadyCount = aiEnrichment.ready ?? 0;
+  const dailyRows = [...history].sort((a, b) =>
+    (b.automation_ran_at || "").localeCompare(a.automation_ran_at || ""),
   );
   const latestDaily = dailyRows[0];
   const docFailureRows = [
-    ...Object.entries(failedByReason).map(([reason, count]) => [reason, count, "—"]),
+    ...Object.entries(failedByReason).map(([reason, count]) => [
+      reason,
+      count,
+      "—",
+    ]),
     ...Object.entries(failedByType).map(([type, count]) => ["—", count, type]),
   ];
 
   const automationMs = exportData.automation_ran_at
     ? Date.parse(exportData.automation_ran_at)
     : NaN;
-  const staleHours =
-    !Number.isNaN(automationMs)
-      ? (Date.now() - automationMs) / (1000 * 60 * 60)
-      : null;
+  const staleHours = !Number.isNaN(automationMs)
+    ? (Date.now() - automationMs) / (1000 * 60 * 60)
+    : null;
   const isStale = staleHours != null && staleHours > 36;
 
   const sourceRows = Object.entries(sources).map(([key, meta]) => [
@@ -137,7 +163,9 @@ export function StatusPageApp() {
     meta.lots ?? 0,
     meta.documents_downloaded != null ? String(meta.documents_downloaded) : "—",
     meta.status ?? "—",
-    exportData.automation_ran_at ? formatDateTime(exportData.automation_ran_at) : "—",
+    exportData.automation_ran_at
+      ? formatDateTime(exportData.automation_ran_at)
+      : "—",
   ]);
 
   const historyRows = dailyRows.map((row) => [
@@ -153,24 +181,20 @@ export function StatusPageApp() {
   ]);
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 px-4 py-6">
+    <AppShell>
+      <main className="container-marketplace space-y-6 py-section">
       <header className="space-y-3">
-        <a
-          href={homeHref}
-          className="inline-flex items-center gap-1 text-sm font-medium text-cyan-800 hover:underline"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to listings
-        </a>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900">Import &amp; run status</h1>
-            <p className="mt-1 text-sm text-slate-600">
+            <h1 className="text-display text-foreground">
+              Import &amp; run status
+            </h1>
+            <p className="mt-1 text-body text-muted-foreground">
               Automation history, source counts, and daily import summary.
             </p>
           </div>
           {exportData.automation_ran_at && (
-            <Chip className="border-violet-200/80 bg-violet-50/90 text-violet-900 normal-case tracking-normal">
+            <Chip className="border-border bg-muted text-muted-foreground normal-case tracking-normal">
               <Clock className="mr-1 inline h-3 w-3" />
               Automation ran: {formatDateTime(exportData.automation_ran_at)}
             </Chip>
@@ -179,20 +203,30 @@ export function StatusPageApp() {
       </header>
 
       {isStale && (
-        <section className="rounded-xl border border-rose-200/80 bg-rose-50/80 p-4 text-sm text-rose-950">
+        <section className="rounded-xl border border-border bg-muted p-4 text-body-sm text-foreground">
           <p className="font-semibold">Data freshness warning</p>
           <p className="mt-1">
-            Automation last ran {staleHours!.toFixed(0)} hours ago (threshold 36h). Verify the
-            refresh pipeline or check Hostinger deployment.
+            Automation last ran {staleHours!.toFixed(0)} hours ago (threshold
+            36h). Verify the refresh pipeline or check production deployment.
           </p>
         </section>
       )}
 
       {latestDaily && (
         <section className="space-y-2">
-          <h2 className="text-lg font-semibold text-slate-900">Latest run / deploy</h2>
+          <h2 className="text-headline text-foreground">
+            Latest run / deploy
+          </h2>
           <StatusTable
-            headers={["Date", "Status", "Total", "New", "Removed", "Lots", "Automation ran"]}
+            headers={[
+              "Date",
+              "Status",
+              "Total",
+              "New",
+              "Removed",
+              "Lots",
+              "Automation ran",
+            ]}
             rows={[
               [
                 latestDaily.date,
@@ -208,37 +242,56 @@ export function StatusPageApp() {
             ]}
           />
           {importTracking.new_auctions != null && (
-            <p className="text-sm text-slate-600">
+            <p className="text-sm text-muted-foreground">
               Import tracking: {importTracking.new_auctions} new,{" "}
-              {importTracking.removed_auctions ?? 0} removed in last tracked run.
+              {importTracking.removed_auctions ?? 0} removed in last tracked
+              run.
             </p>
           )}
         </section>
       )}
 
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-xl border border-slate-200/80 bg-white/80 p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Total auctions</p>
-          <p className="mt-1 text-2xl font-bold text-slate-900">{exportData.count}</p>
-        </div>
-        <div className="rounded-xl border border-slate-200/80 bg-white/80 p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Total lots</p>
-          <p className="mt-1 text-2xl font-bold text-slate-900">{lots}</p>
-        </div>
-        <div className="rounded-xl border border-slate-200/80 bg-white/80 p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Export generated</p>
-          <p className="mt-1 text-sm font-semibold text-slate-800">
-            {formatDateTime(exportData.export_generated_at ?? exportData.generated_at)}
+        <div className="surface-elevated p-[var(--space-16)]">
+          <p className="text-footnote font-medium uppercase tracking-wide text-muted-foreground">
+            Total auctions
+          </p>
+          <p className="mt-1 text-2xl font-bold tabular-nums text-foreground">
+            {exportData.count}
           </p>
         </div>
-        <div className="rounded-xl border border-slate-200/80 bg-white/80 p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Run ID</p>
-          <p className="mt-1 truncate text-sm font-mono text-slate-700">{exportData.run_id ?? "—"}</p>
+        <div className="surface-elevated p-[var(--space-16)]">
+          <p className="text-footnote font-medium uppercase tracking-wide text-muted-foreground">
+            Total lots
+          </p>
+          <p className="mt-1 text-2xl font-bold tabular-nums text-foreground">
+            {lots}
+          </p>
+        </div>
+        <div className="surface-elevated p-[var(--space-16)]">
+          <p className="text-footnote font-medium uppercase tracking-wide text-muted-foreground">
+            Export generated
+          </p>
+          <p className="mt-1 text-body-sm font-semibold tabular-nums text-foreground">
+            {formatDateTime(
+              exportData.export_generated_at ?? exportData.generated_at,
+            )}
+          </p>
+        </div>
+        <div className="surface-elevated p-[var(--space-16)]">
+          <p className="text-footnote font-medium uppercase tracking-wide text-muted-foreground">
+            Run ID
+          </p>
+          <p className="mt-1 truncate text-body-sm tabular-nums text-muted-foreground">
+            {exportData.run_id ?? "—"}
+          </p>
         </div>
       </section>
 
       <section className="space-y-2">
-        <h2 className="text-lg font-semibold text-slate-900">Sources (current export)</h2>
+        <h2 className="text-headline text-foreground">
+          Sources (current export)
+        </h2>
         <StatusTable
           headers={[
             "Source",
@@ -253,7 +306,26 @@ export function StatusPageApp() {
       </section>
 
       <section className="space-y-2">
-        <h2 className="text-lg font-semibold text-slate-900">Daily import summary</h2>
+        <h2 className="text-headline text-foreground">AI enrichment</h2>
+        <p className="text-body-sm text-muted-foreground">
+          Buyer-facing AI headings and summaries are optional. Parser fields
+          remain the source of truth.
+        </p>
+        <StatusTable
+          headers={["Status", "Count"]}
+          rows={[
+            ["Ready (in export)", aiReadyCount],
+            ["Missing cache", aiEnrichment.missing ?? "—"],
+            ["Rejected", aiEnrichment.rejected ?? "—"],
+            ["Failed", aiEnrichment.failed ?? "—"],
+          ]}
+        />
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-headline text-foreground">
+          Daily import summary
+        </h2>
         <StatusTable
           headers={[
             "Date",
@@ -272,7 +344,9 @@ export function StatusPageApp() {
 
       {docFailureRows.length > 0 && (
         <section className="space-y-2">
-          <h2 className="text-lg font-semibold text-slate-900">Document / PDF failures</h2>
+          <h2 className="text-headline text-foreground">
+            Document / PDF failures
+          </h2>
           <StatusTable
             headers={["Reason", "Count", "Doc type"]}
             rows={docFailureRows}
@@ -280,15 +354,29 @@ export function StatusPageApp() {
         </section>
       )}
 
-      <section className="space-y-2 rounded-xl border border-amber-200/70 bg-amber-50/50 p-4 text-sm text-amber-950">
+      <section className="space-y-2 rounded-xl border border-border bg-muted p-4 text-body-sm text-foreground">
+        <h2 className="font-semibold">Operations</h2>
+        <p>
+          <a href={resolvePublicUrl("launch-readiness/")} className="link-action">
+            Launch readiness dashboard
+          </a>{" "}
+          (noindex) — machine-checkable gates for staged launch. Linked here for ops only, not
+          buyer marketing.
+        </p>
+      </section>
+
+      <section className="space-y-2 rounded-xl border border-border bg-muted p-4 text-body-sm text-foreground">
         <h2 className="font-semibold">Notes</h2>
         <ul className="list-disc space-y-1 pl-5">
           <li>
-            eAuction listings reflect the public ByDate visible window only — counts may be lower
-            than the full catalogue.
+            eAuction listings reflect the public ByDate visible window only —
+            counts may be lower than the full catalogue.
           </li>
           {documentsFailed ? (
-            <li>Document downloads failed in last run: {documentsFailed} (see batch stats).</li>
+            <li>
+              Document downloads failed in last run: {documentsFailed} (see
+              batch stats).
+            </li>
           ) : null}
           {importTracking.new_auctions != null ? (
             <li>
@@ -297,14 +385,17 @@ export function StatusPageApp() {
             </li>
           ) : null}
           <li>
-            <code className="rounded bg-white/70 px-1">listed_at</code> is source publish date when
-            available; <code className="rounded bg-white/70 px-1">imported_at</code> is when we
+            <code className="rounded bg-card px-1">listed_at</code> is source
+            publish date when available;{" "}
+            <code className="rounded bg-card px-1">imported_at</code> is when we
             first saw the auction in our dataset.
           </li>
         </ul>
       </section>
 
       <SiteDisclaimer />
-    </div>
+      </main>
+      <SiteFooter automationRanAt={exportData.automation_ran_at ?? undefined} />
+    </AppShell>
   );
 }

@@ -1,4 +1,9 @@
-import type { SortOption, DatePreset, ListedPreset } from "@/lib/auction-filters";
+import { canSaveSearch } from "@/lib/entitlements";
+import type {
+  SortOption,
+  DatePreset,
+  ListedPreset,
+} from "@/lib/auction-filters";
 
 export interface SavedSearch {
   id: string;
@@ -52,9 +57,31 @@ export function deleteSavedSearch(id: string): SavedSearch[] {
 export function upsertSavedSearch(search: SavedSearch): SavedSearch[] {
   const existing = loadSavedSearches();
   const idx = existing.findIndex((s) => s.id === search.id);
+  if (idx < 0) {
+    const gate = canSaveNewSearch(existing.length);
+    if (!gate.ok) return existing;
+  }
   const next = [...existing];
   if (idx >= 0) next[idx] = search;
   else next.unshift(search);
   persistSavedSearches(next);
   return next;
+}
+
+export type SavedSearchSaveResult =
+  | { ok: true; searches: SavedSearch[] }
+  | { ok: false; reason: "cap_reached" };
+
+export function tryUpsertSavedSearch(search: SavedSearch): SavedSearchSaveResult {
+  const existing = loadSavedSearches();
+  const idx = existing.findIndex((s) => s.id === search.id);
+  if (idx < 0) {
+    const gate = canSaveNewSearch(existing.length);
+    if (!gate.ok) return { ok: false, reason: "cap_reached" };
+  }
+  return { ok: true, searches: upsertSavedSearch(search) };
+}
+
+function canSaveNewSearch(currentCount: number): { ok: boolean } {
+  return { ok: canSaveSearch(currentCount) };
 }

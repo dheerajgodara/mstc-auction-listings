@@ -34,7 +34,7 @@ function ThumbnailButton({
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="group relative block aspect-[4/3] w-20 shrink-0 overflow-hidden rounded-lg border border-white/70 bg-white/60 shadow-sm"
+      className="group relative block aspect-[20/19] w-24 shrink-0 overflow-hidden rounded-lg border border-border bg-muted shadow-sm"
       title={label}
     >
       <img
@@ -99,7 +99,9 @@ export function LotPreviewStrip({
         ))}
       </div>
       {extra > 0 && (
-        <span className="text-xs font-medium text-slate-500">+{extra}</span>
+        <span className="text-xs font-medium text-muted-foreground">
+          +{extra}
+        </span>
       )}
     </div>
   );
@@ -117,17 +119,16 @@ export function LotDocumentsPanel({ lot }: { lot: LotRecord }) {
   );
 
   return (
-    <div className="mt-3 border-t border-white/50 pt-3">
-      <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+    <div className="mt-3 border-t border-border pt-3">
+      <h5 className="mb-3 text-caption font-medium text-muted-foreground">
         Photos &amp; Documents
       </h5>
       {thumbs.length > 0 && (
         <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
           {thumbs.map((doc) => {
-            const href = docOpenUrl(doc) || resolvePublicUrl(doc.thumbnail_url!);
-            return (
-              <ThumbnailCard key={doc.filename} doc={doc} href={href} />
-            );
+            const href =
+              docOpenUrl(doc) || resolvePublicUrl(doc.thumbnail_url!);
+            return <ThumbnailCard key={doc.filename} doc={doc} href={href} />;
           })}
         </div>
       )}
@@ -138,14 +139,17 @@ export function LotDocumentsPanel({ lot }: { lot: LotRecord }) {
             return (
               <div
                 key={doc.filename}
-                className="flex min-w-0 flex-col gap-1 rounded-lg border border-white/60 bg-white/55 p-2"
+                className="flex min-w-0 flex-col gap-1 rounded-lg border border-border bg-card p-2"
               >
-                <Chip className="w-fit border-slate-200/80 bg-white/70 text-slate-700 normal-case tracking-normal">
+                <Chip className="w-fit border-border bg-card text-muted-foreground normal-case tracking-normal">
                   {docTypeLabel(doc.type)}
                 </Chip>
-                <span className="break-all text-xs text-slate-700">{doc.filename}</span>
-                {doc.status === "failed" || doc.status === "thumbnail_failed" ? (
-                  <span className="text-[11px] text-amber-800">
+                <span className="break-all text-xs text-muted-foreground">
+                  {doc.filename}
+                </span>
+                {doc.status === "failed" ||
+                doc.status === "thumbnail_failed" ? (
+                  <span className="text-[11px] text-muted-foreground">
                     {doc.error || doc.status}
                   </span>
                 ) : null}
@@ -154,13 +158,13 @@ export function LotDocumentsPanel({ lot }: { lot: LotRecord }) {
                     href={href}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="btn-glass inline-flex w-fit items-center gap-1 px-2 py-1 text-xs"
+                    className="btn-secondary inline-flex w-fit items-center gap-1 px-2 py-1 text-xs"
                   >
                     <ExternalLink className="h-3 w-3" />
                     Open original
                   </a>
                 ) : (
-                  <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                     <FileText className="h-3 w-3" />
                     Not cached
                   </span>
@@ -182,22 +186,22 @@ function ThumbnailCard({ doc, href }: { doc: LotDocument; href: string }) {
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="block overflow-hidden rounded-lg border border-white/70 bg-white/60"
+      className="block overflow-hidden rounded-lg border border-border bg-card"
     >
       {!broken ? (
         <img
           src={thumb}
           alt={doc.filename}
           loading="lazy"
-          className="aspect-[4/3] w-full object-cover"
+          className="aspect-[20/19] w-full object-cover"
           onError={() => setBroken(true)}
         />
       ) : (
-        <div className="flex aspect-[4/3] items-center justify-center bg-slate-100 text-xs text-slate-500">
+        <div className="flex aspect-[20/19] items-center justify-center bg-muted text-xs text-muted-foreground">
           Preview unavailable
         </div>
       )}
-      <div className="border-t border-white/60 px-2 py-1 text-[11px] text-slate-700">
+      <div className="border-t border-border px-2 py-1 text-[11px] text-muted-foreground">
         <span className="font-medium">{docTypeLabel(doc.type)}</span>
         <span className="block truncate">{doc.filename}</span>
       </div>

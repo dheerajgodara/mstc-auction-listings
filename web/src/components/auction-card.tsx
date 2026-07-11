@@ -12,11 +12,16 @@ import {
   Star,
   User,
 } from "lucide-react";
-import { Card, CardContent, CardHeader, Chip } from "@/components/ui/primitives";
-import { FadeIn } from "@/components/magic/fade-in";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  Chip,
+} from "@/components/ui/primitives";
 import { LotDetails } from "@/components/lot-details";
 import { LotPreviewStrip } from "@/components/lot-documents";
 import { getClosingUrgency } from "@/lib/auction-filters";
+import { commodityBorderClass } from "@/lib/commodity-styles";
 import {
   confidenceChipClass,
   emdStatusChipClass,
@@ -30,15 +35,20 @@ import {
   formatInspection,
   formatInr,
   resolvePublicUrl,
+  cn,
 } from "@/lib/utils";
 import { isLongSummary } from "@/lib/text-summary";
 import {
   enrichAuctionDisplay,
   materialCategoryLabel,
+  resolveDisplayBuyerSummary,
+  resolveDisplayTitle,
 } from "@/lib/display-enrichment";
 import { countAuctionDocuments } from "@/lib/auction-documents";
 import { trackEvent } from "@/lib/analytics";
 import { valuationBadgeLabel } from "@/lib/valuation";
+import { deriveRouteId } from "@/lib/seo/route-id";
+import { sourceToSlug } from "@/lib/seo/source-slug";
 import type { AuctionRecord, AuctionSource } from "@/types/auction";
 
 const SOURCE_LABELS: Record<AuctionSource, string> = {
@@ -60,7 +70,9 @@ function formatCategory(category?: string | null): string | null {
 function PriceDisplay({ auction }: { auction: AuctionRecord }) {
   if (auction.price_summary) {
     return (
-      <span className="text-xl font-bold text-cyan-900">{auction.price_summary}</span>
+      <span className="text-xl font-bold tabular-nums text-foreground">
+        {auction.price_summary}
+      </span>
     );
   }
   const prices = auction.lots
@@ -69,14 +81,22 @@ function PriceDisplay({ auction }: { auction: AuctionRecord }) {
   if (prices.length === 0) {
     const fallback =
       auction.source === "mstc" ? "See PDF for price" : "See listing for price";
-    return <span className="text-sm font-medium text-slate-500">{fallback}</span>;
+    return (
+      <span className="text-sm font-medium text-muted-foreground">
+        {fallback}
+      </span>
+    );
   }
   const unique = [...new Set(prices)].sort((a, b) => a - b);
   if (unique.length === 1) {
-    return <span className="text-xl font-bold text-cyan-900">{formatInr(unique[0])}</span>;
+    return (
+      <span className="text-xl font-bold tabular-nums text-foreground">
+        {formatInr(unique[0])}
+      </span>
+    );
   }
   return (
-    <span className="text-xl font-bold text-cyan-900">
+    <span className="text-xl font-bold tabular-nums text-foreground">
       {formatInr(unique[0])} – {formatInr(unique[unique.length - 1])}
     </span>
   );
@@ -96,10 +116,63 @@ function detailLinkLabel(source?: AuctionSource | null): string {
   return `View on ${sourceBadgeLabel(source)}`;
 }
 
+/** First marketplace photo for listing-card hero (audit §5). */
+function resolveListingHero(auction: AuctionRecord): {
+  src: string;
+  alt: string;
+} | null {
+  for (const lot of auction.lots ?? []) {
+    for (const doc of lot.documents ?? []) {
+      if (doc.thumbnail_url && doc.status === "thumbnail_ready") {
+        return {
+          src: resolvePublicUrl(doc.thumbnail_url),
+          alt: doc.filename || "Auction photo",
+        };
+      }
+    }
+  }
+  return null;
+}
+
+function ListingCardMedia({
+  auction,
+  href,
+}: {
+  auction: AuctionRecord;
+  href: string;
+}) {
+  const hero = resolveListingHero(auction);
+  return (
+    <a
+      href={href}
+      className="relative block aspect-[20/19] overflow-hidden rounded-t-[var(--radius-xl)] bg-marketplace-gray-100 dark:bg-muted"
+      aria-label="View listing photos"
+    >
+      {hero ? (
+        <img
+          src={hero.src}
+          alt={hero.alt}
+          loading="lazy"
+          className="h-full w-full object-cover transition-transform duration-hover ease-marketplace group-hover:scale-[1.02]"
+        />
+      ) : (
+        <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-gradient-to-br from-marketplace-gray-100 to-marketplace-gray-200 px-6 text-center dark:from-muted dark:to-card">
+          <span className="text-footnote font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+            {sourceBadgeLabel(auction.source)}
+          </span>
+          <span className="line-clamp-2 text-body-sm font-semibold text-foreground">
+            {resolveDisplayTitle(auction)}
+          </span>
+        </div>
+      )}
+    </a>
+  );
+}
+
 function AuctionWarnings({ warnings }: { warnings?: string[] }) {
   if (!warnings?.length) return null;
   return (
-    <p className="rounded-lg border border-amber-200/70 bg-amber-50/80 px-3 py-2 text-xs text-amber-900">
+    <p className="rounded-lg border border-border bg-muted px-3 py-2 text-xs text-muted-foreground">
       Data note: {warnings.join("; ")}
     </p>
   );
@@ -107,7 +180,9 @@ function AuctionWarnings({ warnings }: { warnings?: string[] }) {
 
 function formatListedDate(auction: AuctionRecord): string | null {
   if (auction.listed_at_label) return auction.listed_at_label;
-  const iso = auction.listed_at ?? (auction.listed_date ? `${auction.listed_date}T00:00:00+05:30` : null);
+  const iso =
+    auction.listed_at ??
+    (auction.listed_date ? `${auction.listed_date}T00:00:00+05:30` : null);
   if (!iso) return null;
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return null;
@@ -119,7 +194,9 @@ function formatListedDate(auction: AuctionRecord): string | null {
     year: "numeric",
   });
   const prefix =
-    auction.listed_at_source === "opening_date_fallback" ? "Listed: approx. " : "Listed: ";
+    auction.listed_at_source === "opening_date_fallback"
+      ? "Listed: approx. "
+      : "Listed: ";
   return `${prefix}${fmt.format(dt)}`;
 }
 
@@ -139,7 +216,8 @@ function formatImportedDate(auction: AuctionRecord): string | null {
 
 function gemDocumentLabel(url: string, index: number, total: number): string {
   const lower = url.toLowerCase();
-  if (lower.includes("rule")) return total > 1 ? `GeM rules ${index + 1}` : "GeM rules";
+  if (lower.includes("rule"))
+    return total > 1 ? `GeM rules ${index + 1}` : "GeM rules";
   if (lower.includes("notice") || lower.includes("brief")) {
     return total > 1 ? `GeM notice ${index + 1}` : "GeM notice";
   }
@@ -151,22 +229,35 @@ export function AuctionCard({
   index,
   watched = false,
   onToggleWatch,
+  compact: _compact = false,
+  onOpenDiligence,
+  onToggleCompare: _onToggleCompare,
+  inCompare: _inCompare = false,
+  searchQuery: _searchQuery,
 }: {
   auction: AuctionRecord;
   index: number;
   watched?: boolean;
   onToggleWatch?: (id: string) => void;
+  compact?: boolean;
+  onOpenDiligence?: () => void;
+  onToggleCompare?: () => void;
+  inCompare?: boolean;
+  searchQuery?: string;
 }) {
   const auction = enrichAuctionDisplay(rawAuction);
   const [showFullNotice, setShowFullNotice] = useState(false);
-  const cardTitle = auction.display_title || auction.item_summary || "—";
+  const cardTitle = resolveDisplayTitle(rawAuction);
+  const buyerSummary = resolveDisplayBuyerSummary(rawAuction);
   const fullSummary = auction.item_summary || cardTitle;
   const longNotice = isLongSummary(fullSummary) && fullSummary !== cardTitle;
   const cardSummary = showFullNotice ? fullSummary : cardTitle;
   const cityState =
     auction.display_location_city && auction.display_location_state
       ? `${auction.display_location_city}, ${auction.display_location_state}`
-      : auction.display_location_city ?? auction.display_location_state ?? null;
+      : (auction.display_location_city ??
+        auction.display_location_state ??
+        null);
   const rawSite =
     auction.display_location_raw &&
     cityState &&
@@ -175,8 +266,13 @@ export function AuctionCard({
       : auction.display_location_raw && !cityState
         ? auction.display_location_raw
         : null;
-  const materialLabel = materialCategoryLabel(auction.display_material_category);
+  const materialLabel = materialCategoryLabel(
+    auction.display_material_category,
+  );
   const pdfHref = resolvePublicUrl(auction.pdf_url);
+  const localDetailHref = resolvePublicUrl(
+    `${sourceToSlug(auction.source)}/${deriveRouteId(auction)}/`,
+  );
   const detailHref = auction.detail_url?.startsWith("http")
     ? auction.detail_url
     : resolvePublicUrl(auction.detail_url ?? undefined);
@@ -187,211 +283,248 @@ export function AuctionCard({
   const lowLocationConfidence = auction.display_location_confidence === "low";
 
   return (
-    <FadeIn delay={Math.min(index * 0.02, 0.25)}>
-      <Card className="relative">
-        <div
-          className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-cyan-400 via-sky-400 to-violet-400"
-          aria-hidden
-        />
-        <CardHeader className="space-y-3 pl-5">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 flex-1 space-y-2">
-              <div className="flex flex-wrap items-center gap-1.5">
-                {onToggleWatch && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onToggleWatch(auction.id);
-                      trackEvent("watchlist_toggle", { auction_id: auction.id, watched: !watched });
-                    }}
-                    className="rounded-full border border-amber-200/80 bg-amber-50/90 p-1 text-amber-700 hover:bg-amber-100"
-                    aria-label={watched ? "Remove from watchlist" : "Save to watchlist"}
-                  >
-                    <Star className={`h-3.5 w-3.5 ${watched ? "fill-amber-500" : ""}`} />
-                  </button>
+    <Card className={cn("group relative overflow-hidden", commodityBorderClass(auction))}>
+      <ListingCardMedia auction={auction} href={localDetailHref} />
+      <CardHeader className="space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1 space-y-2">
+            <div className="flex items-start gap-2">
+              {onToggleWatch && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onToggleWatch(auction.id);
+                    trackEvent("watchlist_toggle", {
+                      auction_id: auction.id,
+                      watched: !watched,
+                    });
+                  }}
+                  className="inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-full border border-border bg-card text-action shadow-sm hover:border-action"
+                  aria-label={
+                    watched ? "Remove from watchlist" : "Save to watchlist"
+                  }
+                >
+                  <Star
+                    className={`h-4 w-4 ${watched ? "fill-action text-action" : ""}`}
+                  />
+                </button>
+              )}
+              <a
+                href={localDetailHref}
+                className={cn(
+                  "text-title text-foreground transition-colors hover:text-action",
+                  !showFullNotice && "line-clamp-2",
                 )}
-                <Chip className="border-slate-200/80 bg-slate-50/90 text-slate-800">
-                  {sourceBadgeLabel(auction.source)}
+              >
+                {cardSummary}
+              </a>
+            </div>
+            {auction.display_quantity_summary && (
+              <p className="text-body-sm font-medium text-muted-foreground">
+                {auction.display_quantity_summary}
+              </p>
+            )}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Chip className="border-border bg-muted text-foreground">
+                {sourceBadgeLabel(auction.source)}
+              </Chip>
+              {urgency && (
+                <Chip className={urgency.chipClass}>{urgency.label}</Chip>
+              )}
+              <Chip className={regionChipClass()}>{auction.region}</Chip>
+              {categoryLabel && (
+                <Chip className="border-border bg-muted/60 text-muted-foreground">
+                  {categoryLabel}
                 </Chip>
-                {categoryLabel && (
-                  <Chip className="border-emerald-200/80 bg-emerald-50/90 text-emerald-900">
-                    {categoryLabel}
-                  </Chip>
-                )}
-                {materialLabel && (
-                  <Chip className="border-sky-200/80 bg-sky-50/90 text-sky-900">
-                    {materialLabel}
-                  </Chip>
-                )}
-                <Chip className={regionChipClass()}>{auction.region}</Chip>
-                {auction.lot_types?.map((t) => (
-                  <Chip key={t} className={lotTypeChipClass()}>
-                    {t}
-                  </Chip>
-                ))}
-                {auction.parse_confidence && (
-                  <Chip className={confidenceChipClass(auction.parse_confidence)}>
+              )}
+              {materialLabel && (
+                <Chip className="border-border bg-muted/60 text-muted-foreground">
+                  {materialLabel}
+                </Chip>
+              )}
+              {auction.lot_types?.slice(0, 2).map((t) => (
+                <Chip
+                  key={t}
+                  className={cn(lotTypeChipClass(), "text-muted-foreground")}
+                >
+                  {t}
+                </Chip>
+              ))}
+              {auction.parse_confidence &&
+                auction.parse_confidence !== "high" && (
+                  <Chip
+                    className={confidenceChipClass(auction.parse_confidence)}
+                  >
                     {auction.parse_confidence}
                   </Chip>
                 )}
-                {auction.price_parse_status && (
-                  <Chip className={priceStatusChipClass(auction.price_parse_status)}>
+              {auction.price_parse_status &&
+                auction.price_parse_status !== "numeric" &&
+                auction.price_parse_status !== "range" && (
+                  <Chip
+                    className={priceStatusChipClass(
+                      auction.price_parse_status,
+                    )}
+                  >
                     {formatChipLabel(auction.price_parse_status)}
                   </Chip>
                 )}
-                {auction.emd_parse_status && (
-                  <Chip className={emdStatusChipClass(auction.emd_parse_status)}>
-                    EMD {formatChipLabel(auction.emd_parse_status)}
-                  </Chip>
-                )}
-                {urgency && (
-                  <Chip className={urgency.chipClass}>{urgency.label}</Chip>
-                )}
-                {valuationLabel && (
-                  <Chip className="border-violet-200/80 bg-violet-50/90 text-violet-900">
-                    {valuationLabel}
-                  </Chip>
-                )}
-              </div>
-              <h2
-                className={`text-lg font-semibold leading-snug text-slate-900 ${
-                  showFullNotice ? "" : "line-clamp-2"
-                }`}
-              >
-                {cardSummary}
-              </h2>
-              {auction.display_quantity_summary && (
-                <p className="text-commercial text-sm font-medium text-slate-700">
-                  {auction.display_quantity_summary}
-                </p>
+              {auction.emd_parse_status && (
+                <Chip className={emdStatusChipClass(auction.emd_parse_status)}>
+                  EMD {formatChipLabel(auction.emd_parse_status)}
+                </Chip>
               )}
-              {auction.display_buyer_summary && (
-                <p className="text-metadata text-xs text-slate-600">
-                  {auction.display_buyer_summary}
-                </p>
+              {valuationLabel && (
+                <Chip className="border-border bg-muted/60 text-muted-foreground">
+                  {valuationLabel}
+                </Chip>
               )}
-              {auction.display_key_lots && auction.display_key_lots.length > 1 && (
-                <p className="text-xs text-slate-600">
+            </div>
+            {buyerSummary && (
+              <p className="text-footnote text-muted-foreground">
+                {buyerSummary}
+              </p>
+            )}
+            {auction.display_key_lots &&
+              auction.display_key_lots.length > 1 && (
+                <p className="text-footnote text-muted-foreground">
                   {auction.display_key_lots.join(" · ")}
                 </p>
               )}
-              {longNotice && (
-                <button
-                  type="button"
-                  onClick={() => setShowFullNotice((v) => !v)}
-                  className="text-xs font-medium text-cyan-800 hover:underline"
-                >
-                  {showFullNotice ? "Hide full notice text" : "Show full notice text"}
-                </button>
-              )}
-            </div>
-            <div className="shrink-0 rounded-xl border border-cyan-200/60 bg-gradient-to-br from-cyan-50/90 to-sky-50/90 px-4 py-2 text-right">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-cyan-700/80">
-                Price
-              </p>
-              <PriceDisplay auction={auction} />
-            </div>
+            {longNotice && (
+              <button
+                type="button"
+                onClick={() => setShowFullNotice((v) => !v)}
+                className="text-footnote font-medium link-action hover:underline"
+              >
+                {showFullNotice
+                  ? "Hide full notice text"
+                  : "Show full notice text"}
+              </button>
+            )}
           </div>
-        </CardHeader>
-        <CardContent className="space-y-3 pl-5 text-sm">
-          <div className="grid gap-2 sm:grid-cols-2">
-            {cityState && (
-              <div className="flex items-start gap-2 sm:col-span-2">
-                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-cyan-600/70" />
-                <span className="font-medium text-slate-800">
-                  {cityState}
-                  {lowLocationConfidence && (
-                    <span className="ml-1 text-xs font-normal text-amber-700">
-                      (location uncertain)
-                    </span>
-                  )}
-                </span>
-              </div>
-            )}
-            {rawSite && (
-              <div className="flex items-start gap-2 sm:col-span-2">
-                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
-                <span className="text-slate-600">Site: {rawSite}</span>
-              </div>
-            )}
-            {!cityState && !rawSite && (auction.location || auction.state) && (
-              <div className="flex items-start gap-2 sm:col-span-2">
-                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-cyan-600/70" />
-                <span className="text-slate-700">
-                  {auction.location || auction.state}
-                </span>
-              </div>
-            )}
-            {auction.seller && (
-              <div className="flex items-start gap-2">
-                <User className="mt-0.5 h-4 w-4 shrink-0 text-cyan-600/70" />
-                <span className="text-slate-700">{auction.seller}</span>
-              </div>
-            )}
-            <div className="flex items-start gap-2">
-              <Calendar className="mt-0.5 h-4 w-4 shrink-0 text-cyan-600/70" />
-              <span className="text-slate-700">Opens {formatDateTime(auction.opening)}</span>
-            </div>
-            <div className="flex items-start gap-2 rounded-lg border border-amber-200/50 bg-amber-50/50 px-2 py-1.5">
-              <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-              <span className="font-medium text-amber-950">
-                Closes {formatDateTime(auction.closing)}
+          <div className="shrink-0 rounded-[var(--radius-lg)] border border-[color-mix(in_srgb,var(--color-rausch)_22%,white)] bg-[color-mix(in_srgb,var(--color-rausch)_6%,white)] px-[var(--space-20)] py-[var(--space-12)] text-right dark:border-border dark:bg-muted">
+            <p className="text-footnote font-medium uppercase tracking-wide text-muted-foreground">
+              Price
+            </p>
+            <PriceDisplay auction={auction} />
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        <div className="grid gap-2 sm:grid-cols-2">
+          {cityState && (
+            <div className="flex items-start gap-2 sm:col-span-2">
+              <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/70" />
+              <span className="font-medium text-foreground">
+                {cityState}
+                {lowLocationConfidence && (
+                  <span className="ml-1 text-xs font-normal text-muted-foreground">
+                    (location uncertain)
+                  </span>
+                )}
               </span>
             </div>
-            {formatListedDate(auction) && (
-              <div className="flex items-start gap-2 sm:col-span-2">
-                <CalendarPlus className="mt-0.5 h-4 w-4 shrink-0 text-violet-600/80" />
-                <span className="text-slate-700">{formatListedDate(auction)}</span>
-              </div>
-            )}
-            {formatImportedDate(auction) && (
-              <div className="flex items-start gap-2 sm:col-span-2">
-                <CalendarPlus className="mt-0.5 h-4 w-4 shrink-0 text-sky-600/80" />
-                <span className="text-slate-600">{formatImportedDate(auction)}</span>
-              </div>
-            )}
-            {hasInspection(auction) && (
-              <div className="flex items-start gap-2 sm:col-span-2">
-                <Calendar className="mt-0.5 h-4 w-4 shrink-0 text-cyan-600/70" />
-                <span className="text-slate-700">
-                  Inspection:{" "}
-                  {formatInspection(
-                    auction.inspection_from,
-                    auction.inspection_to,
-                    auction.inspection,
-                  )}
-                </span>
-              </div>
-            )}
-            {auction.emd_summary && (
-              <div className="flex items-start gap-2 rounded-lg border border-emerald-200/50 bg-emerald-50/50 px-2 py-1.5 sm:col-span-2">
-                <IndianRupee className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-                <span className="font-medium text-emerald-950">{auction.emd_summary}</span>
-              </div>
-            )}
-            {auction.tax_summary && (
-              <div className="text-slate-600 sm:col-span-2">
-                Taxes: {auction.tax_summary}
-              </div>
-            )}
-            {(docCounts.documents > 0 || docCounts.photos > 0) && (
-              <div className="flex items-center gap-2 sm:col-span-2">
-                <FileText className="h-4 w-4 shrink-0 text-slate-500" />
-                <span className="text-xs text-slate-600">
-                  {docCounts.documents > 0 && `${docCounts.documents} doc${docCounts.documents === 1 ? "" : "s"}`}
-                  {docCounts.documents > 0 && docCounts.photos > 0 && " · "}
-                  {docCounts.photos > 0 && `${docCounts.photos} photo${docCounts.photos === 1 ? "" : "s"}`}
-                </span>
-              </div>
-            )}
+          )}
+          {rawSite && (
+            <div className="flex items-start gap-2 sm:col-span-2">
+              <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="text-muted-foreground">Site: {rawSite}</span>
+            </div>
+          )}
+          {!cityState && !rawSite && (auction.location || auction.state) && (
+            <div className="flex items-start gap-2 sm:col-span-2">
+              <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/70" />
+              <span className="text-muted-foreground">
+                {auction.location || auction.state}
+              </span>
+            </div>
+          )}
+          {auction.seller && (
+            <div className="flex items-start gap-2">
+              <User className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/70" />
+              <span className="text-muted-foreground">{auction.seller}</span>
+            </div>
+          )}
+          <div className="flex items-start gap-2">
+            <Calendar className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/70" />
+            <span className="text-muted-foreground">
+              Opens {formatDateTime(auction.opening)}
+            </span>
           </div>
+          <div className="flex items-start gap-2 rounded-[var(--radius-md)] border border-[#ffd1dc] bg-[#fff8fa] px-3 py-2 dark:border-border dark:bg-muted">
+            <Clock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+            <span className="font-medium tabular-nums text-foreground">
+              Closes {formatDateTime(auction.closing)}
+            </span>
+          </div>
+          {formatListedDate(auction) && (
+            <div className="flex items-start gap-2 sm:col-span-2">
+              <CalendarPlus className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="text-muted-foreground">
+                {formatListedDate(auction)}
+              </span>
+            </div>
+          )}
+          {formatImportedDate(auction) && (
+            <div className="flex items-start gap-2 sm:col-span-2">
+              <CalendarPlus className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/70" />
+              <span className="text-footnote text-muted-foreground">
+                {formatImportedDate(auction)}
+              </span>
+            </div>
+          )}
+          {hasInspection(auction) && (
+            <div className="flex items-start gap-2 sm:col-span-2">
+              <Calendar className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/70" />
+              <span className="text-muted-foreground">
+                Inspection:{" "}
+                {formatInspection(
+                  auction.inspection_from,
+                  auction.inspection_to,
+                  auction.inspection,
+                )}
+              </span>
+            </div>
+          )}
+          {auction.emd_summary && (
+            <div className="flex items-start gap-2 rounded-[var(--radius-md)] border border-border bg-muted/50 px-3 py-2 sm:col-span-2">
+              <IndianRupee className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="font-medium text-foreground">
+                {auction.emd_summary}
+              </span>
+            </div>
+          )}
+          {auction.tax_summary && (
+            <div className="text-muted-foreground sm:col-span-2">
+              Taxes: {auction.tax_summary}
+            </div>
+          )}
+          {(docCounts.documents > 0 || docCounts.photos > 0) && (
+            <div className="flex items-center gap-2 sm:col-span-2">
+              <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">
+                {docCounts.documents > 0 &&
+                  `${docCounts.documents} doc${docCounts.documents === 1 ? "" : "s"}`}
+                {docCounts.documents > 0 && docCounts.photos > 0 && " · "}
+                {docCounts.photos > 0 &&
+                  `${docCounts.photos} photo${docCounts.photos === 1 ? "" : "s"}`}
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <a href={localDetailHref} className="btn-secondary">
+            View details
+          </a>
 
           {pdfHref && (
             <a
               href={pdfHref}
               target="_blank"
               rel="noopener noreferrer"
-              className="btn-glass-primary"
+              className="btn-primary"
               onClick={() => trackEvent("pdf_open", { auction_id: auction.id })}
             >
               <FileText className="h-4 w-4" />
@@ -404,39 +537,44 @@ export function AuctionCard({
               href={detailHref}
               target="_blank"
               rel="noopener noreferrer"
-              className="btn-glass inline-flex items-center gap-2"
-              onClick={() => trackEvent("source_open", { auction_id: auction.id, source: auction.source ?? "mstc" })}
+              className="btn-secondary inline-flex items-center gap-2"
+              onClick={() =>
+                trackEvent("source_open", {
+                  auction_id: auction.id,
+                  source: auction.source ?? "mstc",
+                })
+              }
             >
               <ExternalLink className="h-4 w-4" />
               {detailLinkLabel(auction.source)}
             </a>
           )}
+        </div>
 
-          {auction.document_urls && auction.document_urls.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {auction.document_urls.map((url, i) => (
-                <a
-                  key={`${url}-${i}`}
-                  href={url.startsWith("http") ? url : resolvePublicUrl(url)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn-glass inline-flex items-center gap-2 text-xs"
-                >
-                  <FileText className="h-3.5 w-3.5" />
-                  {auction.source === "gem_forward"
-                    ? gemDocumentLabel(url, i, auction.document_urls!.length)
-                    : `Document ${auction.document_urls!.length > 1 ? i + 1 : ""}`.trim()}
-                </a>
-              ))}
-            </div>
-          )}
+        {auction.document_urls && auction.document_urls.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {auction.document_urls.map((url, i) => (
+              <a
+                key={`${url}-${i}`}
+                href={url.startsWith("http") ? url : resolvePublicUrl(url)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn-secondary inline-flex items-center gap-2 text-xs"
+              >
+                <FileText className="h-3.5 w-3.5" />
+                {auction.source === "gem_forward"
+                  ? gemDocumentLabel(url, i, auction.document_urls!.length)
+                  : `Document ${auction.document_urls!.length > 1 ? i + 1 : ""}`.trim()}
+              </a>
+            ))}
+          </div>
+        )}
 
-          <LotPreviewStrip lots={auction.lots} max={3} />
+        <LotPreviewStrip lots={auction.lots} max={3} />
 
-          <AuctionWarnings warnings={auction.warnings} />
-          <LotDetails lots={auction.lots} />
-        </CardContent>
-      </Card>
-    </FadeIn>
+        <AuctionWarnings warnings={auction.warnings} />
+        <LotDetails lots={auction.lots} />
+      </CardContent>
+    </Card>
   );
 }

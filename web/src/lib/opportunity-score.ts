@@ -28,7 +28,10 @@ function hasKnownEmd(auction: AuctionRecord): boolean {
 }
 
 /** Higher = better opportunity signal (valuation unavailable uses quality-only signals). */
-export function opportunityScore(auction: AuctionRecord, nowMs = Date.now()): number {
+export function opportunityScore(
+  auction: AuctionRecord,
+  nowMs = Date.now(),
+): number {
   let score = 0;
   const v = getValuationFields(auction);
 

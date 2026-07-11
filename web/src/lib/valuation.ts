@@ -1,11 +1,7 @@
 import type { AuctionRecord } from "@/types/auction";
 
 export type ValuationStatus =
-  | "unknown"
-  | "under_market"
-  | "fair"
-  | "over_market"
-  | "not_applicable";
+  "unknown" | "under_market" | "fair" | "over_market" | "not_applicable";
 
 export interface ValuationFields {
   material_type?: string | null;

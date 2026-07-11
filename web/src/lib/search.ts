@@ -1,5 +1,5 @@
 import type { AuctionRecord } from "@/types/auction";
-import { displaySearchText } from "@/lib/display-enrichment";
+import { aiSearchText, displaySearchText } from "@/lib/display-enrichment";
 import { queryMatchesSynonym } from "@/lib/search-synonyms";
 
 export const SEARCH_TIER = {
@@ -108,7 +108,8 @@ export function scoreAuctionSearch(
   // Tier 2: any variant starts with query
   for (const v of variants) {
     if (v.startsWith(query)) return SEARCH_TIER.ID_STARTS;
-    if (queryAlnum && alnum(v).startsWith(queryAlnum)) return SEARCH_TIER.ID_STARTS;
+    if (queryAlnum && alnum(v).startsWith(queryAlnum))
+      return SEARCH_TIER.ID_STARTS;
   }
 
   // Tier 3: auction_number full-string contains (MSTC composite numbers)
@@ -120,7 +121,8 @@ export function scoreAuctionSearch(
   // Tier 4: any variant contains query
   for (const v of variants) {
     if (v.includes(query)) return SEARCH_TIER.ID_CONTAINS;
-    if (queryAlnum && alnum(v).includes(queryAlnum)) return SEARCH_TIER.ID_CONTAINS;
+    if (queryAlnum && alnum(v).includes(queryAlnum))
+      return SEARCH_TIER.ID_CONTAINS;
   }
 
   // Tier 5: lot_id exact match
@@ -176,8 +178,11 @@ export function scoreAuctionSearch(
   }
 
   // Tier 12: long description / display enrichment / auction_number tokens fallback
-  const displayBlob = displaySearchText(auction);
-  if (displayBlob.includes(query) || queryMatchesSynonym(displayBlob, rawQuery)) {
+  const displayBlob = `${displaySearchText(auction)} ${aiSearchText(auction)}`.trim();
+  if (
+    displayBlob.includes(query) ||
+    queryMatchesSynonym(displayBlob, rawQuery)
+  ) {
     return SEARCH_TIER.DESCRIPTION;
   }
   if (norm(auction.search_text).includes(query)) return SEARCH_TIER.DESCRIPTION;
@@ -189,7 +194,10 @@ export function scoreAuctionSearch(
   return null;
 }
 
-export function matchesAuctionSearch(auction: AuctionRecord, query: string): boolean {
+export function matchesAuctionSearch(
+  auction: AuctionRecord,
+  query: string,
+): boolean {
   return scoreAuctionSearch(auction, query) !== null;
 }
 

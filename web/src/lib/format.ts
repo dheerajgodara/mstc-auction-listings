@@ -51,7 +51,8 @@ export function formatLotPrice(lot: LotRecord): string {
 
 export function formatPreBidEmd(lot: LotRecord): string {
   if (lot.pre_bid_emd_text?.trim()) return lot.pre_bid_emd_text.trim();
-  if (lot.pre_bid_emd_amount != null) return formatInrOrDash(lot.pre_bid_emd_amount);
+  if (lot.pre_bid_emd_amount != null)
+    return formatInrOrDash(lot.pre_bid_emd_amount);
   return "—";
 }
 
@@ -70,7 +71,10 @@ function hasText(value: string | null | undefined): boolean {
   return Boolean(value && value.trim());
 }
 
-function synthesizeLotSectionText(lot: LotRecord, key: LotSectionKey): string | null {
+function synthesizeLotSectionText(
+  lot: LotRecord,
+  key: LotSectionKey,
+): string | null {
   if (key === "lot_details_text") {
     const lines: string[] = [];
     if (lot.lot_id) lines.push(`Lot No - ${lot.lot_id}`);
@@ -95,26 +99,38 @@ function synthesizeLotSectionText(lot: LotRecord, key: LotSectionKey): string | 
         lot.start_price_text.toUpperCase().includes("PER") ||
         lot.start_price_text.includes("%")
       ) {
-        const m = lot.start_price_text.replace(/^Premium\s*/i, "").replace(/%$/, "").trim();
+        const m = lot.start_price_text
+          .replace(/^Premium\s*/i, "")
+          .replace(/%$/, "")
+          .trim();
         lines.push(`Start Price in PER - ${m}`);
       } else {
         lines.push(`Start Price - ${lot.start_price_text}`);
       }
     } else if (lot.start_price != null) {
-      lines.push(`Start Price in INR - ${formatIndianNumber(Math.trunc(lot.start_price))}`);
+      lines.push(
+        `Start Price in INR - ${formatIndianNumber(Math.trunc(lot.start_price))}`,
+      );
     } else if (lot.start_price_inr != null) {
-      lines.push(`Start Price in INR - ${formatIndianNumber(Math.trunc(lot.start_price_inr))}`);
+      lines.push(
+        `Start Price in INR - ${formatIndianNumber(Math.trunc(lot.start_price_inr))}`,
+      );
     }
     if (lot.bid_increment != null) {
-      lines.push(`Bid Increment in INR - ${formatIndianNumber(lot.bid_increment)}`);
+      lines.push(
+        `Bid Increment in INR - ${formatIndianNumber(lot.bid_increment)}`,
+      );
     }
     if (lot.post_bid_emd_percent != null) {
       lines.push(`Post Bid EMD % - ${lot.post_bid_emd_percent}`);
     }
     if (lot.tcs) lines.push(`TCS (%) - ${lot.tcs}`);
-    if (lot.pre_bid_emd_text) lines.push(`Pre-Bid EMD Amount - ${lot.pre_bid_emd_text}`);
+    if (lot.pre_bid_emd_text)
+      lines.push(`Pre-Bid EMD Amount - ${lot.pre_bid_emd_text}`);
     else if (lot.pre_bid_emd_amount != null) {
-      lines.push(`Pre-Bid EMD Amount - ${formatIndianNumber(lot.pre_bid_emd_amount)}`);
+      lines.push(
+        `Pre-Bid EMD Amount - ${formatIndianNumber(lot.pre_bid_emd_amount)}`,
+      );
     }
     return lines.length ? lines.join("\n") : null;
   }
@@ -124,14 +140,17 @@ function synthesizeLotSectionText(lot: LotRecord, key: LotSectionKey): string | 
     if (lot.gst) lines.push(`GST (%) - ${lot.gst}`);
     if (lot.location) lines.push(`Lot Location - ${lot.location}`);
     if (lot.lot_state) lines.push(`Lot State - ${lot.lot_state}`);
-    if (lot.bid_valid_till) lines.push(`Bid Valid Till - ${lot.bid_valid_till}`);
+    if (lot.bid_valid_till)
+      lines.push(`Bid Valid Till - ${lot.bid_valid_till}`);
     return lines.length ? lines.join("\n") : null;
   }
 
   if (key === "lot_documents_text") {
     const lines: string[] = [];
     if (lot.annexure_file) {
-      lines.push(`Annexure for Lot no ${lot.lot_id || "1"} - ${lot.annexure_file}`);
+      lines.push(
+        `Annexure for Lot no ${lot.lot_id || "1"} - ${lot.annexure_file}`,
+      );
     }
     if (lot.photo_file) {
       lines.push(`Photo for Lot no ${lot.lot_id || "1"} - ${lot.photo_file}`);
@@ -142,7 +161,10 @@ function synthesizeLotSectionText(lot: LotRecord, key: LotSectionKey): string | 
   return null;
 }
 
-export function getLotSectionDisplayText(lot: LotRecord, key: LotSectionKey): string {
+export function getLotSectionDisplayText(
+  lot: LotRecord,
+  key: LotSectionKey,
+): string {
   const raw = lot[key];
   if (hasText(raw)) return raw!.trim();
   const synthesized = synthesizeLotSectionText(lot, key);

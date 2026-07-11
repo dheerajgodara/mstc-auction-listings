@@ -1,9 +1,5 @@
 export type EmdParseStatus =
-  | "auction_wise"
-  | "item_wise"
-  | "not_required"
-  | "missing"
-  | "unknown";
+  "auction_wise" | "item_wise" | "not_required" | "missing" | "unknown";
 
 export type LotDocumentStatus =
   | "pending"
@@ -30,6 +26,16 @@ export interface ContactInfo {
   phones?: string[];
   email?: string | null;
 }
+
+export type AiEnrichmentStatus =
+  | "missing"
+  | "pending"
+  | "ready"
+  | "failed"
+  | "rejected"
+  | "stale";
+
+export type AiConfidence = "high" | "medium" | "low";
 
 export interface LotRecord {
   lot_id: string;
@@ -67,6 +73,18 @@ export interface LotRecord {
   lot_parse_warnings?: string[];
   documents?: LotDocument[];
   preview_images?: string[];
+
+  ai_status?: AiEnrichmentStatus;
+  ai_heading?: string | null;
+  ai_summary?: string | null;
+  ai_tags?: string[];
+  ai_confidence?: AiConfidence | null;
+  ai_model?: string | null;
+  ai_generated_at?: string | null;
+  ai_prompt_version?: string | null;
+  ai_schema_version?: string | null;
+  ai_input_hash?: string | null;
+  ai_rejection_reasons?: string[];
 }
 
 export type AuctionSource = "mstc" | "eauction" | "gem_forward";
@@ -163,6 +181,22 @@ export interface AuctionRecord {
   display_buyer_summary?: string | null;
   display_location_confidence?: "high" | "medium" | "low" | null;
   display_total_quantity_mt?: number | null;
+
+  ai_status?: AiEnrichmentStatus;
+  ai_clean_heading?: string | null;
+  ai_buyer_summary?: string | null;
+  ai_clean_location_label?: string | null;
+  ai_location_confidence?: AiConfidence | null;
+  ai_material_tags?: string[];
+  ai_buyer_intent_tags?: string[];
+  ai_risk_notes?: string[];
+  ai_confidence?: AiConfidence | null;
+  ai_model?: string | null;
+  ai_generated_at?: string | null;
+  ai_prompt_version?: string | null;
+  ai_schema_version?: string | null;
+  ai_input_hash?: string | null;
+  ai_rejection_reasons?: string[];
 }
 
 export interface AuctionsExport {

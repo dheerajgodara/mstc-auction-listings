@@ -1,4 +1,10 @@
+import { canAddWatchlist } from "@/lib/entitlements";
+
 const STORAGE_KEY = "mstc_auction_watchlist_v1";
+
+export type WatchlistToggleResult =
+  | { ok: true; watchlist: Set<string>; added: boolean }
+  | { ok: false; reason: "cap_reached" };
 
 export function loadWatchlist(): Set<string> {
   if (typeof window === "undefined") return new Set();
@@ -22,9 +28,21 @@ export function isWatched(id: string, watchlist?: Set<string>): boolean {
 }
 
 export function toggleWatchlist(id: string): Set<string> {
+  const result = tryToggleWatchlist(id);
+  return result.ok ? result.watchlist : loadWatchlist();
+}
+
+export function tryToggleWatchlist(id: string): WatchlistToggleResult {
   const next = loadWatchlist();
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
+  if (next.has(id)) {
+    next.delete(id);
+    saveWatchlist(next);
+    return { ok: true, watchlist: next, added: false };
+  }
+  if (!canAddWatchlist(next.size)) {
+    return { ok: false, reason: "cap_reached" };
+  }
+  next.add(id);
   saveWatchlist(next);
-  return next;
+  return { ok: true, watchlist: next, added: true };
 }

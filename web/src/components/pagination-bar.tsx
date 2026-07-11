@@ -29,18 +29,18 @@ export function PaginationBar({
   return (
     <div
       className={cn(
-        "flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/60 bg-white/60 px-3 py-2 backdrop-blur-md",
+        "flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-3 py-2 ",
         className,
       )}
     >
-      <p className="text-sm text-slate-600">
+      <p className="text-sm text-muted-foreground">
         {totalItems === 0
           ? "Showing 0 auctions"
           : `Showing ${start}–${end} of ${totalItems} auctions`}
       </p>
 
       <div className="flex flex-wrap items-center gap-2">
-        <label className="flex items-center gap-2 text-xs text-slate-600">
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
           Per page
           <Select
             value={String(pageSize)}
@@ -55,7 +55,7 @@ export function PaginationBar({
           </Select>
         </label>
 
-        <span className="text-xs text-slate-500">
+        <span className="text-xs text-muted-foreground">
           Page {safePage} of {totalPages}
         </span>
 
@@ -63,7 +63,7 @@ export function PaginationBar({
           type="button"
           onClick={() => onPageChange(safePage - 1)}
           disabled={safePage <= 1}
-          className="btn-glass inline-flex h-8 w-8 items-center justify-center p-0 disabled:opacity-40"
+          className="btn-secondary inline-flex h-8 w-8 items-center justify-center p-0 disabled:opacity-40"
           aria-label="Previous page"
         >
           <ChevronLeft className="h-4 w-4" />
@@ -72,7 +72,7 @@ export function PaginationBar({
           type="button"
           onClick={() => onPageChange(safePage + 1)}
           disabled={safePage >= totalPages}
-          className="btn-glass inline-flex h-8 w-8 items-center justify-center p-0 disabled:opacity-40"
+          className="btn-secondary inline-flex h-8 w-8 items-center justify-center p-0 disabled:opacity-40"
           aria-label="Next page"
         >
           <ChevronRight className="h-4 w-4" />

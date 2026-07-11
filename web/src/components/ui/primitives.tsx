@@ -1,18 +1,32 @@
 import { cn } from "@/lib/utils";
 
+export function Button({
+  className,
+  variant = "primary",
+  children,
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: "primary" | "secondary" | "tertiary";
+}) {
+  const variantClass =
+    variant === "primary"
+      ? "btn-primary"
+      : variant === "tertiary"
+        ? "btn-tertiary"
+        : "btn-secondary";
+  return (
+    <button className={cn(variantClass, className)} {...props}>
+      {children}
+    </button>
+  );
+}
+
 export function Input({
   className,
   ...props
 }: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
-    <input
-      className={cn(
-        "glass-input flex h-10 w-full rounded-lg border px-3 py-2 text-sm text-foreground",
-        "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/40",
-        className,
-      )}
-      {...props}
-    />
+    <input className={cn("input-marketplace", className)} {...props} />
   );
 }
 
@@ -23,11 +37,7 @@ export function Select({
 }: React.SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select
-      className={cn(
-        "glass-input flex h-10 rounded-lg border px-3 py-2 text-sm text-foreground",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/40",
-        className,
-      )}
+      className={cn("input-marketplace appearance-none", className)}
       {...props}
     >
       {children}
@@ -45,14 +55,14 @@ export function Badge({
   children: React.ReactNode;
 }) {
   const variants = {
-    default: "bg-cyan-50 text-cyan-900 border-cyan-200/70",
-    secondary: "bg-violet-50 text-violet-800 border-violet-200/70",
-    outline: "bg-white/60 text-foreground border-white/80",
+    default: "bg-muted text-foreground border-border",
+    secondary: "bg-muted text-muted-foreground border-border",
+    outline: "bg-card text-foreground border-border",
   };
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium",
+        "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold",
         variants[variant],
         className,
       )}
@@ -72,7 +82,7 @@ export function Chip({
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide",
+        "inline-flex items-center rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs font-semibold text-muted-foreground",
         className,
       )}
     >
@@ -89,7 +99,14 @@ export function Card({
   children: React.ReactNode;
 }) {
   return (
-    <div className={cn("glass-card overflow-hidden", className)}>{children}</div>
+    <div
+      className={cn(
+        "surface-elevated overflow-hidden transition-shadow duration-hover",
+        className,
+      )}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -100,7 +117,16 @@ export function CardHeader({
   className?: string;
   children: React.ReactNode;
 }) {
-  return <div className={cn("p-4 pb-2", className)}>{children}</div>;
+  return (
+    <div
+      className={cn(
+        "border-b border-border px-[var(--space-20)] py-[var(--space-16)]",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
 }
 
 export function CardContent({
@@ -110,5 +136,26 @@ export function CardContent({
   className?: string;
   children: React.ReactNode;
 }) {
-  return <div className={cn("p-4 pt-2", className)}>{children}</div>;
+  return (
+    <div className={cn("p-[var(--space-20)]", className)}>{children}</div>
+  );
+}
+
+export function Tile({
+  className,
+  children,
+}: {
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-[var(--radius-xl)] border border-border bg-card p-4 shadow-sm transition-shadow hover:shadow-hover",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
 }
