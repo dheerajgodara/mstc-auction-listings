@@ -269,7 +269,7 @@ def _bootstrap_previous_production_from_live(
                     "Pragma": "no-cache",
                 },
             )
-            with urllib.request.urlopen(request, timeout=90) as resp:
+            with urllib.request.urlopen(request, timeout=240) as resp:
                 text = resp.read().decode("utf-8")
             data = _parse_auctions_data_js(text)
             if data is not None:

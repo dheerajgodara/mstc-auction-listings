@@ -89,11 +89,13 @@ jobs:
           from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
 
           warnings = []
-          _bootstrap_previous_production_from_live(
+          ok = _bootstrap_previous_production_from_live(
               production_json=DEFAULT_JSON_OUT,
               base_url=os.environ.get("SITE_BASE_URL") or "https://scrapauctionindia.com/auctions",
               warnings=warnings,
           )
+          if not ok or not DEFAULT_JSON_OUT.is_file():
+              raise SystemExit(f"AI production bootstrap failed: {warnings}")
           data = json.loads(DEFAULT_JSON_OUT.read_text(encoding="utf-8"))
           print({"count": data.get("count"), "warnings": warnings})
           if int(data.get("count") or 0) < 1000:
