@@ -44,16 +44,23 @@ def discover_mstc(
     min_closing = parse_min_closing_date(min_closing_date) if min_closing_date else None
     records: list[AuctionRecord] = []
     office_counts: dict[str, int] = {}
-    for office_meta, auctions in fetch_all_listing_api(office_codes=office_codes or OFFICE_CODES):
+    requested_offices = list(office_codes or OFFICE_CODES)
+    fetched_offices: list[str] = []
+    for office_meta, auctions in fetch_all_listing_api(office_codes=requested_offices):
         office_records = [adapt_mstc_record(listing_to_base(auction, office_meta)) for auction in auctions]
-        office_counts[office_meta.REGION or office_meta.OFFICE] = len(office_records)
+        office_code = office_meta.REGION or office_meta.OFFICE
+        office_counts[office_code] = len(office_records)
+        fetched_offices.append(office_code)
         records.extend(office_records)
     before = len(records)
     records, filter_stats = apply_future_filter(records, min_closing)
     return records, {
         "source": "mstc",
-        "complete": set(office_codes or OFFICE_CODES) == set(OFFICE_CODES),
+        "complete": set(fetched_offices) == set(requested_offices),
         "before_filter": before,
+        "requested_offices": requested_offices,
+        "fetched_offices": fetched_offices,
+        "failed_offices": sorted(set(requested_offices) - set(fetched_offices)),
         "office_counts": office_counts,
         "future_filter": filter_stats,
     }

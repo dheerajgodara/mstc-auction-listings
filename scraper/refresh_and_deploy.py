@@ -87,7 +87,7 @@ class RefreshConfig:
     allow_large_drop: bool = False
     allow_failed_batches: bool = False
     eauction_warn_only: bool = False
-    fallback_sources: list[str] = field(default_factory=lambda: ["eauction"])
+    fallback_sources: list[str] = field(default_factory=lambda: ["mstc", "gem_forward", "eauction"])
     full_reconcile: bool = False
     max_deep_scrape_per_run: int = 25
     repo_root: Path = REPO_ROOT
@@ -405,11 +405,23 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
                 allow_small_output=True,
             )
             discovery_data = _export_to_payload(discovery_export, discovery_path)
+            discovery_data, discovery_fallback_report = apply_missing_source_fallback(
+                discovery_data,
+                previous_export=previous_export,
+                min_closing_date=min_closing_date,
+                fallback_sources=config.fallback_sources,
+            )
+            if discovery_fallback_report.get("applied"):
+                _write_candidate_payload(discovery_path, discovery_data)
+                warnings.append(f"discovery source fallback applied: {discovery_fallback_report.get('sources')}")
             payload["discovery"] = {
                 "duration_sec": round(time.monotonic() - discovery_started, 2),
-                "count": discovery_export.count,
-                "by_source": discovery_export.stats.get("by_source"),
-                "source_stats": discovery_export.stats.get("source_stats"),
+                "raw_count": discovery_export.count,
+                "raw_by_source": discovery_export.stats.get("by_source"),
+                "count": int(discovery_data.get("count", discovery_export.count)),
+                "by_source": discovery_data.get("stats", {}).get("by_source") or discovery_export.stats.get("by_source"),
+                "source_stats": discovery_data.get("stats", {}).get("source_stats") or discovery_export.stats.get("source_stats"),
+                "source_fallback": discovery_fallback_report,
             }
 
             plan_started = time.monotonic()

@@ -56,14 +56,14 @@ def apply_missing_source_fallback(
     *,
     previous_export: dict[str, Any] | None,
     min_closing_date: str,
-    fallback_sources: list[str] | tuple[str, ...] = ("eauction",),
+    fallback_sources: list[str] | tuple[str, ...] = ("mstc", "gem_forward", "eauction"),
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """
-    Carry forward still-future records for source-wide scrape misses.
+    Carry forward still-future records for source-wide or partial source misses.
 
-    This is intentionally narrow: it only fills configured sources when the
-    candidate has zero records for that source and previous production had
-    usable future records. It never overwrites freshly scraped records.
+    It fills configured sources when the candidate has zero records for that
+    source, or when discovery marked the source incomplete because only some
+    offices/pages were reachable. It never overwrites freshly scraped records.
     """
     if not previous_export:
         return candidate, {"applied": False, "sources": {}}
@@ -76,8 +76,11 @@ def apply_missing_source_fallback(
     existing_keys = {stable_auction_key(a) for a in auctions}
     sources_report: dict[str, Any] = {}
 
+    source_stats = (candidate.get("stats") or {}).get("source_stats") or {}
+
     for source in fallback_sources:
-        if current_counts.get(source, 0) > 0:
+        source_incomplete = (source_stats.get(source) or {}).get("complete") is False
+        if current_counts.get(source, 0) > 0 and not source_incomplete:
             continue
         prior_for_source = [a for a in previous_records if (a.get("source") or "mstc") == source]
         future = _future_records(prior_for_source, min_closing_date=min_closing_date)
@@ -88,7 +91,10 @@ def apply_missing_source_fallback(
                 continue
             copy = deepcopy(record)
             warnings = list(copy.get("warnings") or [])
-            note = f"{source} carried forward from previous production; source returned zero records this run"
+            note = (
+                f"{source} carried forward from previous production; "
+                + ("source discovery incomplete this run" if source_incomplete else "source returned zero records this run")
+            )
             if note not in warnings:
                 warnings.append(note)
             copy["warnings"] = warnings
@@ -101,7 +107,7 @@ def apply_missing_source_fallback(
                 "status": "carried_forward",
                 "previous_count": len(prior_for_source),
                 "carried_forward": len(carried),
-                "reason": "candidate source count was zero",
+                "reason": "source discovery incomplete" if source_incomplete else "candidate source count was zero",
             }
 
     if not sources_report:

@@ -50,32 +50,41 @@ def build_work_plan(discovery_export: dict[str, Any], previous_export: dict[str,
     scoped_previous = _filter_previous_to_active_sources(previous_export, active_sources)
     report = compare_exports(discovery_export, scoped_previous, scope="listing")
     discovery_by_key = _discovery_record_index(discovery_export)
-    decisions = [
-        decision
-        for decision in report.decisions
-        if decision.status != "removed" or decision.source in complete_sources
-    ]
-    decision_counts = _decision_counts(decisions, report.counts)
     items: list[WorkPlanItem] = []
     action_counts: Counter[str] = Counter()
     by_source: dict[str, Counter[str]] = defaultdict(Counter)
 
-    for decision in decisions:
-        action = decision_to_action(decision)
+    kept_decisions: list[ChangeDecision] = []
+    for decision in report.decisions:
+        discovery_record = discovery_by_key.get(decision.stable_key)
+        carried_from_fallback = discovery_record is not None and _is_carried_forward_record(discovery_record)
+        if decision.status == "removed" and decision.source not in complete_sources:
+            continue
+        if carried_from_fallback:
+            action: WorkAction = "reuse_previous"
+            decision_label = "unchanged"
+            reasons = sorted(set([*decision.reasons, "source_fallback_carried_forward"]))
+        else:
+            action = decision_to_action(decision)
+            decision_label = decision.status
+            reasons = decision.reasons
+
+        kept_decisions.append(decision.model_copy(update={"status": decision_label, "reasons": reasons}))
         action_counts[action] += 1
         by_source[decision.source][action] += 1
-        by_source[decision.source][decision.status] += 1
+        by_source[decision.source][decision_label] += 1
         items.append(
             WorkPlanItem(
                 stable_key=decision.stable_key,
                 source=decision.source,
                 source_auction_id=decision.source_auction_id,
-                decision=decision.status,
+                decision=decision_label,
                 action=action,
-                reasons=decision.reasons,
-                metadata=_work_item_metadata(discovery_by_key.get(decision.stable_key)),
+                reasons=reasons,
+                metadata=_work_item_metadata(discovery_record),
             )
         )
+    decision_counts = _decision_counts(kept_decisions, report.counts)
 
     return IncrementalWorkPlan(
         generated_at=datetime.now(IST).isoformat(),
@@ -182,6 +191,11 @@ def _work_item_metadata(record: dict[str, Any] | None) -> dict[str, Any]:
         if record.get(key) is not None:
             metadata[key] = record.get(key)
     return metadata
+
+
+def _is_carried_forward_record(record: dict[str, Any]) -> bool:
+    warnings = record.get("warnings") or []
+    return any("carried forward from previous production" in str(w) for w in warnings)
 
 
 def write_action_id_lists(out_dir: Path, plan: IncrementalWorkPlan) -> None:
