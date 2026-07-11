@@ -12,13 +12,13 @@ IST = ZoneInfo("Asia/Kolkata")
 def test_latest_slot_start_uses_ist_slots():
     now = datetime(2026, 7, 10, 18, 44, tzinfo=IST)
     slot = latest_slot_start(now)
-    assert slot == datetime(2026, 7, 10, 18, 30, tzinfo=IST)
+    assert slot == datetime(2026, 7, 10, 18, 40, tzinfo=IST)
 
 
 def test_latest_slot_start_rolls_to_previous_day():
     now = datetime(2026, 7, 10, 0, 12, tzinfo=IST)
     slot = latest_slot_start(now)
-    assert slot == datetime(2026, 7, 9, 21, 30, tzinfo=IST)
+    assert slot == datetime(2026, 7, 10, 0, 0, tzinfo=IST)
 
 
 def test_latest_ai_slot_start_uses_offset_slots():
@@ -71,6 +71,21 @@ def test_schedule_guard_skips_if_slot_is_running():
             "status": "in_progress",
             "conclusion": None,
             "created_at": "2026-07-10T13:00:30Z",
+        }
+    ]
+    skip, reason = should_skip_for_existing_run(runs, current_run_id="222", slot_start=slot)
+    assert skip is True
+    assert "already in_progress" in reason
+
+
+def test_schedule_guard_skips_older_running_run_to_prevent_backlog():
+    slot = datetime(2026, 7, 10, 18, 40, tzinfo=IST)
+    runs = [
+        {
+            "id": 111,
+            "status": "in_progress",
+            "conclusion": None,
+            "created_at": "2026-07-10T12:30:00Z",
         }
     ]
     skip, reason = should_skip_for_existing_run(runs, current_run_id="222", slot_start=slot)

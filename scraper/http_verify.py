@@ -35,27 +35,45 @@ def _http_status(url: str, *, timeout: int = 60) -> tuple[int, bytes]:
         return exc.code, exc.read(500_000) if exc.fp else b""
 
 
-def _pick_sample_urls(candidate_json: Path | None) -> tuple[str | None, str | None]:
+def _asset_exists(output_assets_dir: Path | None, rel_url: str) -> bool:
+    if output_assets_dir is None:
+        return True
+    rel = rel_url.split("?", 1)[0].split("#", 1)[0].lstrip("/")
+    return (output_assets_dir / rel).is_file()
+
+
+def _pick_sample_urls(
+    candidate_json: Path | None,
+    *,
+    output_assets_dir: Path | None = None,
+) -> tuple[str | None, str | None, list[str]]:
     if not candidate_json or not candidate_json.is_file():
-        return None, None
+        return None, None, []
     data = json.loads(candidate_json.read_text(encoding="utf-8"))
     pdf_url = thumb_url = None
+    skipped_missing_assets: list[str] = []
     for auction in data.get("auctions", []):
         if auction.get("source") != "mstc":
             continue
         if not pdf_url and auction.get("pdf_url"):
-            pdf_url = auction["pdf_url"]
+            candidate_pdf = auction["pdf_url"]
+            if _asset_exists(output_assets_dir, candidate_pdf):
+                pdf_url = candidate_pdf
+            else:
+                skipped_missing_assets.append(candidate_pdf)
         for lot in auction.get("lots", []):
             for img in lot.get("preview_images") or []:
                 url = img if isinstance(img, str) else (img.get("url") or img.get("thumbnail_url"))
                 if url and not thumb_url:
-                    thumb_url = url
-                    break
+                    if _asset_exists(output_assets_dir, url):
+                        thumb_url = url
+                        break
+                    skipped_missing_assets.append(url)
             if thumb_url:
                 break
         if pdf_url and thumb_url:
             break
-    return pdf_url, thumb_url
+    return pdf_url, thumb_url, skipped_missing_assets[:10]
 
 
 def verify_live_site(
@@ -63,6 +81,7 @@ def verify_live_site(
     base_url: str | None = None,
     expected_count: int | None = None,
     candidate_json: Path | None = None,
+    output_assets_dir: Path | None = None,
 ) -> HttpVerifyResult:
     errors: list[str] = []
     warnings: list[str] = []
@@ -110,7 +129,15 @@ def verify_live_site(
             elif expected_count is not None:
                 warnings.append(f"could not confirm expected count {expected_count} on live site")
 
-    pdf_rel, thumb_rel = _pick_sample_urls(candidate_json)
+    pdf_rel, thumb_rel, skipped_missing_assets = _pick_sample_urls(
+        candidate_json,
+        output_assets_dir=output_assets_dir,
+    )
+    if skipped_missing_assets:
+        warnings.append(
+            "skipped HTTP sample assets missing from build output: "
+            + ", ".join(skipped_missing_assets)
+        )
     pdf_status = thumb_status = None
     if pdf_rel:
         pdf_url = f"{site}/{pdf_rel.lstrip('/')}"
@@ -127,6 +154,26 @@ def verify_live_site(
         checked["thumb"] = thumb_url
         if thumb_status != 200:
             warnings.append(f"sample thumbnail returned HTTP {thumb_status}: {thumb_url}")
+
+    sitemap_url = f"{site}/sitemap.xml"
+    sitemap_status, sitemap_body = _http_status(sitemap_url)
+    checked["sitemap"] = sitemap_url
+    if sitemap_status != 200:
+        errors.append(f"sitemap returned HTTP {sitemap_status}")
+    else:
+        sitemap_text = sitemap_body.decode("utf-8", errors="replace")
+        if "<urlset" not in sitemap_text:
+            errors.append("sitemap missing urlset root element")
+        if "?q=" in sitemap_text or "?source=" in sitemap_text:
+            errors.append("sitemap contains query-string URLs")
+
+    detail_url = f"{site}/mstc/582972/"
+    detail_status, detail_body = _http_status(detail_url)
+    checked["detail_sample"] = detail_url
+    if detail_status != 200:
+        warnings.append(f"sample detail page returned HTTP {detail_status}: {detail_url}")
+    elif b"<h1" not in detail_body:
+        warnings.append("sample detail page missing H1")
 
     return HttpVerifyResult(
         passed=not errors,

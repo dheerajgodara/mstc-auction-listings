@@ -11,15 +11,10 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 
-TARGET_SLOTS_IST: tuple[tuple[int, int], ...] = (
-    (0, 30),
-    (3, 30),
-    (6, 30),
-    (9, 30),
-    (12, 30),
-    (15, 30),
-    (18, 30),
-    (21, 30),
+TARGET_SLOTS_IST: tuple[tuple[int, int], ...] = tuple(
+    (hour, minute)
+    for hour in range(24)
+    for minute in (0, 20, 40)
 )
 
 
@@ -57,13 +52,18 @@ def should_skip_for_existing_run(
     for run in runs:
         if str(run.get("id")) == str(current_run_id):
             continue
+        status = run.get("status")
+        if status in {"queued", "in_progress"}:
+            return True, f"another run is already {status}: {run.get('id')}"
+
+    for run in runs:
+        if str(run.get("id")) == str(current_run_id):
+            continue
         created_at = parse_github_time(run.get("created_at"))
         if created_at is None or created_at < slot_start_utc:
             continue
-        status = run.get("status")
         conclusion = run.get("conclusion")
-        if status in {"queued", "in_progress"}:
-            return True, f"another run is already {status} for this slot: {run.get('id')}"
+        status = run.get("status")
         if status == "completed" and conclusion == "success":
             return True, f"slot already completed successfully: {run.get('id')}"
     return False, "no successful/running run found for this slot"

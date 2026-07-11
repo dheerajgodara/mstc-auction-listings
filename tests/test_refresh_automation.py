@@ -312,6 +312,29 @@ def test_predeploy_verify_rejects_capped_mstc_only_build(tmp_path: Path):
     assert any("capped MSTC-only" in e for e in result.errors)
 
 
+def test_predeploy_verify_rejects_missing_pdf_reference(tmp_path: Path):
+    out_dir = tmp_path / "out"
+    data_dir = out_dir / "data"
+    pdfs_dir = out_dir / "pdfs"
+    data_dir.mkdir(parents=True)
+    pdfs_dir.mkdir(parents=True)
+    (out_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    records = [_record_dict("590599", source="mstc"), _record_dict("ea-1", source="eauction")]
+    records[0]["pdf_url"] = "pdfs/590599.pdf"
+    _write_export(data_dir / "auctions.json", records)
+
+    result = verify_predeploy_build(
+        out_dir=out_dir,
+        min_count=1,
+        min_closing_date="2026-07-04",
+        require_sources=["mstc", "eauction"],
+        warn_only_sources=["gem_forward"],
+    )
+    assert result.passed is False
+    assert any("PDF links without files" in e for e in result.errors)
+
+
 def test_final_report_generation(tmp_path: Path):
     payload = {
         "run_id": "20260703_120000_IST",
@@ -593,12 +616,12 @@ def test_refresh_uses_incremental_work_plan_by_default(
     assert (repo / "work" / "runs" / result.run_id / "future_full_auctions.json").is_file()
 
 
-def test_refresh_default_deep_scrape_cap_is_400():
+def test_refresh_default_deep_scrape_cap_is_25():
     from scraper.refresh_and_deploy import RefreshConfig, build_parser_for_tests
 
     config = RefreshConfig()
-    assert config.max_deep_scrape_per_run == 400
+    assert config.max_deep_scrape_per_run == 25
 
     parser = build_parser_for_tests()
     args = parser.parse_args([])
-    assert args.max_deep_scrape == 400
+    assert args.max_deep_scrape == 25

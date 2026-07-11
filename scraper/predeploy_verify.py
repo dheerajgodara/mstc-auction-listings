@@ -33,6 +33,13 @@ def _count_files(directory: Path) -> int:
     return sum(1 for p in directory.rglob("*") if p.is_file())
 
 
+def _relative_asset_exists(out_dir: Path, rel_url: str) -> bool:
+    rel = rel_url.split("?", 1)[0].split("#", 1)[0].lstrip("/")
+    if rel.startswith(("http://", "https://")):
+        return True
+    return (out_dir / rel).is_file()
+
+
 def verify_predeploy_build(
     *,
     out_dir: Path,
@@ -102,6 +109,16 @@ def verify_predeploy_build(
                 f"count={count}, by_source={by_source}. "
                 "Use refresh-and-deploy.yml for production."
             )
+
+        missing_pdfs: list[str] = []
+        for auction in auctions:
+            pdf_url = auction.get("pdf_url")
+            if pdf_url and str(pdf_url).startswith("pdfs/") and not _relative_asset_exists(out_dir, str(pdf_url)):
+                missing_pdfs.append(f"{auction.get('id')}:{pdf_url}")
+        if missing_pdfs:
+            sample = ", ".join(missing_pdfs[:10])
+            extra = "" if len(missing_pdfs) <= 10 else f" (+{len(missing_pdfs) - 10} more)"
+            errors.append(f"build has auction PDF links without files: {sample}{extra}")
 
     pdf_count = _count_files(pdfs_dir)
     docs_count = _count_files(docs_dir)

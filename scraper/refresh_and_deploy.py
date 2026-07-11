@@ -89,7 +89,7 @@ class RefreshConfig:
     eauction_warn_only: bool = False
     fallback_sources: list[str] = field(default_factory=lambda: ["eauction"])
     full_reconcile: bool = False
-    max_deep_scrape_per_run: int = 400
+    max_deep_scrape_per_run: int = 25
     repo_root: Path = REPO_ROOT
     lock_path: Path = DEFAULT_LOCK_PATH
 
@@ -670,6 +670,7 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
                 base_url=SITE_BASE_URL or None,
                 expected_count=int(candidate_data.get("count", export.count)),
                 candidate_json=candidate_path,
+                output_assets_dir=out_dir,
             )
             payload["http_verify"] = {
                 "passed": http_result.passed,
@@ -747,7 +748,7 @@ def build_parser_for_tests() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Full refresh pipeline: scrape, QA, promote, build, deploy")
     parser.add_argument("--sources", default="mstc,gem_forward,eauction")
     parser.add_argument("--max-docs-per-run", type=int, default=2000)
-    parser.add_argument("--max-deep-scrape", type=int, default=400)
+    parser.add_argument("--max-deep-scrape", type=int, default=25)
     parser.add_argument("--min-count", type=int, default=1000)
     parser.add_argument("--deploy", action="store_true", help="Deploy to Hostinger after successful build")
     parser.add_argument("--no-deploy", action="store_true", help="Do not deploy (default)")

@@ -2,13 +2,10 @@ name: Refresh and Deploy
 
 on:
   schedule:
-    # Eight daily production refresh slots.
-    # Each slot has target + 10m + 20m backup ticks because GitHub scheduled
-    # events can be delayed or dropped, especially on exact hour boundaries.
-    # scraper.schedule_guard allows only the first successful/running tick per slot.
-    # IST: 00:30, 03:30, 06:30, 09:30, 12:30, 15:30, 18:30, 21:30
-    # UTC target hours: 19, 22, 01, 04, 07, 10, 13, 16
-    - cron: "0,10,20 19,22,1,4,7,10,13,16 * * *"
+    # Production incremental refresh every 20 minutes.
+    # scraper.schedule_guard prevents overlap/backlog: if any previous refresh
+    # is queued or running, this tick exits cleanly.
+    - cron: "*/20 * * * *"
   workflow_dispatch:
     inputs:
       deploy:
@@ -26,7 +23,7 @@ on:
       max_deep_scrape:
         description: "Max auctions to deep scrape in this run"
         required: false
-        default: "400"
+        default: "25"
       full_reconcile:
         description: "Manual catch-up: deep scrape every new/changed/repair listing"
         required: false
@@ -120,7 +117,7 @@ jobs:
           PYTHONPATH=. python -m scraper.refresh_and_deploy \
             --sources mstc,gem_forward,eauction \
             --max-docs-per-run "${{ github.event.inputs.max_docs_per_run || '2000' }}" \
-            --max-deep-scrape "${{ github.event.inputs.max_deep_scrape || '400' }}" \
+            --max-deep-scrape "${{ github.event.inputs.max_deep_scrape || '25' }}" \
             --min-count 1000 \
             --break-stale-lock \
             --warn-missing-eauction \
