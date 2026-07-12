@@ -60,6 +60,27 @@ if (fs.existsSync(checklist)) {
   check("RELEASE_CHECKLIST mentions paywall", body.includes("paywall"));
 }
 
+const requiredLaunchDocs = [
+  "docs/LAUNCH_RUNBOOK.md",
+  "docs/SOFT_LAUNCH_PLAYBOOK.md",
+  "docs/BUYER_FEEDBACK_SOP.md",
+  "docs/LAUNCH_OUTREACH_TEMPLATES.md",
+  "docs/LAUNCH_REPORT_TEMPLATE.md",
+];
+for (const rel of requiredLaunchDocs) {
+  const abs = path.join(repoRoot, rel);
+  check(`${rel} exists (must be committed)`, fs.existsSync(abs), abs);
+}
+
+const outreachPath = path.join(repoRoot, "docs/LAUNCH_OUTREACH_TEMPLATES.md");
+if (fs.existsSync(outreachPath)) {
+  const outreach = fs.readFileSync(outreachPath, "utf8");
+  check(
+    "LAUNCH_OUTREACH_TEMPLATES has docs-only / do-not-automate wording",
+    /docs only|do not auto-send|do not automate/i.test(outreach),
+  );
+}
+
 if (failed > 0) {
   console.error(
     `\n${failed} deploy prerequisite(s) failed. Fix and commit these files before scrape/deploy.`,
