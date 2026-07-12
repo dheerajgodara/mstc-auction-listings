@@ -282,6 +282,7 @@ const paymentDepHits = PAYMENT_SDK_PACKAGES.filter((name) => name in allDeps);
 check("no payment SDK packages in package.json", paymentDepHits.length === 0, paymentDepHits.join(", "));
 
 const envExample = path.join(repoRoot, ".env.example");
+check(".env.example exists", fs.existsSync(envExample), envExample);
 if (fs.existsSync(envExample)) {
   const envBody = fs.readFileSync(envExample, "utf8");
   check(".env.example billing placeholders", envBody.includes("NEXT_PUBLIC_BILLING_CHECKOUT_ENABLED"));
@@ -291,6 +292,9 @@ if (fs.existsSync(envExample)) {
     ".env.example no NEXT_PUBLIC secret placeholders",
     !/^NEXT_PUBLIC_.*SECRET/m.test(envBody),
   );
+} else {
+  check(".env.example billing placeholders", false, "file missing from repo checkout");
+  check(".env.example demo mode placeholder", false, "file missing from repo checkout");
 }
 
 check("upgrade prompt component exists", fs.existsSync(path.join(srcDir, "components", "upgrade-prompt.tsx")));
@@ -317,6 +321,7 @@ check(
 
 const gateHits = [
   entSrc.includes("watchlist_add"),
+
   entSrc.includes("saved_search_save"),
   entSrc.includes("filter_geo_radius"),
   readSrc("components/filter-drawer.tsx").includes("gateFeature"),
@@ -325,7 +330,7 @@ const gateHits = [
 check("gated workflows wired", gateHits);
 
 const runbook = path.join(repoRoot, "docs", "PAYWALL_RUNBOOK.md");
-check("PAYWALL_RUNBOOK.md exists", fs.existsSync(runbook));
+check("PAYWALL_RUNBOOK.md exists", fs.existsSync(runbook), "must be committed at docs/PAYWALL_RUNBOOK.md");
 if (fs.existsSync(runbook)) {
   const runbookBody = fs.readFileSync(runbook, "utf8");
   check("runbook documents provider evaluation", /Razorpay|Stripe|Cashfree|Instamojo/i.test(runbookBody));

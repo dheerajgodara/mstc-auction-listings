@@ -63,6 +63,18 @@ logger = logging.getLogger("scraper.refresh_and_deploy")
 MAX_DISCOVERY_DROP_PCT = 0.40
 
 
+def _subprocess_fail_summary(output: dict[str, Any], *, limit: int = 800) -> str:
+    """Prefer FAIL lines from stdout (verify scripts print there); fall back to stderr."""
+    stdout = str(output.get("stdout_tail") or "")
+    stderr = str(output.get("stderr_tail") or "")
+    fail_lines = [line.strip() for line in stdout.splitlines() if "FAIL" in line]
+    if fail_lines:
+        summary = "; ".join(fail_lines[:8])
+        return summary[:limit]
+    combined = (stderr or stdout).strip()
+    return combined[-limit:] if combined else "(no output captured)"
+
+
 class SubprocessStepError(RuntimeError):
     """Raised when a build/verify subprocess fails; carries captured output for reports."""
 
@@ -70,7 +82,8 @@ class SubprocessStepError(RuntimeError):
         self.step = step
         self.returncode = returncode
         self.output = output
-        super().__init__(f"{step} failed (exit {returncode})")
+        detail = _subprocess_fail_summary(output)
+        super().__init__(f"{step} failed (exit {returncode}); {detail}")
 
 
 def _repo_path(repo_root: Path, default_path: Path) -> Path:
@@ -801,11 +814,7 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
     except Exception as exc:
         logger.exception("refresh_and_deploy failed: %s", exc)
         if isinstance(exc, SubprocessStepError):
-            detail = (
-                f"{exc.step} failed (exit {exc.returncode}); "
-                f"stderr={(exc.output.get('stderr_tail') or '')[-800:]}"
-            )
-            errors.append(detail)
+            errors.append(str(exc))
             payload.setdefault("build", {})
             if not payload.get("build"):
                 payload["build"] = {

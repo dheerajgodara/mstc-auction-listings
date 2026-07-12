@@ -82,6 +82,12 @@ jobs:
         working-directory: web
         run: pnpm install --frozen-lockfile || pnpm install
 
+      # Fail in seconds (missing .env.example / PAYWALL_RUNBOOK) before a long scrape.
+      - name: Verify deploy prerequisites
+        if: env.REFRESH_SHOULD_RUN != 'false'
+        working-directory: web
+        run: pnpm run verify-deploy-prereqs
+
       - name: Configure SSH key
         if: env.REFRESH_SHOULD_RUN != 'false'
         run: |
