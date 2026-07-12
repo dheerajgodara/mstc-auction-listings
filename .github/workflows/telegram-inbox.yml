@@ -1,0 +1,55 @@
+name: Telegram Inbox Poll
+
+# Fetches new messages from the ops Telegram chat (same bot/chat as status pings).
+# Messages starting with "Deep" are treated as operator instructions for the batch supervisor.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore inbox offset
+        uses: actions/cache@v4
+        with:
+          path: work/telegram_inbox_offset.json
+          key: telegram-inbox-offset-v1
+          restore-keys: |
+            telegram-inbox-offset-v1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Poll Telegram inbox
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          mkdir -p work
+          PYTHONPATH=. python -m scraper.telegram_inbox \
+            --offset-path work/telegram_inbox_offset.json \
+            --out work/telegram_inbox.json
+
+      - name: Upload inbox
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-inbox
+          path: |
+            work/telegram_inbox.json
+            work/telegram_inbox_offset.json
+          retention-days: 7
+
+      - name: Save inbox offset for next poll
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: work/telegram_inbox_offset.json
+          # Unique key each run; next poll restores via restore-keys prefix.
+          key: telegram-inbox-offset-v1-${{ github.run_id }}
