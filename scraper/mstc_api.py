@@ -44,23 +44,67 @@ def _session() -> requests.Session:
     return s
 
 
-def fetch_office_auctions(office_code: str, session: requests.Session | None = None) -> ListingApiOfficeResponse:
-    """Fetch auctions for a single regional office."""
+def fetch_office_auctions(
+    office_code: str,
+    session: requests.Session | None = None,
+    *,
+    attempts: int = 4,
+    timeout: float | tuple[float, float] = (10, 60),
+) -> ListingApiOfficeResponse:
+    """Fetch auctions for a single regional office.
+
+    Retries transient network timeouts/connection errors with backoff — GitHub
+    Actions runners often see intermittent ReadTimeout against mstcindia.co.in.
+    """
     sess = session or _session()
     url = f"{MSTC_BASE_URL}{LISTING_API_PATH.format(office=office_code)}"
-    resp = sess.get(url, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    data = resp.json()
-    if not isinstance(data, list) or not data:
-        raise ValueError(f"Unexpected API response for office {office_code}")
-    payload: dict[str, Any] = data[0]
-    auctions = [ListingApiAuction.model_validate(a) for a in payload.get("auction", [])]
-    return ListingApiOfficeResponse(
-        MSG=payload.get("MSG", ""),
-        OFFICE=payload.get("OFFICE", office_code),
-        REGION=payload.get("REGION", office_code),
-        auction=auctions,
-    )
+    last_exc: Exception | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            resp = sess.get(url, timeout=timeout if timeout is not None else REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, list) or not data:
+                raise ValueError(f"Unexpected API response for office {office_code}")
+            payload: dict[str, Any] = data[0]
+            auctions = [ListingApiAuction.model_validate(a) for a in payload.get("auction", [])]
+            return ListingApiOfficeResponse(
+                MSG=payload.get("MSG", ""),
+                OFFICE=payload.get("OFFICE", office_code),
+                REGION=payload.get("REGION", office_code),
+                auction=auctions,
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            last_exc = exc
+            if attempt >= attempts:
+                break
+            delay = min(2 ** attempt, 20) + (attempt * 0.5)
+            logger.warning(
+                "MSTC office %s attempt %d/%d failed (%s); retrying in %.1fs",
+                office_code,
+                attempt,
+                attempts,
+                type(exc).__name__,
+                delay,
+            )
+            time.sleep(delay)
+        except requests.exceptions.HTTPError as exc:
+            last_exc = exc
+            status = getattr(exc.response, "status_code", None)
+            if status is None or status < 500 or attempt >= attempts:
+                raise
+            delay = min(2 ** attempt, 20)
+            logger.warning(
+                "MSTC office %s HTTP %s on attempt %d/%d; retrying in %.1fs",
+                office_code,
+                status,
+                attempt,
+                attempts,
+                delay,
+            )
+            time.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
 
 
 def fetch_all_listing_api(
