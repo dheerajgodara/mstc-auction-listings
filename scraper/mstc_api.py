@@ -48,8 +48,8 @@ def fetch_office_auctions(
     office_code: str,
     session: requests.Session | None = None,
     *,
-    attempts: int = 4,
-    timeout: float | tuple[float, float] = (10, 60),
+    attempts: int = 5,
+    timeout: float | tuple[float, float] = (15, 90),
 ) -> ListingApiOfficeResponse:
     """Fetch auctions for a single regional office.
 

@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ from scraper.adapters.gem_forward_adapter import adapt_gem_forward_auction
 from scraper.adapters.mstc_adapter import adapt_mstc_record
 from scraper.batch_manifest import (
     BATCH_STATUS_DONE,
+    BATCH_STATUS_FAILED,
     BATCH_STATUS_SKIPPED,
     BatchManifest,
 )
@@ -367,6 +369,41 @@ def batch_run(
                 docs_remaining = max(0, docs_remaining - attempted)
                 manifest.data["docs_budget_remaining"] = docs_remaining
                 manifest.save()
+
+        # One more pass for offices that failed on transient MSTC timeouts.
+        failed_offices = [
+            office
+            for office in offices_to_run
+            if (manifest.get_batch(f"mstc_{office}") or {}).get("status") == BATCH_STATUS_FAILED
+        ]
+        if failed_offices:
+            logger.warning("Retrying failed MSTC offices once: %s", ", ".join(failed_offices))
+            time.sleep(5)
+            for office in failed_offices:
+                used = run_mstc_office_batch(
+                    office=office,
+                    batch_dir=batch_dir,
+                    manifest=manifest,
+                    pdf_dir=pdf_dir,
+                    docs_dir=docs_dir,
+                    thumbs_dir=thumbs_dir,
+                    min_closing_date=min_closing_date,
+                    max_docs_per_run=docs_remaining,
+                    force=True,
+                    skip_docs=skip_docs,
+                    include_auction_ids=(
+                        mstc_ids_by_office.get(office) or deep_parse_ids.get("mstc")
+                        if work_plan_path
+                        else None
+                    ),
+                )
+                if used:
+                    batch = manifest.get_batch(f"mstc_{office}") or {}
+                    docs = batch.get("documents") or {}
+                    attempted = docs.get("attempted", 0)
+                    docs_remaining = max(0, docs_remaining - attempted)
+                    manifest.data["docs_budget_remaining"] = docs_remaining
+                    manifest.save()
 
     if "gem_forward" in sources:
         if not (resume and _batch_done(manifest, GEM_BATCH_ID, batch_dir, force=force)):

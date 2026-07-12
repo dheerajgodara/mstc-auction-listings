@@ -544,8 +544,17 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             "docs_budget_remaining": manifest.data.get("docs_budget_remaining"),
         }
         send_telegram_report(payload, event="deep_scrape_done")
-        if failed_batch_groups["mstc"] and not config.allow_failed_batches:
+        # Incremental drains already fall back via materialize + previous/discovery.
+        # Hard-failing the whole run for one flaky MSTC office (common ReadTimeout)
+        # blocks deploy of every successful deep-parse in the 200-cap batch.
+        allow_failed_batches = config.allow_failed_batches or bool(work_plan_path)
+        if failed_batch_groups["mstc"] and not allow_failed_batches:
             raise RuntimeError(f"MSTC batch scrape had failures: {', '.join(failed_batch_groups['mstc'])}")
+        if failed_batch_groups["mstc"] and allow_failed_batches:
+            warnings.append(
+                "MSTC batch scrape had failures; continuing with previous/discovery fallback: "
+                + ", ".join(failed_batch_groups["mstc"])
+            )
         if failed_batch_groups["non_mstc"]:
             warnings.append(
                 "non-MSTC batch scrape failed; continuing with previous/discovery fallback: "
@@ -651,7 +660,7 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             min_count=config.min_count,
             min_closing_date=min_closing_date,
             allow_large_drop=config.allow_large_drop,
-            allow_failed_batches=config.allow_failed_batches,
+            allow_failed_batches=allow_failed_batches,
             eauction_warn_only=config.eauction_warn_only,
             production_json=production_json,
         )
