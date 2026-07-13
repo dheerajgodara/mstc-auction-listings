@@ -11,15 +11,12 @@ from scraper.schedule_guard import fetch_workflow_runs, parse_github_time, shoul
 
 IST = ZoneInfo("Asia/Kolkata")
 
+# ~1h after each scrape slot (00/06/12/18 IST) with equal 6h spacing.
 AI_TARGET_SLOTS_IST: tuple[tuple[int, int], ...] = (
     (1, 5),
-    (4, 5),
     (7, 5),
-    (10, 5),
     (13, 5),
-    (16, 5),
     (19, 5),
-    (22, 5),
 )
 
 

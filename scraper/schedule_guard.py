@@ -11,8 +11,12 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 
-TARGET_SLOTS_IST: tuple[tuple[int, int], ...] = tuple(
-    (hour, 0) for hour in range(24)
+# Steady-state 4×/day at equal 6h IST intervals.
+TARGET_SLOTS_IST: tuple[tuple[int, int], ...] = (
+    (0, 0),
+    (6, 0),
+    (12, 0),
+    (18, 0),
 )
 
 

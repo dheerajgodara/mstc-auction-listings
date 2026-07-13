@@ -12,11 +12,18 @@ Use **only** this workflow for scheduled and production deploys:
 
 - **File:** `.github/workflows/refresh-and-deploy.yml`
 - **Pipeline:** `scraper.refresh_and_deploy --sources mstc,gem_forward,eauction`
-- **Schedule:** `30 * * * *` UTC (= hourly at :00 IST); `scraper.schedule_guard` skips overlapping ticks
-- **Deep scrape cap:** default `200` per run (catch-up mode; `workflow_dispatch` can override)
+- **Schedule:** `30 0,6,12,18 * * *` UTC (= **00:00 / 06:00 / 12:00 / 18:00 IST**, equal 6h); `scraper.schedule_guard` skips overlapping ticks
+- **Deep scrape cap:** default `75` per scheduled run (steady-state); `workflow_dispatch` can raise (e.g. `200`) for catch-up
 - **Safety gates:** min count 1000, multi-source required, capped MSTC-only guard, large-drop protection
 - **Assets:** CI bootstraps Hostinger `pdfs/`, `docs/`, `thumbs/` before build; deploy rsync protects those dirs from `--delete`
-- **Catch-up ETA:** ~900 pending ÷ 200 ≈ **5 hourly runs (~5 hours)** at light inflow; expect ~35–50 min per run
+- **Steady-state:** queue backlog drained; expect light incremental inflow per slot (~30–50 min/run typical)
+
+## AI enrichment (scheduled)
+
+- **File:** `.github/workflows/ai-enrichment.yml`
+- **Schedule:** `35,45,55 19,1,7,13 * * *` UTC (= **01:05 / 07:05 / 13:05 / 19:05 IST**, ~1h after each scrape slot; +10m/+20m backup ticks)
+- **Defaults:** `--limit 50`, `--daily-budget 300`
+- **Guard:** `scraper.ai_schedule_guard` — one successful/running tick per slot
 
 ## Legacy workflow (manual diagnostic only)
 

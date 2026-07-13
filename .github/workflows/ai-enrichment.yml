@@ -2,24 +2,23 @@ name: AI Enrichment Trial
 
 on:
   schedule:
-    # Eight small AI enrichment passes per day, offset after scraper slots.
+    # Four AI enrichment passes per day, ~1h after scrape slots (00/06/12/18 IST).
     # Each slot has target + 10m + 20m backup ticks because GitHub scheduled
     # events can be delayed or dropped. scraper.ai_schedule_guard allows only
     # the first successful/running tick per slot.
-    # IST: 01:05/15/25, 04:05/15/25, 07:05/15/25, 10:05/15/25,
-    #      13:05/15/25, 16:05/15/25, 19:05/15/25, 22:05/15/25
-    # UTC minutes: :35/:45/:55 for hours 19,22,01,04,07,10,13,16
-    - cron: "35,45,55 19,22,1,4,7,10,13,16 * * *"
+    # IST: 01:05/15/25, 07:05/15/25, 13:05/15/25, 19:05/15/25
+    # UTC: 19:35/45/55, 01:35/45/55, 07:35/45/55, 13:35/45/55
+    - cron: "35,45,55 19,1,7,13 * * *"
   workflow_dispatch:
     inputs:
       limit:
         description: "Number of priority listings to enrich"
         required: false
-        default: "100"
+        default: "50"
       daily_budget:
         description: "Max OpenRouter provider calls per IST day"
         required: false
-        default: "900"
+        default: "300"
       allow_network:
         description: "Use live OpenRouter calls"
         required: false
@@ -119,8 +118,8 @@ jobs:
           AI_SLOT_IST: ${{ env.AI_SLOT_IST }}
         run: |
           mkdir -p work/ai-enrichment
-          LIMIT="${{ github.event.inputs.limit || '100' }}"
-          DAILY_BUDGET="${{ github.event.inputs.daily_budget || '900' }}"
+          LIMIT="${{ github.event.inputs.limit || '50' }}"
+          DAILY_BUDGET="${{ github.event.inputs.daily_budget || '300' }}"
           ALLOW_NETWORK="${{ github.event.inputs.allow_network || 'true' }}"
           NETWORK_FLAG=""
           if [ "$ALLOW_NETWORK" = "true" ]; then

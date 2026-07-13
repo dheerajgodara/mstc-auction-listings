@@ -2,9 +2,9 @@ name: Refresh and Deploy
 
 on:
   schedule:
-    # Catch-up cadence: hourly at :00 IST (30 * * * * UTC).
-    # schedule_guard skips if a prior run is still queued/running.
-    - cron: "30 * * * *"
+    # Steady-state: 4×/day at equal 6h IST slots 00:00, 06:00, 12:00, 18:00
+    # (= 30 0,6,12,18 * * * UTC). schedule_guard skips overlapping ticks.
+    - cron: "30 0,6,12,18 * * *"
   workflow_dispatch:
     inputs:
       deploy:
@@ -20,9 +20,9 @@ on:
         required: false
         default: "2000"
       max_deep_scrape:
-        description: "Max auctions to deep scrape in this run"
+        description: "Max auctions to deep scrape in this run (75 steady-state; raise for catch-up)"
         required: false
-        default: "200"
+        default: "75"
       full_reconcile:
         description: "Manual catch-up: deep scrape every new/changed/repair listing"
         required: false
@@ -122,7 +122,7 @@ jobs:
           PYTHONPATH=. python -m scraper.refresh_and_deploy \
             --sources mstc,gem_forward,eauction \
             --max-docs-per-run "${{ github.event.inputs.max_docs_per_run || '2000' }}" \
-            --max-deep-scrape "${{ github.event.inputs.max_deep_scrape || '200' }}" \
+            --max-deep-scrape "${{ github.event.inputs.max_deep_scrape || '75' }}" \
             --min-count 1000 \
             --break-stale-lock \
             --warn-missing-eauction \
