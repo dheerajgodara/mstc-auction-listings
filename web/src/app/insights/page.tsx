@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import { InsightsPageApp } from "@/components/insights-page-app";
 import { NOINDEX_METADATA } from "@/lib/seo/robots-meta";
 export const metadata: Metadata = {
-  title: "Market insights",
-  description: "Auction volume pulse by material, city, and source.",
+  title: "Catalog pulse",
+  description: "Ops-only export volume and document completeness pulse.",
   ...NOINDEX_METADATA,
 };
 export default function InsightsPage() {

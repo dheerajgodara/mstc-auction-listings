@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Activity,
-  BarChart3,
   Bookmark,
   Compass,
   CreditCard,
@@ -58,7 +57,6 @@ const NAV = [
   { href: "", label: "Discover", icon: Compass },
   { href: "hub/material/ferrous_scrap/", label: "Materials", icon: Layers },
   { href: "hub/region/ncr/", label: "Regions", icon: MapPin },
-  { href: "insights/", label: "Insights", icon: BarChart3 },
   { href: "watchlist/", label: "Watchlist", icon: Star },
   { href: "pricing/", label: "Pricing", icon: CreditCard },
   { href: "app/", label: "App", icon: Smartphone },

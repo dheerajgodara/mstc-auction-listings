@@ -363,6 +363,12 @@ export function StatusPageApp() {
           (noindex) — machine-checkable gates for staged launch. Linked here for ops only, not
           buyer marketing.
         </p>
+        <p>
+          <a href={resolvePublicUrl("insights/")} className="link-action">
+            Catalog pulse
+          </a>{" "}
+          (noindex) — export volume / doc completeness for ops. Kept off primary nav.
+        </p>
       </section>
 
       <section className="space-y-2 rounded-xl border border-border bg-muted p-4 text-body-sm text-foreground">

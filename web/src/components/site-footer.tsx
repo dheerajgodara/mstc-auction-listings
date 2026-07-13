@@ -28,7 +28,6 @@ const FOOTER_SECTIONS = [
     links: [
       { href: "watchlist/", label: "Watchlist" },
       { href: "map/", label: "Map" },
-      { href: "insights/", label: "Insights" },
       { href: "saved/", label: "Saved searches" },
       { href: "app/", label: "Install app" },
     ],

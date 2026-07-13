@@ -1,5 +1,4 @@
 "use client";
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { AuctionDiscoveryView } from "@/components/auction-discovery-view";
@@ -11,7 +10,6 @@ import {
   materialCategoryLabel,
 } from "@/lib/display-enrichment";
 import { loadAuctionsExport } from "@/lib/load-auctions";
-import { resolveAppPath, resolvePublicUrl } from "@/lib/utils";
 import type { AuctionRecord } from "@/types/auction";
 
 export function MaterialHubApp({ materialId }: { materialId: string }) {
@@ -37,12 +35,6 @@ export function MaterialHubApp({ materialId }: { materialId: string }) {
     <AppShell>
       <main className="py-section">
         <div className="container-marketplace mb-4 space-y-2">
-          <Link
-            href={resolveAppPath("insights/")}
-            className="text-body-sm link-action"
-          >
-            Learn more — Insights
-          </Link>
           <h1 className="text-display text-foreground">{label}</h1>
           <p className="text-body text-muted-foreground">
             {filtered.length} auctions with this material category.

@@ -59,11 +59,11 @@ export function InsightsPageApp() {
         {" "}
         <div>
           {" "}
-          <h1 className="text-display text-foreground">Market insights</h1>{" "}
-          <p className="text-body-sm">
-            {" "}
-            Client-computed pulse from the current export{" "}
-            {data.generated_at ? ` · ${data.generated_at}` : ""}.{" "}
+          <h1 className="text-display text-foreground">Catalog pulse</h1>{" "}
+          <p className="text-body-sm text-muted-foreground">
+            Ops-only view of the current export
+            {data.generated_at ? ` · ${data.generated_at}` : ""}. Not shown in
+            primary navigation.
           </p>{" "}
         </div>{" "}
         {loading ? (
