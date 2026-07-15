@@ -14,7 +14,6 @@ import {
   MIN_LANDING_VISIBLE_TEXT,
   NOINDEX_UTILITY_PAGES,
   OFFICIAL_CLAIM_PATTERNS,
-  REGRESSION_DETAIL_PAGES,
   SITE_ROOT,
   STAGING_DOMAIN_MARKERS,
   classifySitemapUrl,
@@ -32,10 +31,13 @@ import {
   outDir,
   readHtml,
   readRootIndex,
+  resolveRegressionDetailPages,
   sitemapUrlViolations,
   sitemapUrlsFromXml,
   visibleTextLength,
 } from "./seo-lib.mjs";
+
+const REGRESSION_DETAIL_PAGES = resolveRegressionDetailPages(2);
 
 const TITLE_MIN = 20;
 const TITLE_MAX = 70;
