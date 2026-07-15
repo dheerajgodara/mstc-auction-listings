@@ -29,7 +29,7 @@ from scraper.discovery import run_discovery
 from scraper.document_cache import process_auction_documents
 from scraper.export_guard import write_auctions_json
 from scraper.filters import make_run_id, tomorrow_min_closing_date
-from scraper.import_tracking import finalize_export_payload
+from scraper.import_tracking import finalize_export_payload, stable_auction_key
 from scraper.incremental import load_export
 from scraper.incremental_materialize import materialize_incremental_export
 from scraper.incremental_plan import build_work_plan
@@ -188,6 +188,9 @@ def run_pipeline_parse(
         )
         discovery_data = json.loads(discovery_path.read_text(encoding="utf-8"))
         plan = build_work_plan(discovery_data, previous_export)
+        discovery_by_key = {
+            stable_auction_key(a): a for a in (discovery_data.get("auctions") or [])
+        }
 
         ledger = load_ledger(ledger_path)
         selected = select_for_parse(ledger, limit=max_parse)
@@ -203,13 +206,22 @@ def run_pipeline_parse(
             "pdf_cache_hits": 0,
             "lots_parsed": 0,
             "pdf_failed_ids": [],
+            "documents": {},
         }
         ok_count = fail_count = 0
+        session = __import__("requests").Session()
 
         for item in selected:
             try:
                 if item.source == "mstc":
-                    base, _ = resolve_auction_listing(item.source_auction_id)
+                    disc = discovery_by_key.get(item.stable_key)
+                    if disc:
+                        try:
+                            base = AuctionRecord.model_validate(disc)
+                        except Exception:
+                            base = resolve_auction_listing(item.source_auction_id)[0]
+                    else:
+                        base = resolve_auction_listing(item.source_auction_id)[0]
                     base.source = "mstc"
                     record = enrich_auction(
                         base,
@@ -219,26 +231,22 @@ def run_pipeline_parse(
                         mode="parse_only",
                         raw_dir=raw_dir,
                     )
-                    record, _ = process_auction_documents(
-                        record,
-                        docs_dir=docs_dir,
-                        thumbs_dir=thumbs_dir,
-                        skip_docs=False,
-                        max_docs_remaining=50,
-                        session=__import__("requests").Session(),
-                        stats=stats,
-                    )
+                    if record.lots:
+                        record, _ = process_auction_documents(
+                            record,
+                            docs_dir=docs_dir,
+                            thumbs_dir=thumbs_dir,
+                            skip_docs=False,
+                            max_docs_remaining=20,
+                            session=session,
+                            stats=stats,
+                        )
                 else:
                     record = _enrich_non_mstc(item.source, item.source_auction_id)
                     if record is None:
                         raise RuntimeError(f"could not enrich {item.stable_key}")
 
-                ready = record.status in (ExtractionStatus.COMPLETE, ExtractionStatus.PARTIAL) and bool(
-                    record.lots or record.pdf_url
-                )
-                # MSTC complete enough if lots present OR status complete/partial
-                if item.source == "mstc":
-                    ready = record.status != ExtractionStatus.FAILED
+                ready = record.status != ExtractionStatus.FAILED
                 mark_parse(ledger, item.stable_key, ok=True, deploy_ready=ready)
                 parsed_records.append(record)
                 ok_count += 1
