@@ -71,8 +71,12 @@ if (fs.existsSync(sitemapPath)) {
   );
   pass("sitemap includes MSTC detail URLs", bySource.mstc > 50, String(bySource.mstc));
   pass("sitemap includes GeM Forward detail URLs", bySource["gem-forward"] >= 1, String(bySource["gem-forward"]));
-  pass("sitemap includes eAuction detail URLs", bySource.eauction >= 1, String(bySource.eauction));
-
+  // eAuction is flaky / often empty after midnight IST (pipeline eauction_warn_only).
+  if (bySource.eauction >= 1) {
+    pass("sitemap includes eAuction detail URLs", true, String(bySource.eauction));
+  } else {
+    warn("sitemap eAuction detail URLs empty (warn-only)", String(bySource.eauction));
+  }
   pass("sitemap excludes noindex utility URLs", forbiddenHits.filter((h) => h.violations.some((v) => v.type === "utility")).length === 0,
     forbiddenHits.length ? forbiddenHits.slice(0, 3).map((h) => h.loc).join(", ") : "");
   pass("sitemap excludes raw asset paths", forbiddenHits.filter((h) => h.violations.some((v) => v.type === "asset")).length === 0);
