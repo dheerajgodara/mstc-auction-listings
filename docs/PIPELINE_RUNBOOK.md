@@ -76,6 +76,8 @@ gh workflow run pipeline-drain.yml -f max_parse=100 -f max_cycles=25
 
 No raw HTML download stage. Discovery during download marks them parse-ready; drain parse live-enriches in batches; deploy publishes with MSTC.
 
+**Empty eAuction after midnight is warn-only.** When there are no future-closing eAuction rows, parse may still promote (with source fallback for any still-valid previous rows). Deploy predeploy, sitemap, and launch-readiness must **not** hard-fail on zero eAuction — only MSTC is required. Drain continues.
+
 ## Manual triggers
 
 ```bash

@@ -165,9 +165,10 @@ function evaluateDataGates(exportData, routesData) {
     gate(
       "source_eauction",
       "eAuction source present",
-      sourceCounts.eauction > 0 ? "pass" : "fail",
+      sourceCounts.eauction > 0 ? "pass" : "warn",
       `${sourceCounts.eauction} auctions`,
-      { blocker: sourceCounts.eauction === 0 },
+      // Empty eAuction is normal after midnight IST (pipeline eauction_warn_only).
+      { blocker: false },
     ),
     gate(
       "no_capped_mstc_only",

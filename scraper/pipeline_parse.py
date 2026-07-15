@@ -61,6 +61,7 @@ from scraper.raw_store import _hostinger_ssh_config, _ssh_cmd, pull_raw_files
 from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
 from scraper.safety_gates import SafetyGateConfig, run_safety_gates
+from scraper.source_fallback import apply_missing_source_fallback
 from scraper.telegram_reporter import send_telegram_report
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_parse")
@@ -364,6 +365,26 @@ def run_pipeline_parse(
         if strip_result.dropped:
             _phase(f"hygiene: stripped {len(strip_result.dropped)} aged-out")
 
+        # Recover still-future gem/eauction from previous when discovery wiped them.
+        candidate, fallback_report = apply_missing_source_fallback(
+            candidate,
+            previous_export=previous_export,
+            min_closing_date=min_closing,
+            fallback_sources=["eauction", "gem_forward"],
+        )
+        payload["source_fallback"] = fallback_report
+        if fallback_report.get("applied"):
+            warnings.append(f"source fallback applied: {fallback_report.get('sources')}")
+            _phase(f"source fallback applied: {fallback_report.get('sources')}")
+            if q_keys:
+                q_result = apply_quarantine_skips(candidate, q_keys, min_count=min_count)
+                candidate = q_result.export
+                warnings.extend(q_result.warnings)
+            strip_after_fb = strip_aged_out_auctions(candidate, min_closing_date=min_closing)
+            candidate = strip_after_fb.export
+            hygiene_dropped.extend(strip_after_fb.dropped)
+            warnings.extend(strip_after_fb.warnings)
+
         candidate["stats"] = dict(candidate.get("stats") or {})
         candidate["stats"]["pipeline_parse"] = {
             "ok": ok_count,
@@ -383,8 +404,8 @@ def run_pipeline_parse(
             min_closing_date=min_closing,
             eauction_warn_only=True,
             production_json=production_json,
-            require_sources=("mstc", "eauction"),
-            warn_only_sources=("gem_forward",),
+            require_sources=("mstc",),
+            warn_only_sources=("gem_forward", "eauction"),
         )
 
         def _run_gates():

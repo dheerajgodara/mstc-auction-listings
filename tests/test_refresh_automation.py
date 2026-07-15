@@ -289,6 +289,32 @@ def test_refresh_classifies_failed_batches_by_source():
     assert result["all"] == ["mstc_JPR", "gem_forward_latest", "eauction_latest"]
 
 
+def test_predeploy_verify_empty_eauction_is_warn_only(tmp_path: Path):
+    """Pipeline deploy policy: MSTC required; missing eAuction must not stop deploy."""
+    out_dir = tmp_path / "out"
+    data_dir = out_dir / "data"
+    pdfs_dir = out_dir / "pdfs"
+    data_dir.mkdir(parents=True)
+    pdfs_dir.mkdir(parents=True)
+    (out_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+    (pdfs_dir / "sample.pdf").write_bytes(b"%PDF")
+
+    records = [_record_dict(f"mstc-{i}", source="mstc") for i in range(50)]
+    records.append(_record_dict("gem-1", source="gem_forward"))
+    _write_export(data_dir / "auctions.json", records)
+
+    result = verify_predeploy_build(
+        out_dir=out_dir,
+        min_count=10,
+        min_closing_date="2026-07-04",
+        require_sources=["mstc"],
+        warn_only_sources=["gem_forward", "eauction"],
+    )
+    assert result.passed is True
+    assert result.by_source.get("eauction", 0) == 0
+    assert any("eauction" in w.lower() for w in result.warnings)
+
+
 def test_predeploy_verify_rejects_capped_mstc_only_build(tmp_path: Path):
     out_dir = tmp_path / "out"
     data_dir = out_dir / "data"

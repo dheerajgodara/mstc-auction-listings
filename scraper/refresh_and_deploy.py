@@ -113,7 +113,7 @@ class RefreshConfig:
     break_stale_lock: bool = False
     allow_large_drop: bool = False
     allow_failed_batches: bool = False
-    eauction_warn_only: bool = False
+    eauction_warn_only: bool = True
     fallback_sources: list[str] = field(default_factory=lambda: ["mstc", "gem_forward", "eauction"])
     full_reconcile: bool = False
     max_deep_scrape_per_run: int = 200
