@@ -1,15 +1,21 @@
 name: Pipeline Deploy
 
+# Manual emergency republish. Production drain owns deploy after each parse batch.
 on:
-  schedule:
-    # Every 3h at :00 IST (= 30 */3 * * * UTC)
-    - cron: "30 */3 * * *"
   workflow_dispatch:
     inputs:
       deploy:
         description: "Rsync to Hostinger after build/verify"
         required: false
         default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      force:
+        description: "Force deploy even if export fingerprint unchanged"
+        required: false
+        default: "false"
         type: choice
         options:
           - "true"
@@ -74,10 +80,14 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           DEPLOY_FLAG=""
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.deploy }}" = "false" ]; then
+          FORCE_FLAG=""
+          if [ "${{ github.event.inputs.deploy }}" = "false" ]; then
             DEPLOY_FLAG="--no-deploy"
           fi
-          PYTHONPATH=. python -m scraper.pipeline_deploy --break-stale-lock $DEPLOY_FLAG
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            FORCE_FLAG="--force"
+          fi
+          PYTHONPATH=. python -m scraper.pipeline_deploy --break-stale-lock $DEPLOY_FLAG $FORCE_FLAG
 
       - name: Upload deploy reports
         if: always()

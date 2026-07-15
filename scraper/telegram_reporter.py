@@ -112,6 +112,8 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
         "download_selection": "📋 Scrap Auction India download selection",
         "download_done": "✅ Scrap Auction India download complete",
         "download_failed": "❌ Scrap Auction India download failed",
+        "download_retry_scheduled": "🔁 Scrap Auction India download retry scheduled",
+        "download_retries_exhausted": "🛑 Scrap Auction India download retries exhausted",
         "parse_started": "🧩 Scrap Auction India parse started",
         "parse_selection": "📋 Scrap Auction India parse selection",
         "parse_done": "✅ Scrap Auction India parse complete",
@@ -119,6 +121,10 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
         "deploy_started": "🚀 Scrap Auction India deploy started",
         "deploy_done": "✅ Scrap Auction India deploy complete",
         "deploy_failed": "❌ Scrap Auction India deploy failed",
+        "drain_started": "🔄 Scrap Auction India drain started",
+        "drain_cycle": "🔄 Scrap Auction India drain cycle",
+        "drain_done": "✅ Scrap Auction India drain complete",
+        "drain_stopped": "🛑 Scrap Auction India drain stopped",
     }.get(event, f"ℹ️ Scrap Auction India {payload.get('pipeline') or 'refresh'} {status}")
 
     lines = [
@@ -141,6 +147,22 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
         run_rows.append(_row("Download cap", payload.get("max_download")))
     if payload.get("selected_count") is not None:
         run_rows.append(_row("Selected", payload.get("selected_count")))
+    if payload.get("max_cycles") is not None:
+        run_rows.append(_row("Max cycles", payload.get("max_cycles")))
+    if payload.get("cycles_completed") is not None:
+        run_rows.append(_row("Cycles done", payload.get("cycles_completed")))
+    if payload.get("cycle") is not None:
+        run_rows.append(_row("Cycle", payload.get("cycle")))
+    if payload.get("retry_attempt") is not None:
+        run_rows.append(_row("Retry attempt", payload.get("retry_attempt")))
+    if payload.get("wait_minutes") is not None:
+        run_rows.append(_row("Retry wait (min)", payload.get("wait_minutes")))
+    if payload.get("parse_backlog_start") is not None:
+        run_rows.append(_row("Parse backlog start", payload.get("parse_backlog_start")))
+    if payload.get("parse_backlog_end") is not None:
+        run_rows.append(_row("Parse backlog end", payload.get("parse_backlog_end")))
+    if payload.get("remaining_after") is not None:
+        run_rows.append(_row("Remaining after cycle", payload.get("remaining_after")))
     lines.extend(_section("Run", run_rows))
 
     ledger = payload.get("ledger") or {}

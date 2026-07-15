@@ -6,29 +6,23 @@
 - **Host:** Hostinger static export at `domains/scrapauctionindia.com/public_html/auctions`
 - **Canonical domain only:** `scrapauctionindia.com`. Hostinger preview subdomains are not production and must not receive scheduled auction deploys.
 
-## Production workflow (authoritative) — 3-job pipeline
+## Production workflow (authoritative) — Download → Drain
 
-Scheduled production uses three independent jobs:
+| Job | Workflow | Module | Schedule / trigger |
+|-----|----------|--------|-------------------|
+| **1. Download** | `pipeline-download.yml` | `scraper.pipeline_download` | `30 0,6,12,18 * * *` UTC (= **00/06/12/18 IST**), cap **2000** |
+| **1b. Download retry** | `pipeline-download-retry.yml` | `scraper.download_retry_controller` | on Download **failure** (+15m / +45m, max 2/slot) |
+| **2. Drain** | `pipeline-drain.yml` | `scraper.pipeline_drain` | after Download **success** + safety `0 */6 * * *` UTC |
+| Parse / Deploy | `pipeline-parse.yml` / `pipeline-deploy.yml` | modules | **manual emergency only** |
 
-| Job | Workflow | Module | Schedule |
-|-----|----------|--------|----------|
-| **1. Download** | `.github/workflows/pipeline-download.yml` | `scraper.pipeline_download` | `30 0,6,12,18 * * *` UTC (= **00/06/12/18 IST**) |
-| **2. Parse** | `.github/workflows/pipeline-parse.yml` | `scraper.pipeline_parse` | after download success + every 3h UTC catch-up |
-| **3. Deploy** | `.github/workflows/pipeline-deploy.yml` | `scraper.pipeline_deploy` | `30 */3 * * *` UTC (= every **3h at :00 IST**) |
+Drain loop each cycle: **Parse 100 → Deploy** (job retries ×3 each) until parse backlog clear (max 25 cycles).
 
-- **Download cap:** catch-up default **200**/run (**MSTC-only**); steady-state **100**/run once MSTC `download=pending` &lt; 100
-- **Ledger:** Hostinger `{domain}/auction_pipeline/pipeline_ledger.json` + local `work/pipeline_ledger.json`
-- **Raw HTML:** Hostinger `{domain}/auction_pipeline/raw/{source}/{id}.html` (private); PDFs/docs/thumbs stay public under `auctions/`
-- **Safety gates:** run on **Parse → promote** (min count 1000, multi-source, drop protection)
-- **Deploy** builds/verifies from promoted `auctions.json` and rsyncs `web/out/` (media dirs protected from `--delete`)
-- **Legacy monolith:** `.github/workflows/refresh-and-deploy.yml` is **manual emergency only** (no cron)
-- **Cutover soak (2026-07-15):** Download `29410139656`+`29422935839` (400 raw done, ~990 MSTC pending); Parse `29426436750` (200 ok / 200 deploy_ready); Deploy `29427951887` success. Ops details: `docs/PIPELINE_RUNBOOK.md`
-
-### Catch-up vs steady-state
-
-- **Catch-up:** leave download cap at **200** until Telegram ledger shows **MSTC** pending downloads &lt; 100
-- **Steady-state:** set workflow default / dispatch `max_download=100`
-- Failed deploy no longer blocks download progress (stages retry independently)
+- **Download:** MSTC-only deep raw/PDF; GeM/eAuction discover → parse live enrich
+- **Ledger / markers:** `{domain}/auction_pipeline/{pipeline_ledger,download_retry_state,last_deploy}.json` + `raw/`
+- **Safety gates:** on Parse → promote inside drain
+- **Concurrency:** `auction-pipeline-serial` (download ↔ drain serialized)
+- **Legacy monolith:** `refresh-and-deploy.yml` manual emergency only
+- **Ops:** `docs/PIPELINE_RUNBOOK.md`, `docs/PIPELINE_OPS_PLAN.md`
 
 ## AI enrichment (scheduled)
 

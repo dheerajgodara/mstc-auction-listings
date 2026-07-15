@@ -129,6 +129,11 @@ DEFAULT_DOCS_DIR = REPO_ROOT / "web" / "public" / "docs"
 DEFAULT_THUMBS_DIR = REPO_ROOT / "web" / "public" / "thumbs"
 DEFAULT_RAW_DIR = REPO_ROOT / "work" / "raw"
 DEFAULT_PIPELINE_LEDGER = REPO_ROOT / "work" / "pipeline_ledger.json"
-# Catch-up default for download job; drop to 100 in steady-state.
-PIPELINE_DOWNLOAD_CAP_CATCHUP = 200
+# Download job default (MSTC deep work per run). Steady-state 100 kept for ops docs.
+PIPELINE_DOWNLOAD_CAP_CATCHUP = 2000
 PIPELINE_DOWNLOAD_CAP_STEADY = 100
+PIPELINE_PARSE_CAP_DEFAULT = 100
+PIPELINE_DRAIN_MAX_CYCLES = 25
+PIPELINE_DRAIN_PARSE_RETRIES = 3
+PIPELINE_DRAIN_DEPLOY_RETRIES = 3
+PIPELINE_DOWNLOAD_AUTO_RETRIES_PER_SLOT = 2

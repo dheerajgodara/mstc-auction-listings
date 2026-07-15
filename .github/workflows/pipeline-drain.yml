@@ -1,29 +1,34 @@
-name: Pipeline Parse
+name: Pipeline Drain
 
-# Manual emergency only. Production drain owns parse after download.
 on:
+  workflow_run:
+    workflows: ["Pipeline Download"]
+    types: [completed]
+  schedule:
+    # Safety sweep every 6h at :00 UTC (offset from download :30)
+    - cron: "0 */6 * * *"
   workflow_dispatch:
     inputs:
       max_parse:
-        description: "Parse cap per run (default 100)"
+        description: "Parse cap per cycle (default 100)"
         required: false
         default: "100"
-      promote:
-        description: "Promote candidate to auctions.json"
+      max_cycles:
+        description: "Hard cap on parse→deploy cycles (default 25)"
         required: false
-        default: "true"
-        type: choice
-        options:
-          - "true"
-          - "false"
+        default: "25"
 
 jobs:
-  pipeline-parse:
+  pipeline-drain:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     concurrency:
-      group: pipeline-parse
+      group: auction-pipeline-serial
       cancel-in-progress: false
+    # After download: only on success. Schedule/manual always.
+    if: >
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
 
     steps:
       - name: Checkout repository
@@ -37,13 +42,29 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install web dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile || pnpm install
+
       - name: Configure SSH key
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
 
-      - name: Run parse pipeline
+      - name: Run drain (parse 100 → deploy until clear)
         env:
           PYTHONUNBUFFERED: "1"
           SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
@@ -56,26 +77,21 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           MAX_PARSE="${{ github.event.inputs.max_parse || '100' }}"
-          PROMOTE_FLAG=""
-          if [ "${{ github.event.inputs.promote }}" = "false" ]; then
-            PROMOTE_FLAG="--no-promote"
-          fi
-          PYTHONPATH=. python -m scraper.pipeline_parse \
-            --sources mstc,gem_forward,eauction \
-            --min-count 1000 \
+          MAX_CYCLES="${{ github.event.inputs.max_cycles || '25' }}"
+          PYTHONPATH=. python -m scraper.pipeline_drain \
             --max-parse "$MAX_PARSE" \
-            --max-docs-per-run 200 \
-            --break-stale-lock \
-            $PROMOTE_FLAG
+            --max-cycles "$MAX_CYCLES" \
+            --break-stale-lock
 
-      - name: Upload parse reports
+      - name: Upload drain reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pipeline-parse-${{ github.run_id }}
+          name: pipeline-drain-${{ github.run_id }}
           path: |
             work/pipeline_ledger.json
+            work/runs/drain_*/drain_report.json
+            work/runs/drain_*/drain.log
             work/runs/parse_*/parse_report.json
-            work/runs/parse_*/parse.log
-            work/runs/parse_*/candidate_auctions.json
+            work/runs/deploy_*/deploy_report.json
           if-no-files-found: ignore

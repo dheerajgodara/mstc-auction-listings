@@ -1,30 +1,53 @@
-# 3-job pipeline runbook
+# 3-job + drain pipeline runbook
 
-## Jobs
+## Production flow
 
-1. **Download** (`pipeline-download.yml`) — discovery + raw HTML/PDF/docs. Cap **200** catch-up / **100** steady.
-2. **Parse** (`pipeline-parse.yml`) — parse from disk (MSTC) or live enrich (GeM/eAuction); promote `auctions.json`.
-3. **Deploy** (`pipeline-deploy.yml`) — `build:prod` + verify + Hostinger rsync every 3h IST.
+1. **Download** (`pipeline-download.yml`) — every **6h IST**, cap **2000** MSTC deep downloads (new/changed/needs_repair pending).
+2. **Drain** (`pipeline-drain.yml`) — after successful download (and 6h safety sweep): **Parse 100 → Deploy** until parse backlog clear.
+3. **Parse / Deploy** workflows — **manual emergency only** (drain owns the loop).
+
+## Fast download retry
+
+If Download hard-fails:
+
+1. Same job retries once (~2 min).
+2. `pipeline-download-retry.yml` schedules auto re-dispatch at **+15 min** then **+45 min** (max **2** per 6h slot).
+3. Only then wait for the next scheduled 6h download.
+
+Telegram: `download_retry_scheduled`, `download_retries_exhausted`.
+
+## Drain failure
+
+- Parse fails ×3 → no deploy → `drain_stopped`
+- Deploy fails ×3 → no next parse batch → `drain_stopped`
+- Fix root cause, then:
+
+```bash
+gh workflow run pipeline-drain.yml -f max_parse=100 -f max_cycles=25
+```
 
 ## Durable state (Hostinger)
 
-- `{domain_root}/auction_pipeline/pipeline_ledger.json`
-- `{domain_root}/auction_pipeline/raw/{source}/{id}.html`
-- Public media unchanged: `…/public_html/auctions/{pdfs,docs,thumbs}`
+- `{domain}/auction_pipeline/pipeline_ledger.json`
+- `{domain}/auction_pipeline/raw/{source}/{id}.html`
+- `{domain}/auction_pipeline/download_retry_state.json`
+- `{domain}/auction_pipeline/last_deploy.json`
+- Public: `…/public_html/auctions/{pdfs,docs,thumbs,data}`
 
-## Ops
+## GeM / eAuction
 
-- Watch Telegram: `download_*`, `parse_*`, `deploy_*` events and Ledger section.
-- Catch-up: keep `max_download=200` until **MSTC** download pending &lt; 100, then switch dispatch/default to **100**.
-- Download cap is **MSTC-only**. GeM/eAuction skip the raw download stage and enter parse via a single live batch enrich per source.
-- Parse pulls only selected raw HTML + `pdfs/` (not full docs/thumbs trees).
-- Legacy monolith `refresh-and-deploy.yml` is **manual emergency only** (no schedule).
-- Locks are independent: `work/download.lock`, `work/parse.lock`, `work/deploy.lock`.
+No raw HTML download stage. Discovery during download marks them parse-ready; drain parse live-enriches in batches; deploy publishes with MSTC.
 
 ## Manual triggers
 
 ```bash
-gh workflow run pipeline-download.yml -f max_download=200
-gh workflow run pipeline-parse.yml
-gh workflow run pipeline-deploy.yml
+gh workflow run pipeline-download.yml -f max_download=2000
+gh workflow run pipeline-drain.yml -f max_parse=100 -f max_cycles=25
+gh workflow run pipeline-parse.yml -f max_parse=100
+gh workflow run pipeline-deploy.yml -f deploy=true -f force=true
 ```
+
+## Locks
+
+- `work/download.lock`, `work/parse.lock`, `work/deploy.lock`, `work/drain.lock`
+- GHA concurrency `auction-pipeline-serial` serializes download ↔ drain SSH.

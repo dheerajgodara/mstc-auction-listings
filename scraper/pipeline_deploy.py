@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ from scraper.deploy import deploy as deploy_to_hostinger
 from scraper.filters import make_run_id, tomorrow_min_closing_date
 from scraper.http_verify import verify_live_site
 from scraper.pipeline_ledger import DEFAULT_LEDGER_PATH, load_ledger, pull_ledger
+from scraper.pipeline_markers import LAST_DEPLOY_MARKER, pull_pipeline_json, push_pipeline_json
 from scraper.predeploy_verify import verify_predeploy_build
 from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
@@ -58,11 +60,20 @@ def _run(cmd: list[str], *, cwd: Path) -> None:
         raise RuntimeError(f"command failed ({result.returncode}): {' '.join(cmd)}\n{tail}")
 
 
+def _export_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def run_pipeline_deploy(
     *,
     repo_root: Path = REPO_ROOT,
     deploy: bool = True,
     break_stale_lock: bool = True,
+    force: bool = False,
 ) -> dict[str, Any]:
     run_id = f"deploy_{make_run_id()}"
     run_dir = repo_root / "work" / "runs" / run_id
@@ -83,6 +94,7 @@ def run_pipeline_deploy(
         "pipeline": "deploy",
         "started_at": started,
         "deploy_requested": deploy,
+        "force": force,
         "site_base_url": SITE_BASE_URL,
         "github_run_url": _github_run_url(),
         "warnings": [],
@@ -99,6 +111,34 @@ def run_pipeline_deploy(
         )
         if not production_json.is_file() or production_json.stat().st_size < 10:
             raise RuntimeError("no auctions.json available for deploy")
+
+        export_sha = _export_sha256(production_json)
+        payload["export_sha256"] = export_sha
+        remote_marker = pull_pipeline_json(LAST_DEPLOY_MARKER) or {}
+        if (
+            deploy
+            and not force
+            and remote_marker.get("export_sha") == export_sha
+            and remote_marker.get("ok") is True
+        ):
+            pull_ledger(local_path=DEFAULT_LEDGER_PATH)
+            ledger = load_ledger(DEFAULT_LEDGER_PATH)
+            payload.update(
+                {
+                    "status": "success",
+                    "finished_at": datetime.now(IST).isoformat(),
+                    "deploy_skipped_unchanged": True,
+                    "deploy": {"attempted": False, "ok": True, "skipped": True},
+                    "ledger": ledger.status_counts(),
+                    "warnings": warnings,
+                    "auctions": (json.loads(production_json.read_text(encoding="utf-8")).get("count")),
+                }
+            )
+            (run_dir / "deploy_report.json").write_text(
+                json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
+            )
+            send_telegram_report(payload, event="deploy_done")
+            return payload
 
         asset_boot = bootstrap_production_assets(public_dir=public_dir)
         payload["asset_bootstrap"] = asset_boot.to_dict()
@@ -146,12 +186,23 @@ def run_pipeline_deploy(
             warnings.extend(http.warnings)
             if not http.passed:
                 raise RuntimeError(f"live HTTP verify failed: {http.errors}")
+            push_pipeline_json(
+                LAST_DEPLOY_MARKER,
+                {
+                    "export_sha": export_sha,
+                    "deployed_at": datetime.now(IST).isoformat(),
+                    "run_id": run_id,
+                    "ok": True,
+                    "count": predeploy.count,
+                },
+            )
 
         payload.update(
             {
                 "status": "success",
                 "finished_at": datetime.now(IST).isoformat(),
                 "deploy": deploy_info,
+                "deploy_skipped_unchanged": False,
                 "warnings": warnings,
                 "auctions": predeploy.count,
                 "by_source": predeploy.by_source,
@@ -175,9 +226,14 @@ def run_pipeline_deploy(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Pipeline job 3: build and deploy")
     parser.add_argument("--no-deploy", action="store_true", help="Build/verify only")
+    parser.add_argument("--force", action="store_true", help="Deploy even if export fingerprint unchanged")
     parser.add_argument("--break-stale-lock", action="store_true", default=True)
     args = parser.parse_args(argv)
-    run_pipeline_deploy(deploy=not args.no_deploy, break_stale_lock=args.break_stale_lock)
+    run_pipeline_deploy(
+        deploy=not args.no_deploy,
+        break_stale_lock=args.break_stale_lock,
+        force=args.force,
+    )
     return 0
 
 

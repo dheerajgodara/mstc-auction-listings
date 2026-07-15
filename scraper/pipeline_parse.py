@@ -22,6 +22,7 @@ from scraper.config import (
     DEFAULT_PIPELINE_LEDGER,
     DEFAULT_RAW_DIR,
     DEFAULT_THUMBS_DIR,
+    PIPELINE_PARSE_CAP_DEFAULT,
     REPO_ROOT,
     SITE_BASE_URL,
 )
@@ -136,7 +137,7 @@ def _enrich_non_mstc_batch(source: str, auction_ids: set[str]) -> dict[str, Auct
 def run_pipeline_parse(
     *,
     repo_root: Path = REPO_ROOT,
-    max_parse: int | None = 200,
+    max_parse: int | None = PIPELINE_PARSE_CAP_DEFAULT,
     max_docs_per_run: int = 200,
     min_count: int = 1000,
     sources: list[str] | None = None,
@@ -415,7 +416,12 @@ def run_pipeline_parse(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Pipeline job 2: parse raw assets")
-    parser.add_argument("--max-parse", type=int, default=200, help="Max auctions to parse this run (default 200)")
+    parser.add_argument(
+        "--max-parse",
+        type=int,
+        default=PIPELINE_PARSE_CAP_DEFAULT,
+        help="Max auctions to parse this run (default 100)",
+    )
     parser.add_argument(
         "--max-docs-per-run",
         type=int,

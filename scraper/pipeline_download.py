@@ -44,6 +44,7 @@ from scraper.pipeline_ledger import (
     upsert_from_work_plan,
     write_ledger,
 )
+from scraper.pipeline_markers import reset_download_retry_state
 from scraper.raw_store import (
     has_raw_html,
     pull_raw_store,
@@ -53,10 +54,16 @@ from scraper.raw_store import (
 )
 from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
+from scraper.schedule_guard import latest_slot_start
 from scraper.telegram_reporter import send_telegram_report
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_download")
+
+
+def _phase(msg: str) -> None:
+    print(f"[pipeline_download] {msg}", flush=True)
+    logger.info(msg)
 
 
 def _setup_logging(run_dir: Path) -> None:
@@ -213,8 +220,11 @@ def run_pipeline_download(
         session = requests.Session()
         ok_count = 0
         fail_count = 0
+        last_ledger_push_ok = 0
+        loop_started = time.monotonic()
+        total_selected = len(selected)
 
-        for item in selected:
+        for idx, item in enumerate(selected, start=1):
             # Non-MSTC: mark download done if we at least capture listing; deep assets via full enrich later in parse.
             if item.source != "mstc":
                 # Leave gem/eauction for parse job (needs live enrich). Mark download pending→special handled in parse.
@@ -235,52 +245,64 @@ def run_pipeline_download(
                 else:
                     mark_download(ledger, item.stable_key, ok=False, error="missing from discovery")
                     fail_count += 1
-                continue
-
-            disc = by_disc.get(item.stable_key) or {}
-            base = _base_from_discovery(disc) if disc else resolve_auction_listing(item.source_auction_id)[0]
-            base.source = "mstc"
-            try:
-                downloaded = enrich_auction(
-                    base,
-                    pdf_dir=pdf_dir,
-                    skip_pdf=skip_pdf,
-                    stats=stats,
-                    mode="download_only",
-                    raw_dir=raw_dir,
-                )
-                if not skip_docs and docs_remaining > 0:
-                    # Docs need lot refs from parse; skip heavy doc hydrate in download-only
-                    # unless lots somehow already present.
-                    if downloaded.lots:
-                        downloaded, docs_remaining = process_auction_documents(
-                            downloaded,
-                            docs_dir=docs_dir,
-                            thumbs_dir=thumbs_dir,
-                            skip_docs=False,
-                            max_docs_remaining=docs_remaining,
-                            session=session,
-                            stats=stats,
-                        )
-                has_html = has_raw_html("mstc", item.source_auction_id, raw_dir=raw_dir)
-                has_pdf = (pdf_dir / f"{item.source_auction_id}.pdf").is_file()
-                ok = has_html or has_pdf
-                mark_download(
-                    ledger,
-                    item.stable_key,
-                    ok=ok,
-                    raw_html_path=raw_html_rel_path("mstc", item.source_auction_id) if has_html else None,
-                    pdf_path=f"pdfs/{item.source_auction_id}.pdf" if has_pdf else None,
-                    error="; ".join(downloaded.errors) if downloaded.errors and not ok else None,
-                )
-                if ok:
-                    ok_count += 1
-                else:
+            else:
+                disc = by_disc.get(item.stable_key) or {}
+                base = _base_from_discovery(disc) if disc else resolve_auction_listing(item.source_auction_id)[0]
+                base.source = "mstc"
+                try:
+                    downloaded = enrich_auction(
+                        base,
+                        pdf_dir=pdf_dir,
+                        skip_pdf=skip_pdf,
+                        stats=stats,
+                        mode="download_only",
+                        raw_dir=raw_dir,
+                    )
+                    if not skip_docs and docs_remaining > 0:
+                        # Docs need lot refs from parse; skip heavy doc hydrate in download-only
+                        # unless lots somehow already present.
+                        if downloaded.lots:
+                            downloaded, docs_remaining = process_auction_documents(
+                                downloaded,
+                                docs_dir=docs_dir,
+                                thumbs_dir=thumbs_dir,
+                                skip_docs=False,
+                                max_docs_remaining=docs_remaining,
+                                session=session,
+                                stats=stats,
+                            )
+                    has_html = has_raw_html("mstc", item.source_auction_id, raw_dir=raw_dir)
+                    has_pdf = (pdf_dir / f"{item.source_auction_id}.pdf").is_file()
+                    ok = has_html or has_pdf
+                    mark_download(
+                        ledger,
+                        item.stable_key,
+                        ok=ok,
+                        raw_html_path=raw_html_rel_path("mstc", item.source_auction_id) if has_html else None,
+                        pdf_path=f"pdfs/{item.source_auction_id}.pdf" if has_pdf else None,
+                        error="; ".join(downloaded.errors) if downloaded.errors and not ok else None,
+                    )
+                    if ok:
+                        ok_count += 1
+                    else:
+                        fail_count += 1
+                except Exception as exc:
+                    logger.exception("download failed for %s", item.stable_key)
+                    mark_download(ledger, item.stable_key, ok=False, error=str(exc))
                     fail_count += 1
-            except Exception as exc:
-                logger.exception("download failed for %s", item.stable_key)
-                mark_download(ledger, item.stable_key, ok=False, error=str(exc))
-                fail_count += 1
+
+            if idx % 25 == 0 or idx == total_selected:
+                elapsed = max(time.monotonic() - loop_started, 0.001)
+                rate = ok_count / (elapsed / 60.0)
+                _phase(
+                    f"progress {idx}/{total_selected} ok={ok_count} failed={fail_count} "
+                    f"elapsed_min={elapsed/60:.1f} ok_per_min={rate:.1f}"
+                )
+            if ok_count >= last_ledger_push_ok + 50:
+                write_ledger(ledger, ledger_path)
+                push_ledger(local_path=ledger_path)
+                last_ledger_push_ok = ok_count
+                _phase(f"mid-run ledger push at ok={ok_count}")
 
         write_ledger(ledger, ledger_path)
         push_raw_store(raw_dir=raw_dir)
@@ -288,6 +310,14 @@ def run_pipeline_download(
         push_ledger(local_path=ledger_path)
 
         finished = datetime.now(IST).isoformat()
+        wall_seconds = time.monotonic() - loop_started
+        # Reset fast-retry budget after a successful download job.
+        try:
+            slot = latest_slot_start(datetime.now(IST)).strftime("%Y-%m-%dT%H:%M%z")
+            reset_download_retry_state(slot_id=slot)
+        except Exception as exc:
+            warnings.append(f"reset download retry state failed: {exc}")
+
         payload.update(
             {
                 "status": "success",
@@ -299,6 +329,8 @@ def run_pipeline_download(
                 "warnings": warnings,
                 "docs_budget_left": docs_remaining,
                 "estimated_runs_to_clear": estimated_download_runs_to_clear(ledger, cap=max_download),
+                "wall_seconds": round(wall_seconds, 1),
+                "ok_per_min": round(ok_count / (wall_seconds / 60.0), 2) if wall_seconds > 0 else None,
             }
         )
         (run_dir / "download_report.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
