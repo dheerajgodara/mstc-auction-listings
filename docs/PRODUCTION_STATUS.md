@@ -16,16 +16,17 @@ Scheduled production uses three independent jobs:
 | **2. Parse** | `.github/workflows/pipeline-parse.yml` | `scraper.pipeline_parse` | after download success + every 3h UTC catch-up |
 | **3. Deploy** | `.github/workflows/pipeline-deploy.yml` | `scraper.pipeline_deploy` | `30 */3 * * *` UTC (= every **3h at :00 IST**) |
 
-- **Download cap:** catch-up default **200**/run; steady-state **100**/run once `download=pending` &lt; 100
+- **Download cap:** catch-up default **200**/run (**MSTC-only**); steady-state **100**/run once MSTC `download=pending` &lt; 100
 - **Ledger:** Hostinger `{domain}/auction_pipeline/pipeline_ledger.json` + local `work/pipeline_ledger.json`
 - **Raw HTML:** Hostinger `{domain}/auction_pipeline/raw/{source}/{id}.html` (private); PDFs/docs/thumbs stay public under `auctions/`
 - **Safety gates:** run on **Parse → promote** (min count 1000, multi-source, drop protection)
 - **Deploy** builds/verifies from promoted `auctions.json` and rsyncs `web/out/` (media dirs protected from `--delete`)
 - **Legacy monolith:** `.github/workflows/refresh-and-deploy.yml` is **manual emergency only** (no cron)
+- **Cutover soak (2026-07-15):** Download `29410139656`+`29422935839` (400 raw done, ~990 MSTC pending); Parse `29426436750` (200 ok / 200 deploy_ready); Deploy `29427951887` success. Ops details: `docs/PIPELINE_RUNBOOK.md`
 
 ### Catch-up vs steady-state
 
-- **Catch-up:** leave download cap at **200** until Telegram ledger shows pending downloads &lt; 100
+- **Catch-up:** leave download cap at **200** until Telegram ledger shows **MSTC** pending downloads &lt; 100
 - **Steady-state:** set workflow default / dispatch `max_download=100`
 - Failed deploy no longer blocks download progress (stages retry independently)
 
