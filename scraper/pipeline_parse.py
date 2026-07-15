@@ -44,7 +44,7 @@ from scraper.pipeline_ledger import (
     write_ledger,
 )
 from scraper.promote_export import promote_export
-from scraper.raw_store import _hostinger_ssh_config, _ssh_cmd, pull_raw_store
+from scraper.raw_store import _hostinger_ssh_config, _ssh_cmd, pull_raw_files
 from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
 from scraper.safety_gates import SafetyGateConfig, run_safety_gates
@@ -52,6 +52,13 @@ from scraper.telegram_reporter import send_telegram_report
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_parse")
+
+
+def _phase(msg: str) -> None:
+    """Visible CI progress even if logging handlers buffer oddly."""
+    line = f"[pipeline_parse] {msg}"
+    print(line, flush=True)
+    logger.info(msg)
 
 
 def _github_run_url() -> str | None:
@@ -91,34 +98,39 @@ def _push_auctions_json(local_json: Path) -> bool:
         return False
 
 
-def _enrich_non_mstc(item_source: str, auction_id: str) -> AuctionRecord | None:
-    """Best-effort live enrich for GeM / eAuction (no raw-HTML cache yet)."""
-    if item_source == "gem_forward":
+def _enrich_non_mstc_batch(source: str, auction_ids: set[str]) -> dict[str, AuctionRecord]:
+    """One live scrape per source for all selected GeM / eAuction IDs."""
+    if not auction_ids:
+        return {}
+    out: dict[str, AuctionRecord] = {}
+    if source == "gem_forward":
         from scraper.gem_forward_client import GemForwardClient
         from scraper.gem_forward_scraper import scrape_gem_forward
         from scraper.adapters.gem_forward_adapter import adapt_gem_forward_auction
 
         client = GemForwardClient(transport="auto")
-        auctions = scrape_gem_forward(client=client, enrich=True, include_auction_ids={auction_id})
+        auctions = scrape_gem_forward(client=client, enrich=True, include_auction_ids=auction_ids)
         for auction in auctions:
-            if str(getattr(auction, "auction_id", None) or "") == auction_id:
-                return adapt_gem_forward_auction(auction)
-        return None
-    if item_source == "eauction":
+            aid = str(getattr(auction, "auction_id", None) or "")
+            if aid in auction_ids:
+                out[aid] = adapt_gem_forward_auction(auction)
+        return out
+    if source == "eauction":
         from scraper.eauction_scraper import scrape_eauction_tabs
         from scraper.adapters.eauction_adapter import adapt_eauction_record
 
         rows, _stats = scrape_eauction_tabs(
             tabs=["closingTodayTab", "closingWeekTab", "closingTwoWeekTab"],
             enrich_details=True,
-            include_auction_ids={auction_id},
+            include_auction_ids=auction_ids,
         )
         for row in rows:
             rec = adapt_eauction_record(row)
-            if str(rec.source_auction_id or rec.id) == auction_id:
-                return rec
-        return None
-    return None
+            aid = str(rec.source_auction_id or rec.id)
+            if aid in auction_ids:
+                out[aid] = rec
+        return out
+    return out
 
 
 def run_pipeline_parse(
@@ -168,48 +180,53 @@ def run_pipeline_parse(
 
     warnings: list[str] = []
     try:
-        logger.info("bootstrap: pulling live auctions.json")
+        _phase("bootstrap: pulling live auctions.json")
         _bootstrap_previous_production_from_live(
             production_json=production_json,
             base_url=SITE_BASE_URL or None,
             warnings=warnings,
         )
-        # Parse only needs PDFs on disk; docs/thumbs are hydrated within the shared budget.
-        logger.info("bootstrap: pulling production pdfs/ (skip docs/thumbs)")
-        bootstrap_production_assets(public_dir=public_dir, dirs=("pdfs",), timeout_sec=900)
-        logger.info("bootstrap: pulling raw HTML store + ledger")
-        pull_raw_store(raw_dir=raw_dir)
-        pull_ledger(local_path=ledger_path)
+        _phase("bootstrap: pulling pipeline ledger")
+        pull_ledger(local_path=ledger_path, timeout_sec=300)
 
         previous_export = load_export(production_json)
         if not previous_export or int(previous_export.get("count") or 0) <= 0:
-            raise RuntimeError("parse job requires previous production export")
+            raise RuntimeError(
+                "parse job requires previous production export "
+                f"(missing/empty at {production_json}; warnings={warnings[:5]})"
+            )
 
-        logger.info("discovery: starting sources=%s", sources)
+        ledger = load_ledger(ledger_path)
+        selected = select_for_parse(ledger, limit=max_parse)
+        payload["selected_count"] = len(selected)
+        payload["ledger"] = ledger.status_counts()
+        _phase(f"parse selection: {len(selected)} (ledger={ledger.status_counts()})")
+        send_telegram_report(payload, event="parse_selection")
+
+        mstc_selected = [i for i in selected if i.source == "mstc"]
+        _phase(f"bootstrap: pulling {len(mstc_selected)} selected raw HTML files + pdfs/")
+        pull_raw_files(
+            [(i.source, i.source_auction_id) for i in mstc_selected],
+            raw_dir=raw_dir,
+            timeout_sec=300,
+        )
+        # Parse only needs PDFs on disk; docs/thumbs are hydrated within the shared budget.
+        bootstrap_production_assets(public_dir=public_dir, dirs=("pdfs",), timeout_sec=900)
+
+        _phase(f"discovery: starting sources={sources}")
         discovery_path = run_dir / "discovery_latest.json"
-        discovery_export = run_discovery(
+        run_discovery(
             sources=sources,
             out_path=discovery_path,
             min_closing_date=min_closing,
             allow_small_output=True,
         )
         discovery_data = json.loads(discovery_path.read_text(encoding="utf-8"))
-        logger.info("discovery: done count=%s", discovery_data.get("count"))
+        _phase(f"discovery: done count={discovery_data.get('count')}")
         plan = build_work_plan(discovery_data, previous_export)
         discovery_by_key = {
             stable_auction_key(a): a for a in (discovery_data.get("auctions") or [])
         }
-
-        ledger = load_ledger(ledger_path)
-        selected = select_for_parse(ledger, limit=max_parse)
-        payload["selected_count"] = len(selected)
-        payload["ledger"] = ledger.status_counts()
-        logger.info(
-            "parse selection: %s (ledger=%s)",
-            len(selected),
-            ledger.status_counts(),
-        )
-        send_telegram_report(payload, event="parse_selection")
 
         parsed_records: list[AuctionRecord] = []
         stats: dict[str, Any] = {
@@ -224,6 +241,18 @@ def run_pipeline_parse(
         ok_count = fail_count = 0
         docs_remaining = 0 if skip_docs else max(0, int(max_docs_per_run))
         session = __import__("requests").Session()
+
+        # Batch live enrich for non-MSTC once per source (never N full scrapes).
+        non_mstc_by_source: dict[str, set[str]] = {}
+        for item in selected:
+            if item.source != "mstc":
+                non_mstc_by_source.setdefault(item.source, set()).add(item.source_auction_id)
+        non_mstc_records: dict[tuple[str, str], AuctionRecord] = {}
+        for src, ids in non_mstc_by_source.items():
+            _phase(f"live enrich batch: {src} ids={len(ids)}")
+            batch = _enrich_non_mstc_batch(src, ids)
+            for aid, rec in batch.items():
+                non_mstc_records[(src, aid)] = rec
 
         for idx, item in enumerate(selected, start=1):
             try:
@@ -256,7 +285,7 @@ def run_pipeline_parse(
                             stats=stats,
                         )
                 else:
-                    record = _enrich_non_mstc(item.source, item.source_auction_id)
+                    record = non_mstc_records.get((item.source, item.source_auction_id))
                     if record is None:
                         raise RuntimeError(f"could not enrich {item.stable_key}")
 
@@ -269,13 +298,9 @@ def run_pipeline_parse(
                 mark_parse(ledger, item.stable_key, ok=False, error=str(exc))
                 fail_count += 1
             if idx % 10 == 0 or idx == len(selected):
-                logger.info(
-                    "parse progress %s/%s ok=%s failed=%s docs_left=%s",
-                    idx,
-                    len(selected),
-                    ok_count,
-                    fail_count,
-                    docs_remaining,
+                _phase(
+                    f"parse progress {idx}/{len(selected)} ok={ok_count} "
+                    f"failed={fail_count} docs_left={docs_remaining}"
                 )
 
         write_ledger(ledger, ledger_path)

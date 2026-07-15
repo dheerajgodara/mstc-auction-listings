@@ -15,7 +15,9 @@
 ## Ops
 
 - Watch Telegram: `download_*`, `parse_*`, `deploy_*` events and Ledger section.
-- Catch-up: keep `max_download=200` until download pending &lt; 100, then switch dispatch/default to **100**.
+- Catch-up: keep `max_download=200` until **MSTC** download pending &lt; 100, then switch dispatch/default to **100**.
+- Download cap is **MSTC-only**. GeM/eAuction skip the raw download stage and enter parse via a single live batch enrich per source.
+- Parse pulls only selected raw HTML + `pdfs/` (not full docs/thumbs trees).
 - Legacy monolith `refresh-and-deploy.yml` is **manual emergency only** (no schedule).
 - Locks are independent: `work/download.lock`, `work/parse.lock`, `work/deploy.lock`.
 

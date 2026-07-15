@@ -142,12 +142,17 @@ def upsert_from_work_plan(
         except Exception:
             priority = {"new": 90, "changed": 70, "needs_repair": 80}.get(decision, 10)
 
+        # GeM / eAuction have no raw-HTML download stage; mark download done so
+        # they enter the parse queue without consuming the MSTC download cap.
+        src_l = source.strip().lower()
+        initial_download = "pending" if src_l == "mstc" else "done"
+
         if existing is None:
             by_key[key] = LedgerItem(
                 stable_key=key,
                 source=source,
                 source_auction_id=aid,
-                download="pending",
+                download=initial_download,
                 parse="pending",
                 deploy_ready=False,
                 decision=decision or None,
@@ -165,8 +170,10 @@ def upsert_from_work_plan(
             existing.closing = str(closing)
         if reasons:
             existing.reasons = reasons
+        if src_l != "mstc" and existing.download == "pending":
+            existing.download = "done"
         if existing.download == "blocked" and existing.download_attempts < MAX_STAGE_ATTEMPTS:
-            existing.download = "pending"
+            existing.download = "pending" if src_l == "mstc" else "done"
         if existing.parse == "blocked" and existing.parse_attempts < MAX_STAGE_ATTEMPTS:
             existing.parse = "pending"
         existing.updated_at = now.isoformat()
@@ -177,18 +184,22 @@ def upsert_from_work_plan(
 
 
 def select_for_download(ledger: PipelineLedger, *, limit: int) -> list[LedgerItem]:
+    """Select MSTC auctions that still need raw HTML/PDF download."""
     if limit <= 0:
         raise ValueError("limit must be positive")
     eligible = [
         i
         for i in ledger.items
-        if i.download in ("pending", "failed") and i.download_attempts < MAX_STAGE_ATTEMPTS
+        if i.source == "mstc"
+        and i.download in ("pending", "failed")
+        and i.download_attempts < MAX_STAGE_ATTEMPTS
     ]
     eligible.sort(key=lambda i: (-i.priority_score, i.first_queued_at or "", i.stable_key))
     return eligible[:limit]
 
 
 def select_for_parse(ledger: PipelineLedger, *, limit: int | None = None) -> list[LedgerItem]:
+    """Select auctions ready to parse. Prefer MSTC (disk) before live GeM/eAuction."""
     eligible = [
         i
         for i in ledger.items
@@ -196,7 +207,14 @@ def select_for_parse(ledger: PipelineLedger, *, limit: int | None = None) -> lis
         and i.parse in ("pending", "failed")
         and i.parse_attempts < MAX_STAGE_ATTEMPTS
     ]
-    eligible.sort(key=lambda i: (-i.priority_score, i.first_queued_at or "", i.stable_key))
+    eligible.sort(
+        key=lambda i: (
+            0 if i.source == "mstc" else 1,
+            -i.priority_score,
+            i.first_queued_at or "",
+            i.stable_key,
+        )
+    )
     if limit is None:
         return eligible
     if limit <= 0:
@@ -276,13 +294,17 @@ def _replace_item(ledger: PipelineLedger, item: LedgerItem) -> None:
 
 
 def estimated_download_runs_to_clear(ledger: PipelineLedger, *, cap: int) -> int:
-    pending = sum(1 for i in ledger.items if i.download in ("pending", "failed"))
+    pending = sum(
+        1
+        for i in ledger.items
+        if i.source == "mstc" and i.download in ("pending", "failed")
+    )
     if pending <= 0 or cap <= 0:
         return 0
     return int(math.ceil(pending / cap))
 
 
-def pull_ledger(*, local_path: Path | None = None, timeout_sec: int = 120) -> bool:
+def pull_ledger(*, local_path: Path | None = None, timeout_sec: int = 300) -> bool:
     local = Path(local_path or DEFAULT_LEDGER_PATH)
     local.parent.mkdir(parents=True, exist_ok=True)
     cfg = _hostinger_ssh_config()

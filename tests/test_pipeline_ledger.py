@@ -43,9 +43,53 @@ def test_ledger_select_download_respects_cap(tmp_path: Path):
                 updated_at=datetime.now(IST).isoformat(),
             )
         )
+    # Non-MSTC pending must not burn the download cap.
+    ledger.items.append(
+        LedgerItem(
+            stable_key="gem_forward:g1",
+            source="gem_forward",
+            source_auction_id="g1",
+            download="pending",
+            parse="pending",
+            priority_score=99,
+            first_queued_at=datetime.now(IST).isoformat(),
+            updated_at=datetime.now(IST).isoformat(),
+        )
+    )
     selected = select_for_download(ledger, limit=2)
     assert [s.stable_key for s in selected] == ["mstc:1", "mstc:3"]
     assert estimated_download_runs_to_clear(ledger, cap=2) == 2
+
+
+def test_ledger_select_parse_prefers_mstc():
+    ledger = empty_ledger()
+    now = datetime.now(IST).isoformat()
+    ledger.items.extend(
+        [
+            LedgerItem(
+                stable_key="gem_forward:g1",
+                source="gem_forward",
+                source_auction_id="g1",
+                download="done",
+                parse="pending",
+                priority_score=99,
+                first_queued_at=now,
+                updated_at=now,
+            ),
+            LedgerItem(
+                stable_key="mstc:1",
+                source="mstc",
+                source_auction_id="1",
+                download="done",
+                parse="pending",
+                priority_score=10,
+                first_queued_at=now,
+                updated_at=now,
+            ),
+        ]
+    )
+    selected = select_for_parse(ledger, limit=1)
+    assert [s.stable_key for s in selected] == ["mstc:1"]
 
 
 def test_ledger_mark_download_and_parse_retries(tmp_path: Path):

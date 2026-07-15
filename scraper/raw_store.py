@@ -156,6 +156,67 @@ def pull_raw_store(*, raw_dir: Path | None = None, timeout_sec: int = 600) -> Ra
     return RawSyncResult(True, True, f"raw store pulled into {local}")
 
 
+def pull_raw_files(
+    items: list[tuple[str, str]],
+    *,
+    raw_dir: Path | None = None,
+    timeout_sec: int = 300,
+) -> RawSyncResult:
+    """Pull only selected raw HTML files from Hostinger (source, auction_id pairs)."""
+    wanted = [(str(s).strip().lower(), str(a).strip()) for s, a in items if s and a]
+    if not wanted:
+        return RawSyncResult(False, True, "no raw files requested")
+    local = Path(raw_dir or DEFAULT_RAW_DIR)
+    local.mkdir(parents=True, exist_ok=True)
+    cfg = _hostinger_ssh_config()
+    if cfg is None:
+        return RawSyncResult(False, False, "Hostinger SSH env incomplete; skip raw pull", ["raw pull skipped"])
+    if shutil.which("rsync") is None:
+        return RawSyncResult(False, False, "rsync unavailable; skip raw pull", ["raw pull skipped: no rsync"])
+
+    # Keep already-local files out of the transfer list.
+    missing = [
+        (src, aid)
+        for src, aid in wanted
+        if not local_raw_html_path(src, aid, raw_dir=local).is_file()
+    ]
+    if not missing:
+        return RawSyncResult(False, True, f"all {len(wanted)} raw files already local")
+
+    remote_root = remote_pipeline_root(cfg["remote_dir"])
+    target = f"{cfg['username']}@{cfg['host']}"
+    files_from = local / ".rsync_raw_files_from"
+    files_from.write_text(
+        "\n".join(f"{src}/{aid}.html" for src, aid in missing) + "\n",
+        encoding="utf-8",
+    )
+    cmd = [
+        "rsync",
+        "-az",
+        "--ignore-existing",
+        "--files-from",
+        str(files_from),
+        "-e",
+        _ssh_cmd(cfg),
+        f"{target}:{remote_root}/raw/",
+        f"{local}/",
+    ]
+    logger.info("Pulling %s selected raw HTML files", len(missing))
+    try:
+        subprocess.run(cmd, check=True, timeout=timeout_sec, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        msg = (exc.stderr or exc.stdout or str(exc)).strip()
+        return RawSyncResult(True, False, f"selective raw pull failed: {msg[:300]}", [msg[:300]])
+    except subprocess.TimeoutExpired:
+        return RawSyncResult(True, False, "selective raw pull timed out", ["selective raw pull timed out"])
+    finally:
+        try:
+            files_from.unlink(missing_ok=True)
+        except Exception:
+            pass
+    return RawSyncResult(True, True, f"pulled {len(missing)} raw HTML files")
+
+
 def push_raw_store(*, raw_dir: Path | None = None, timeout_sec: int = 600) -> RawSyncResult:
     """Rsync local work/raw/ → remote auction_pipeline/raw/."""
     local = Path(raw_dir or DEFAULT_RAW_DIR)
