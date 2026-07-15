@@ -127,3 +127,8 @@ DEFAULT_GEM_FORWARD_JSON_OUT = REPO_ROOT / "web" / "public" / "data" / "gem_forw
 DEFAULT_PDF_DIR = REPO_ROOT / "web" / "public" / "pdfs"
 DEFAULT_DOCS_DIR = REPO_ROOT / "web" / "public" / "docs"
 DEFAULT_THUMBS_DIR = REPO_ROOT / "web" / "public" / "thumbs"
+DEFAULT_RAW_DIR = REPO_ROOT / "work" / "raw"
+DEFAULT_PIPELINE_LEDGER = REPO_ROOT / "work" / "pipeline_ledger.json"
+# Catch-up default for download job; drop to 100 in steady-state.
+PIPELINE_DOWNLOAD_CAP_CATCHUP = 200
+PIPELINE_DOWNLOAD_CAP_STEADY = 100

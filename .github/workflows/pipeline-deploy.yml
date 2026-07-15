@@ -1,0 +1,89 @@
+name: Pipeline Deploy
+
+on:
+  schedule:
+    # Every 3h at :00 IST (= 30 */3 * * * UTC)
+    - cron: "30 */3 * * *"
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Rsync to Hostinger after build/verify"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  pipeline-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    concurrency:
+      group: pipeline-deploy-production
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install web dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile || pnpm install
+
+      - name: Verify deploy prerequisites
+        working-directory: web
+        run: pnpm run verify-deploy-prereqs
+
+      - name: Configure SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
+          chmod 600 ~/.ssh/hostinger_key
+
+      - name: Run deploy pipeline
+        env:
+          SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
+          HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
+          HOSTINGER_PORT: ${{ secrets.HOSTINGER_PORT }}
+          HOSTINGER_USERNAME: ${{ secrets.HOSTINGER_USERNAME }}
+          HOSTINGER_SSH_KEY: ~/.ssh/hostinger_key
+          HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          DEPLOY_FLAG=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.deploy }}" = "false" ]; then
+            DEPLOY_FLAG="--no-deploy"
+          fi
+          PYTHONPATH=. python -m scraper.pipeline_deploy --break-stale-lock $DEPLOY_FLAG
+
+      - name: Upload deploy reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-deploy-${{ github.run_id }}
+          path: |
+            work/runs/deploy_*/deploy_report.json
+            work/runs/deploy_*/deploy.log
+          if-no-files-found: ignore

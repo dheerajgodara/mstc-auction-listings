@@ -6,17 +6,28 @@
 - **Host:** Hostinger static export at `domains/scrapauctionindia.com/public_html/auctions`
 - **Canonical domain only:** `scrapauctionindia.com`. Hostinger preview subdomains are not production and must not receive scheduled auction deploys.
 
-## Production workflow (authoritative)
+## Production workflow (authoritative) — 3-job pipeline
 
-Use **only** this workflow for scheduled and production deploys:
+Scheduled production uses three independent jobs:
 
-- **File:** `.github/workflows/refresh-and-deploy.yml`
-- **Pipeline:** `scraper.refresh_and_deploy --sources mstc,gem_forward,eauction`
-- **Schedule:** `30 0,6,12,18 * * *` UTC (= **00:00 / 06:00 / 12:00 / 18:00 IST**, equal 6h); `scraper.schedule_guard` skips overlapping ticks
-- **Deep scrape cap:** default `75` per scheduled run (steady-state); `workflow_dispatch` can raise (e.g. `200`) for catch-up
-- **Safety gates:** min count 1000, multi-source required, capped MSTC-only guard, large-drop protection
-- **Assets:** CI bootstraps Hostinger `pdfs/`, `docs/`, `thumbs/` before build; deploy rsync protects those dirs from `--delete`
-- **Steady-state:** queue backlog drained; expect light incremental inflow per slot (~30–50 min/run typical)
+| Job | Workflow | Module | Schedule |
+|-----|----------|--------|----------|
+| **1. Download** | `.github/workflows/pipeline-download.yml` | `scraper.pipeline_download` | `30 0,6,12,18 * * *` UTC (= **00/06/12/18 IST**) |
+| **2. Parse** | `.github/workflows/pipeline-parse.yml` | `scraper.pipeline_parse` | after download success + every 3h UTC catch-up |
+| **3. Deploy** | `.github/workflows/pipeline-deploy.yml` | `scraper.pipeline_deploy` | `30 */3 * * *` UTC (= every **3h at :00 IST**) |
+
+- **Download cap:** catch-up default **200**/run; steady-state **100**/run once `download=pending` &lt; 100
+- **Ledger:** Hostinger `{domain}/auction_pipeline/pipeline_ledger.json` + local `work/pipeline_ledger.json`
+- **Raw HTML:** Hostinger `{domain}/auction_pipeline/raw/{source}/{id}.html` (private); PDFs/docs/thumbs stay public under `auctions/`
+- **Safety gates:** run on **Parse → promote** (min count 1000, multi-source, drop protection)
+- **Deploy** builds/verifies from promoted `auctions.json` and rsyncs `web/out/` (media dirs protected from `--delete`)
+- **Legacy monolith:** `.github/workflows/refresh-and-deploy.yml` is **manual emergency only** (no cron)
+
+### Catch-up vs steady-state
+
+- **Catch-up:** leave download cap at **200** until Telegram ledger shows pending downloads &lt; 100
+- **Steady-state:** set workflow default / dispatch `max_download=100`
+- Failed deploy no longer blocks download progress (stages retry independently)
 
 ## AI enrichment (scheduled)
 

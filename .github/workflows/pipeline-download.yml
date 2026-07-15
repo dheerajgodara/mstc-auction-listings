@@ -1,0 +1,79 @@
+name: Pipeline Download
+
+on:
+  schedule:
+    # 00/06/12/18 IST (= 30 0,6,12,18 UTC)
+    - cron: "30 0,6,12,18 * * *"
+  workflow_dispatch:
+    inputs:
+      max_download:
+        description: "Max auctions to download (200 catch-up; 100 steady-state)"
+        required: false
+        default: "200"
+      max_docs_per_run:
+        description: "Max MSTC document downloads per run"
+        required: false
+        default: "2000"
+
+jobs:
+  pipeline-download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    concurrency:
+      group: pipeline-download
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Scheduled slot guard
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: PYTHONPATH=. python -m scraper.schedule_guard --workflow pipeline-download.yml
+
+      - name: Set up Python
+        if: env.REFRESH_SHOULD_RUN != 'false'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        if: env.REFRESH_SHOULD_RUN != 'false'
+        run: pip install -r requirements.txt
+
+      - name: Configure SSH key
+        if: env.REFRESH_SHOULD_RUN != 'false'
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
+          chmod 600 ~/.ssh/hostinger_key
+
+      - name: Run download pipeline
+        if: env.REFRESH_SHOULD_RUN != 'false'
+        env:
+          SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
+          HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
+          HOSTINGER_PORT: ${{ secrets.HOSTINGER_PORT }}
+          HOSTINGER_USERNAME: ${{ secrets.HOSTINGER_USERNAME }}
+          HOSTINGER_SSH_KEY: ~/.ssh/hostinger_key
+          HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          PYTHONPATH=. python -m scraper.pipeline_download \
+            --sources mstc,gem_forward,eauction \
+            --max-download "${{ github.event.inputs.max_download || '200' }}" \
+            --max-docs-per-run "${{ github.event.inputs.max_docs_per_run || '2000' }}" \
+            --break-stale-lock
+
+      - name: Upload download reports
+        if: always() && env.REFRESH_SHOULD_RUN != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-download-${{ github.run_id }}
+          path: |
+            work/pipeline_ledger.json
+            work/runs/download_*/download_report.json
+            work/runs/download_*/download.log
+          if-no-files-found: ignore

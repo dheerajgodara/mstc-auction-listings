@@ -1,0 +1,382 @@
+"""Job 2: Parse downloaded raw HTML/PDFs into clean auction JSON (no site deploy)."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import shutil
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from scraper.asset_bootstrap import bootstrap_production_assets
+from scraper.config import (
+    DEFAULT_DOCS_DIR,
+    DEFAULT_JSON_OUT,
+    DEFAULT_PDF_DIR,
+    DEFAULT_PIPELINE_LEDGER,
+    DEFAULT_RAW_DIR,
+    DEFAULT_THUMBS_DIR,
+    REPO_ROOT,
+    SITE_BASE_URL,
+)
+from scraper.discovery import run_discovery
+from scraper.document_cache import process_auction_documents
+from scraper.export_guard import write_auctions_json
+from scraper.filters import make_run_id, tomorrow_min_closing_date
+from scraper.import_tracking import finalize_export_payload
+from scraper.incremental import load_export
+from scraper.incremental_materialize import materialize_incremental_export
+from scraper.incremental_plan import build_work_plan
+from scraper.main import enrich_auction, resolve_auction_listing
+from scraper.models import AuctionRecord, AuctionsExport, ExtractionStatus
+from scraper.pipeline_ledger import (
+    load_ledger,
+    mark_parse,
+    pull_ledger,
+    push_ledger,
+    select_for_parse,
+    write_ledger,
+)
+from scraper.promote_export import promote_export
+from scraper.raw_store import _hostinger_ssh_config, _ssh_cmd, pull_raw_store
+from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
+from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
+from scraper.safety_gates import SafetyGateConfig, run_safety_gates
+from scraper.telegram_reporter import send_telegram_report
+
+IST = ZoneInfo("Asia/Kolkata")
+logger = logging.getLogger("scraper.pipeline_parse")
+
+
+def _github_run_url() -> str | None:
+    server = os.environ.get("GITHUB_SERVER_URL")
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if server and repo and run_id:
+        return f"{server}/{repo}/actions/runs/{run_id}"
+    return None
+
+
+def _setup_logging(run_dir: Path) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(run_dir / "parse.log", encoding="utf-8"),
+        ],
+        force=True,
+    )
+
+
+def _push_auctions_json(local_json: Path) -> bool:
+    cfg = _hostinger_ssh_config()
+    if cfg is None or shutil.which("rsync") is None or not local_json.is_file():
+        return False
+    target = f"{cfg['username']}@{cfg['host']}"
+    remote = f"{target}:{cfg['remote_dir']}/data/auctions.json"
+    cmd = ["rsync", "-az", "-e", _ssh_cmd(cfg), str(local_json), remote]
+    try:
+        subprocess.run(cmd, check=True, timeout=180, capture_output=True, text=True)
+        return True
+    except Exception as exc:
+        logger.warning("push auctions.json failed: %s", exc)
+        return False
+
+
+def _enrich_non_mstc(item_source: str, auction_id: str) -> AuctionRecord | None:
+    """Best-effort live enrich for GeM / eAuction (no raw-HTML cache yet)."""
+    if item_source == "gem_forward":
+        from scraper.gem_forward_client import GemForwardClient
+        from scraper.gem_forward_scraper import scrape_gem_forward
+        from scraper.adapters.gem_forward_adapter import adapt_gem_forward_auction
+
+        client = GemForwardClient(transport="auto")
+        auctions = scrape_gem_forward(client=client, enrich=True, include_auction_ids={auction_id})
+        for auction in auctions:
+            if str(getattr(auction, "auction_id", None) or "") == auction_id:
+                return adapt_gem_forward_auction(auction)
+        return None
+    if item_source == "eauction":
+        from scraper.eauction_scraper import scrape_eauction_tabs
+        from scraper.adapters.eauction_adapter import adapt_eauction_record
+
+        rows, _stats = scrape_eauction_tabs(
+            tabs=["closingTodayTab", "closingWeekTab", "closingTwoWeekTab"],
+            enrich_details=True,
+            include_auction_ids={auction_id},
+        )
+        for row in rows:
+            rec = adapt_eauction_record(row)
+            if str(rec.source_auction_id or rec.id) == auction_id:
+                return rec
+        return None
+    return None
+
+
+def run_pipeline_parse(
+    *,
+    repo_root: Path = REPO_ROOT,
+    max_parse: int | None = None,
+    min_count: int = 1000,
+    sources: list[str] | None = None,
+    force_min_closing_date: str | None = None,
+    promote: bool = True,
+    break_stale_lock: bool = True,
+) -> dict[str, Any]:
+    sources = sources or ["mstc", "gem_forward", "eauction"]
+    run_id = f"parse_{make_run_id()}"
+    run_dir = repo_root / "work" / "runs" / run_id
+    _setup_logging(run_dir)
+
+    lock_path = repo_root / "work" / "parse.lock"
+    acquire_refresh_lock(lock_path=lock_path, run_id=run_id, stale_minutes=360, break_stale_lock=break_stale_lock)
+
+    min_closing = force_min_closing_date or tomorrow_min_closing_date()
+    production_json = Path(DEFAULT_JSON_OUT)
+    public_dir = repo_root / "web" / "public"
+    pdf_dir = Path(DEFAULT_PDF_DIR)
+    docs_dir = Path(DEFAULT_DOCS_DIR)
+    thumbs_dir = Path(DEFAULT_THUMBS_DIR)
+    raw_dir = Path(DEFAULT_RAW_DIR)
+    ledger_path = Path(DEFAULT_PIPELINE_LEDGER)
+    candidate_path = run_dir / "candidate_auctions.json"
+
+    started = datetime.now(IST).isoformat()
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "status": "running",
+        "pipeline": "parse",
+        "started_at": started,
+        "min_closing_date": min_closing,
+        "sources": sources,
+        "site_base_url": SITE_BASE_URL,
+        "github_run_url": _github_run_url(),
+        "warnings": [],
+        "errors": [],
+    }
+    send_telegram_report(payload, event="parse_started")
+
+    warnings: list[str] = []
+    try:
+        _bootstrap_previous_production_from_live(
+            production_json=production_json,
+            base_url=SITE_BASE_URL or None,
+            warnings=warnings,
+        )
+        bootstrap_production_assets(public_dir=public_dir)
+        pull_raw_store(raw_dir=raw_dir)
+        pull_ledger(local_path=ledger_path)
+
+        previous_export = load_export(production_json)
+        if not previous_export or int(previous_export.get("count") or 0) <= 0:
+            raise RuntimeError("parse job requires previous production export")
+
+        discovery_path = run_dir / "discovery_latest.json"
+        discovery_export = run_discovery(
+            sources=sources,
+            out_path=discovery_path,
+            min_closing_date=min_closing,
+            allow_small_output=True,
+        )
+        discovery_data = json.loads(discovery_path.read_text(encoding="utf-8"))
+        plan = build_work_plan(discovery_data, previous_export)
+
+        ledger = load_ledger(ledger_path)
+        selected = select_for_parse(ledger, limit=max_parse)
+        payload["selected_count"] = len(selected)
+        payload["ledger"] = ledger.status_counts()
+        send_telegram_report(payload, event="parse_selection")
+
+        parsed_records: list[AuctionRecord] = []
+        stats: dict[str, Any] = {
+            "html_parsed_from_disk": 0,
+            "html_failures": 0,
+            "pdf_failures": 0,
+            "pdf_cache_hits": 0,
+            "lots_parsed": 0,
+            "pdf_failed_ids": [],
+        }
+        ok_count = fail_count = 0
+
+        for item in selected:
+            try:
+                if item.source == "mstc":
+                    base, _ = resolve_auction_listing(item.source_auction_id)
+                    base.source = "mstc"
+                    record = enrich_auction(
+                        base,
+                        pdf_dir=pdf_dir,
+                        skip_pdf=False,
+                        stats=stats,
+                        mode="parse_only",
+                        raw_dir=raw_dir,
+                    )
+                    record, _ = process_auction_documents(
+                        record,
+                        docs_dir=docs_dir,
+                        thumbs_dir=thumbs_dir,
+                        skip_docs=False,
+                        max_docs_remaining=50,
+                        session=__import__("requests").Session(),
+                        stats=stats,
+                    )
+                else:
+                    record = _enrich_non_mstc(item.source, item.source_auction_id)
+                    if record is None:
+                        raise RuntimeError(f"could not enrich {item.stable_key}")
+
+                ready = record.status in (ExtractionStatus.COMPLETE, ExtractionStatus.PARTIAL) and bool(
+                    record.lots or record.pdf_url
+                )
+                # MSTC complete enough if lots present OR status complete/partial
+                if item.source == "mstc":
+                    ready = record.status != ExtractionStatus.FAILED
+                mark_parse(ledger, item.stable_key, ok=True, deploy_ready=ready)
+                parsed_records.append(record)
+                ok_count += 1
+            except Exception as exc:
+                logger.exception("parse failed for %s", item.stable_key)
+                mark_parse(ledger, item.stable_key, ok=False, error=str(exc))
+                fail_count += 1
+
+        write_ledger(ledger, ledger_path)
+
+        parsed_export = AuctionsExport(
+            generated_at=datetime.now(IST),
+            count=len(parsed_records),
+            auctions=parsed_records,
+            stats=stats,
+        ).model_dump(mode="json")
+
+        # Build full work plan: mark selected as deep_parse, everything else reuse.
+        selected_keys = {i.stable_key for i in selected}
+        adjusted_items = []
+        for wp in plan.items:
+            if wp.stable_key in selected_keys:
+                adjusted_items.append(wp.model_copy(update={"action": "deep_parse"}))
+            elif wp.action == "deep_parse":
+                adjusted_items.append(wp.model_copy(update={"action": "reuse_previous"}))
+            else:
+                adjusted_items.append(wp)
+
+        adjusted_plan = plan.model_copy(update={"items": adjusted_items})
+        candidate = materialize_incremental_export(
+            work_plan=adjusted_plan,
+            previous_export=previous_export,
+            parsed_export=parsed_export,
+            discovery_export=discovery_data,
+            allow_missing_deep_parse=True,
+        )
+        candidate["stats"] = dict(candidate.get("stats") or {})
+        candidate["stats"]["pipeline_parse"] = {
+            "ok": ok_count,
+            "failed": fail_count,
+            "selected": len(selected),
+        }
+        candidate = finalize_export_payload(
+            candidate,
+            previous_export=previous_export,
+            automation_ran_at=datetime.now(IST),
+            run_id=run_id,
+        )
+        write_auctions_json(candidate_path, candidate)
+
+        gate_config = SafetyGateConfig(
+            min_count=min_count,
+            min_closing_date=min_closing,
+            eauction_warn_only=True,
+            production_json=production_json,
+            require_sources=("mstc", "eauction"),
+            warn_only_sources=("gem_forward",),
+        )
+        gates = run_safety_gates(
+            candidate_path,
+            config=gate_config,
+            public_dir=public_dir,
+        )
+        payload["safety_gates"] = {
+            "passed": gates.passed,
+            "errors": gates.errors,
+            "warnings": gates.warnings,
+            "candidate_count": gates.candidate_count,
+            "production_count": gates.production_count,
+        }
+        warnings.extend(gates.warnings)
+        if not gates.passed:
+            raise RuntimeError(f"safety gates failed: {gates.errors}")
+
+        promoted = False
+        if promote:
+            promote_export(
+                candidate=candidate_path,
+                target=production_json,
+                min_count=min_count,
+                min_closing_date=min_closing,
+                backup_dir=repo_root / "work" / "backups",
+                require_sources=["mstc"],
+                warn_missing_sources=["gem_forward", "eauction"],
+                automation_ran_at=datetime.now(IST),
+                run_id=run_id,
+            )
+            promoted = True
+            _push_auctions_json(production_json)
+
+        push_ledger(local_path=ledger_path)
+
+        payload.update(
+            {
+                "status": "success",
+                "finished_at": datetime.now(IST).isoformat(),
+                "parse_ok": ok_count,
+                "parse_failed": fail_count,
+                "promoted": promoted,
+                "auctions": candidate.get("count"),
+                "ledger": ledger.status_counts(),
+                "warnings": warnings,
+            }
+        )
+        (run_dir / "parse_report.json").write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
+        send_telegram_report(payload, event="parse_done")
+        return payload
+    except Exception as exc:
+        logger.exception("pipeline parse failed")
+        payload["status"] = "failed"
+        payload["errors"] = [str(exc)]
+        payload["warnings"] = warnings
+        payload["finished_at"] = datetime.now(IST).isoformat()
+        send_telegram_report(payload, event="parse_failed")
+        raise
+    finally:
+        release_refresh_lock(lock_path, run_id=run_id)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Pipeline job 2: parse raw assets")
+    parser.add_argument("--max-parse", type=int, default=None)
+    parser.add_argument("--min-count", type=int, default=1000)
+    parser.add_argument("--sources", default="mstc,gem_forward,eauction")
+    parser.add_argument("--min-closing-date", default=None)
+    parser.add_argument("--no-promote", action="store_true")
+    parser.add_argument("--break-stale-lock", action="store_true", default=True)
+    args = parser.parse_args(argv)
+    run_pipeline_parse(
+        max_parse=args.max_parse,
+        min_count=args.min_count,
+        sources=[s.strip() for s in args.sources.split(",") if s.strip()],
+        force_min_closing_date=args.min_closing_date,
+        promote=not args.no_promote,
+        break_stale_lock=args.break_stale_lock,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

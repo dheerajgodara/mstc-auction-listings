@@ -108,7 +108,18 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
         "success": f"✅ Scrap Auction India refresh {status}",
         "failed": f"❌ Scrap Auction India refresh {status}",
         "blocked": f"🚫 Scrap Auction India refresh {status}",
-    }.get(event, f"ℹ️ Scrap Auction India refresh {status}")
+        "download_started": "⬇️ Scrap Auction India download started",
+        "download_selection": "📋 Scrap Auction India download selection",
+        "download_done": "✅ Scrap Auction India download complete",
+        "download_failed": "❌ Scrap Auction India download failed",
+        "parse_started": "🧩 Scrap Auction India parse started",
+        "parse_selection": "📋 Scrap Auction India parse selection",
+        "parse_done": "✅ Scrap Auction India parse complete",
+        "parse_failed": "❌ Scrap Auction India parse failed",
+        "deploy_started": "🚀 Scrap Auction India deploy started",
+        "deploy_done": "✅ Scrap Auction India deploy complete",
+        "deploy_failed": "❌ Scrap Auction India deploy failed",
+    }.get(event, f"ℹ️ Scrap Auction India {payload.get('pipeline') or 'refresh'} {status}")
 
     lines = [
         f"<b>{_h(title)}</b>",
@@ -124,7 +135,29 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
         run_rows.append(_row("Min closing", payload.get("min_closing_date")))
     if payload.get("mode"):
         run_rows.append(_row("Mode", f"{payload.get('mode')} | cap={payload.get('max_deep_scrape_per_run', 'n/a')}"))
+    if payload.get("pipeline"):
+        run_rows.append(_row("Pipeline", payload.get("pipeline")))
+    if payload.get("max_download") is not None:
+        run_rows.append(_row("Download cap", payload.get("max_download")))
+    if payload.get("selected_count") is not None:
+        run_rows.append(_row("Selected", payload.get("selected_count")))
     lines.extend(_section("Run", run_rows))
+
+    ledger = payload.get("ledger") or {}
+    if ledger:
+        ledger_rows = [
+            _row("Total", ledger.get("total", "n/a")),
+            _row("Download", ledger.get("download") or "n/a"),
+            _row("Parse", ledger.get("parse") or "n/a"),
+            _row("Deploy ready", ledger.get("deploy_ready", "n/a")),
+        ]
+        if payload.get("estimated_runs_to_clear") is not None:
+            ledger_rows.append(_row("Est. download runs", payload.get("estimated_runs_to_clear")))
+        if payload.get("download_ok") is not None:
+            ledger_rows.append(_row("Download ok/fail", f"{payload.get('download_ok')}/{payload.get('download_failed')}"))
+        if payload.get("parse_ok") is not None:
+            ledger_rows.append(_row("Parse ok/fail", f"{payload.get('parse_ok')}/{payload.get('parse_failed')}"))
+        lines.extend(_section("Ledger", ledger_rows))
 
     if discovery:
         src = discovery.get("by_source") or {}

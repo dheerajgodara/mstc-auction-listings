@@ -15,13 +15,16 @@ from scraper.config import (
     DEFAULT_DOCS_DIR,
     DEFAULT_JSON_OUT,
     DEFAULT_PDF_DIR,
+    DEFAULT_RAW_DIR,
     DEFAULT_THUMBS_DIR,
+    HTML_DETAIL_PATH,
+    MSTC_BASE_URL,
     OFFICE_CODES,
     PDF_DETAIL_URL,
     REGION_TO_STATE,
 )
 from scraper.document_cache import attach_documents_to_lot, process_auction_documents
-from scraper.html_parser import fetch_and_parse_html_detail
+from scraper.html_parser import fetch_html_detail, parse_html_detail
 from scraper.merger import merge_auction_record
 from scraper.mstc_api import (
     fetch_all_listing_api,
@@ -33,6 +36,7 @@ from scraper.models import AuctionRecord, AuctionsExport, ExtractionStatus, List
 from scraper.pdf_downloader import download_pdf
 from scraper.pdf_parser import parse_pdf_header, parse_pdf_lots
 from scraper.export_guard import write_auctions_json
+from scraper.raw_store import has_raw_html, load_raw_html, save_raw_html
 from scraper.retention import should_keep_auction
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -108,15 +112,85 @@ def enrich_auction(
     pdf_dir: Path,
     skip_pdf: bool,
     stats: dict,
+    mode: str = "full",
+    raw_dir: Path | None = None,
 ) -> AuctionRecord:
+    """Enrich MSTC auction.
+
+    mode:
+      - full: fetch HTML, download PDF, parse both (legacy monolith behaviour)
+      - download_only: fetch+persist HTML, download PDF; do not parse PDF/HTML
+      - parse_only: parse from saved raw HTML + local PDF; no network fetch
+    """
+    mode = (mode or "full").strip().lower()
+    if mode not in {"full", "download_only", "parse_only"}:
+        raise ValueError(f"unknown enrich mode: {mode}")
+
     html_data = None
     pdf_lots = None
     pdf_header = None
     pdf_url = None
+    raw_root = Path(raw_dir or DEFAULT_RAW_DIR)
+    source = str(base.source or "mstc")
+
+    if mode == "download_only":
+        try:
+            time.sleep(REQUEST_DELAY_SEC)
+            html = fetch_html_detail(base.id)
+            save_raw_html(source, base.id, html, raw_dir=raw_root)
+            stats["html_downloaded"] = stats.get("html_downloaded", 0) + 1
+            url = f"{MSTC_BASE_URL}{HTML_DETAIL_PATH.format(auction_id=base.id)}"
+            base.mstc_html_url = url
+            base.detail_url = base.detail_url or url
+        except Exception as exc:
+            logger.warning("HTML download failed for %s: %s", base.id, exc)
+            base.errors.append(f"html_download: {exc}")
+            stats["html_failures"] = stats.get("html_failures", 0) + 1
+
+        if not skip_pdf:
+            try:
+                time.sleep(REQUEST_DELAY_SEC)
+                pdf_path = pdf_dir / f"{base.id}.pdf"
+                if not pdf_path.exists():
+                    download_pdf(base.id, pdf_path)
+                    stats["pdf_downloaded"] = stats.get("pdf_downloaded", 0) + 1
+                else:
+                    stats["pdf_cache_hits"] = stats.get("pdf_cache_hits", 0) + 1
+                base.pdf_url = f"pdfs/{base.id}.pdf"
+                base.source_pdf_url = PDF_DETAIL_URL
+            except Exception as exc:
+                logger.warning("PDF download failed for %s: %s", base.id, exc)
+                base.errors.append(f"pdf_download: {exc}")
+                stats["pdf_failures"] = stats.get("pdf_failures", 0) + 1
+                stats.setdefault("pdf_failed_ids", []).append(base.id)
+
+        if base.errors and not has_raw_html(source, base.id, raw_dir=raw_root) and not (
+            pdf_dir / f"{base.id}.pdf"
+        ).exists():
+            base.status = ExtractionStatus.FAILED
+        else:
+            base.status = ExtractionStatus.LISTING_ONLY
+        return base
 
     try:
-        time.sleep(REQUEST_DELAY_SEC)
-        html_data = fetch_and_parse_html_detail(base.id)
+        if mode == "parse_only":
+            html = load_raw_html(source, base.id, raw_dir=raw_root)
+            if html is None:
+                raise FileNotFoundError(f"raw HTML missing for {source}:{base.id}")
+            html_data = parse_html_detail(html)
+            html_data["mstc_html_url"] = (
+                base.mstc_html_url
+                or f"{MSTC_BASE_URL}{HTML_DETAIL_PATH.format(auction_id=base.id)}"
+            )
+            stats["html_parsed_from_disk"] = stats.get("html_parsed_from_disk", 0) + 1
+        else:
+            time.sleep(REQUEST_DELAY_SEC)
+            html = fetch_html_detail(base.id)
+            save_raw_html(source, base.id, html, raw_dir=raw_root)
+            html_data = parse_html_detail(html)
+            html_data["mstc_html_url"] = f"{MSTC_BASE_URL}{HTML_DETAIL_PATH.format(auction_id=base.id)}"
+            stats["html_downloaded"] = stats.get("html_downloaded", 0) + 1
+
         if html_data.get("opening_raw"):
             dt = parse_mstc_datetime(html_data["opening_raw"])
             if dt:
@@ -132,13 +206,18 @@ def enrich_auction(
 
     if not skip_pdf:
         try:
-            time.sleep(REQUEST_DELAY_SEC)
             pdf_path = pdf_dir / f"{base.id}.pdf"
-            if not pdf_path.exists():
-                download_pdf(base.id, pdf_path)
-                stats["pdf_downloaded"] = stats.get("pdf_downloaded", 0) + 1
+            if mode != "parse_only":
+                time.sleep(REQUEST_DELAY_SEC)
+                if not pdf_path.exists():
+                    download_pdf(base.id, pdf_path)
+                    stats["pdf_downloaded"] = stats.get("pdf_downloaded", 0) + 1
+                else:
+                    logger.debug("Using cached PDF %s", pdf_path)
+                    stats["pdf_cache_hits"] = stats.get("pdf_cache_hits", 0) + 1
+            elif not pdf_path.exists():
+                raise FileNotFoundError(f"PDF missing for parse_only: {pdf_path}")
             else:
-                logger.debug("Using cached PDF %s", pdf_path)
                 stats["pdf_cache_hits"] = stats.get("pdf_cache_hits", 0) + 1
             pdf_lots = parse_pdf_lots(pdf_path)
             pdf_header = parse_pdf_header(pdf_path)

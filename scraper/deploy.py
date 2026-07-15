@@ -99,7 +99,7 @@ def validate_deploy_export(build_dir: Path) -> tuple[int, dict[str, int]]:
         raise DeployValidationError(
             "Refusing to deploy capped MSTC-only export. "
             f"count={count}, by_source={by_source}. "
-            "Use refresh-and-deploy.yml for production."
+            "Use pipeline-download.yml + pipeline-parse.yml + pipeline-deploy.yml for production."
         )
 
     return count, by_source
