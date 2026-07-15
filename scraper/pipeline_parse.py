@@ -124,7 +124,7 @@ def _enrich_non_mstc(item_source: str, auction_id: str) -> AuctionRecord | None:
 def run_pipeline_parse(
     *,
     repo_root: Path = REPO_ROOT,
-    max_parse: int | None = None,
+    max_parse: int | None = 200,
     min_count: int = 1000,
     sources: list[str] | None = None,
     force_min_closing_date: str | None = None,
@@ -360,7 +360,7 @@ def run_pipeline_parse(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Pipeline job 2: parse raw assets")
-    parser.add_argument("--max-parse", type=int, default=None)
+    parser.add_argument("--max-parse", type=int, default=200, help="Max auctions to parse this run (default 200)")
     parser.add_argument("--min-count", type=int, default=1000)
     parser.add_argument("--sources", default="mstc,gem_forward,eauction")
     parser.add_argument("--min-closing-date", default=None)

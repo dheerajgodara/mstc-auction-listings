@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       max_parse:
-        description: "Optional parse cap (empty = all download-done pending)"
+        description: "Parse cap per run (default 200)"
         required: false
-        default: ""
+        default: "200"
       promote:
         description: "Promote candidate to auctions.json"
         required: false
@@ -63,10 +63,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          MAX_PARSE_FLAG=""
-          if [ -n "${{ github.event.inputs.max_parse }}" ]; then
-            MAX_PARSE_FLAG="--max-parse ${{ github.event.inputs.max_parse }}"
-          fi
+          MAX_PARSE="${{ github.event.inputs.max_parse || '200' }}"
           PROMOTE_FLAG=""
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.promote }}" = "false" ]; then
             PROMOTE_FLAG="--no-promote"
@@ -74,8 +71,8 @@ jobs:
           PYTHONPATH=. python -m scraper.pipeline_parse \
             --sources mstc,gem_forward,eauction \
             --min-count 1000 \
+            --max-parse "$MAX_PARSE" \
             --break-stale-lock \
-            $MAX_PARSE_FLAG \
             $PROMOTE_FLAG
 
       - name: Upload parse reports
