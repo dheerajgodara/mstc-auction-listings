@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from scraper.auction_quarantine import active_quarantine_keys, load_quarantine
 from scraper.asset_bootstrap import bootstrap_production_assets
 from scraper.batch_manifest import BATCH_STATUS_FAILED
 from scraper.batch_run import batch_run
@@ -32,6 +33,7 @@ from scraper.config import (
 from scraper.deploy import deploy as deploy_to_hostinger
 from scraper.discovery import run_discovery
 from scraper.export_guard import ExportGuardError
+from scraper.export_hygiene import apply_quarantine_skips, strip_aged_out_auctions
 from scraper.filters import tomorrow_min_closing_date, make_run_id
 from scraper.http_verify import verify_live_site
 from scraper.import_tracking import finalize_export_payload
@@ -56,7 +58,6 @@ from scraper.notify import send_failure_notification
 from scraper.safety_gates import SafetyGateConfig, run_safety_gates
 from scraper.source_fallback import apply_missing_source_fallback, load_export, source_counts
 from scraper.telegram_reporter import send_telegram_report
-
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.refresh_and_deploy")
 
@@ -597,12 +598,15 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
                 max_deep_scrape_per_run=config.max_deep_scrape_per_run,
                 previous_export=previous_export,
             )
+            q_keys = active_quarantine_keys(load_quarantine(pull_remote=True))
             candidate_data = materialize_incremental_export(
                 work_plan=work_plan,
                 previous_export=previous_export,
                 parsed_export=parsed_deep_data,
                 discovery_export=discovery_data,
                 allow_missing_deep_parse=True,
+                min_closing_date=min_closing_date,
+                quarantine_keys=q_keys,
             )
             candidate_data.setdefault("stats", {})["incremental_queue_state"] = queue_state_after.model_dump(mode="json")
             _write_candidate_payload(candidate_path, candidate_data)
@@ -613,6 +617,7 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             payload["incremental_queue"] = queue_state_after.model_dump(mode="json")
         else:
             candidate_data = _export_to_payload(export, candidate_path)
+            q_keys = active_quarantine_keys(load_quarantine(pull_remote=True))
 
         # 2b. Fallback and finalization before gates.
         #
@@ -628,6 +633,22 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
         payload["source_fallback"] = fallback_report
         if fallback_report.get("applied"):
             warnings.append(f"source fallback applied: {fallback_report.get('sources')}")
+
+        if q_keys:
+            q_result = apply_quarantine_skips(
+                candidate_data, q_keys, min_count=config.min_count
+            )
+            candidate_data = q_result.export
+            warnings.extend(q_result.warnings)
+        strip_result = strip_aged_out_auctions(
+            candidate_data, min_closing_date=min_closing_date
+        )
+        candidate_data = strip_result.export
+        warnings.extend(strip_result.warnings)
+        payload["export_hygiene"] = {
+            "dropped_aged_out": len(strip_result.dropped),
+            "dropped_ids": [d.get("id") for d in strip_result.dropped[:20]],
+        }
 
         candidate_data = finalize_export_payload(
             candidate_data,

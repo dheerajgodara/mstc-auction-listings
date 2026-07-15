@@ -9,7 +9,9 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from scraper.export_guard import write_auctions_json
-from scraper.incremental import build_record_index, load_export, stable_listing_key
+from scraper.export_hygiene import closing_passes_min
+from scraper.filters import parse_min_closing_date
+from scraper.incremental import build_record_index, load_export
 from scraper.incremental_plan import IncrementalWorkPlan, load_work_plan
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -29,10 +31,14 @@ def materialize_incremental_export(
     parsed_export: dict[str, Any],
     discovery_export: dict[str, Any] | None = None,
     allow_missing_deep_parse: bool = False,
+    min_closing_date: str | None = None,
+    quarantine_keys: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any]:
     previous_idx = build_record_index(previous_export)
     parsed_idx = build_record_index(parsed_export)
     discovery_idx = build_record_index(discovery_export) if discovery_export else {}
+    min_closing = parse_min_closing_date(min_closing_date) if min_closing_date else None
+    blocked = set(quarantine_keys or ())
 
     records: list[dict[str, Any]] = []
     missing_deep_parse: list[str] = []
@@ -40,45 +46,67 @@ def materialize_incremental_export(
     reused_discovery = 0
     deep_used = 0
     removed = 0
+    excluded_aged_out_reuse = 0
+    excluded_quarantine = 0
+
+    def _accept(stable_key: str, record: dict[str, Any] | None) -> bool:
+        nonlocal excluded_aged_out_reuse, excluded_quarantine
+        if record is None:
+            return False
+        if stable_key in blocked:
+            excluded_quarantine += 1
+            return False
+        if min_closing is not None and not closing_passes_min(record, min_closing):
+            excluded_aged_out_reuse += 1
+            return False
+        return True
 
     for item in work_plan.items:
         if item.action == "reuse_previous":
             previous_record = previous_idx.get(item.stable_key)
-            if previous_record:
+            if _accept(item.stable_key, previous_record):
+                assert previous_record is not None
                 records.append(previous_record)
                 reused += 1
-            else:
+            elif previous_record is None:
                 missing_deep_parse.append(item.stable_key)
         elif item.action == "deep_parse":
             parsed_record = parsed_idx.get(item.stable_key)
-            if parsed_record:
+            if _accept(item.stable_key, parsed_record):
+                assert parsed_record is not None
                 records.append(parsed_record)
                 deep_used += 1
-            elif allow_missing_deep_parse:
+            elif allow_missing_deep_parse and parsed_record is None:
                 previous_record = previous_idx.get(item.stable_key)
-                if previous_record:
+                if _accept(item.stable_key, previous_record):
+                    assert previous_record is not None
                     records.append(previous_record)
                     reused += 1
                     missing_deep_parse.append(item.stable_key)
                 else:
                     discovery_record = discovery_idx.get(item.stable_key)
-                    if discovery_record:
+                    if _accept(item.stable_key, discovery_record):
+                        assert discovery_record is not None
                         records.append(_mark_pending_shallow(discovery_record))
                         reused_discovery += 1
                         missing_deep_parse.append(item.stable_key)
-            else:
+                    elif previous_record is None and discovery_record is None:
+                        missing_deep_parse.append(item.stable_key)
+            elif parsed_record is None:
                 missing_deep_parse.append(item.stable_key)
         elif item.action == "reuse_discovery":
             discovery_record = discovery_idx.get(item.stable_key)
             previous_record = previous_idx.get(item.stable_key)
-            if discovery_record:
+            if _accept(item.stable_key, discovery_record):
+                assert discovery_record is not None
                 records.append(_mark_pending_shallow(discovery_record))
                 reused_discovery += 1
-            elif previous_record:
+            elif _accept(item.stable_key, previous_record):
+                assert previous_record is not None
                 records.append(previous_record)
                 reused += 1
                 missing_deep_parse.append(item.stable_key)
-            else:
+            elif discovery_record is None and previous_record is None:
                 missing_deep_parse.append(item.stable_key)
         elif item.action == "mark_removed":
             removed += 1
@@ -96,9 +124,12 @@ def materialize_incremental_export(
         "reused_discovery_records": reused_discovery,
         "deep_parsed_records": deep_used,
         "removed_records": removed,
+        "excluded_aged_out_reuse": excluded_aged_out_reuse,
+        "excluded_quarantine": excluded_quarantine,
         "missing_deep_parse_records": len(missing_deep_parse),
         "missing_deep_parse_keys": missing_deep_parse[:50],
         "action_counts": work_plan.action_counts,
+        "min_closing_date": min_closing_date,
     }
     stats["by_source"] = _count_by(records, "source")
     stats["by_category"] = _count_by(records, "asset_category")

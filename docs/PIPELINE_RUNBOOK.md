@@ -16,6 +16,43 @@ If Download hard-fails:
 
 Telegram: `download_retry_scheduled`, `download_retries_exhausted`.
 
+## Aged-out closing dates
+
+Discovery already filters to `tomorrow` (IST). **Materialize used to reuse yesterday’s production rows verbatim**, so after midnight those rows poison QA (`closes before …`) and stop drain on the same IDs every retry.
+
+Pipeline now:
+
+1. Materialize excludes aged-out / quarantined keys when `min_closing_date` is set.
+2. `export_hygiene.strip_aged_out_auctions` runs after materialize (parse + legacy refresh).
+3. Poison guard: dropping more than `max(50, 5% of export)` hard-fails (wrong filter) unless ops override.
+4. Ledger `parse=done` is marked **only after** safety gates pass.
+
+Count / missing-source / schema failures still hard-stop.
+
+### Quarantine escape hatch
+
+Stubborn single IDs (clock skew / bad closing parse) can be skipped via Hostinger:
+
+`{domain}/auction_pipeline/auction_quarantine.json`
+
+```bash
+# Add (default TTL 48h; max 7d)
+python -m scraper.quarantine_tool add --key mstc:588636 --reason operator_skip --hours 48
+
+python -m scraper.quarantine_tool list
+python -m scraper.quarantine_tool remove --key mstc:588636
+```
+
+Auto-quarantine: if residual aged-out errors remain after strip+re-QA, those IDs are quarantined **48h** and parse continues (Telegram: `Quarantine · added N · 48h`). Quarantine cannot take the export below `min_count`.
+
+### Recovery after aged-out drain stop
+
+Deploy this hygiene fix, then resume (no re-download needed):
+
+```bash
+gh workflow run pipeline-drain.yml -f max_parse=100 -f max_cycles=25
+```
+
 ## Drain failure
 
 - Parse fails ×3 → no deploy → `drain_stopped`
@@ -32,6 +69,7 @@ gh workflow run pipeline-drain.yml -f max_parse=100 -f max_cycles=25
 - `{domain}/auction_pipeline/raw/{source}/{id}.html`
 - `{domain}/auction_pipeline/download_retry_state.json`
 - `{domain}/auction_pipeline/last_deploy.json`
+- `{domain}/auction_pipeline/auction_quarantine.json`
 - Public: `…/public_html/auctions/{pdfs,docs,thumbs,data}`
 
 ## GeM / eAuction

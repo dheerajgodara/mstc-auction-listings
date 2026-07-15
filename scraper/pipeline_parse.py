@@ -15,6 +15,12 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from scraper.asset_bootstrap import bootstrap_production_assets
+from scraper.auction_quarantine import (
+    DEFAULT_AUTO_HOURS,
+    active_quarantine_keys,
+    add_quarantine_entries,
+    load_quarantine,
+)
 from scraper.config import (
     DEFAULT_DOCS_DIR,
     DEFAULT_JSON_OUT,
@@ -29,6 +35,12 @@ from scraper.config import (
 from scraper.discovery import run_discovery
 from scraper.document_cache import process_auction_documents
 from scraper.export_guard import write_auctions_json
+from scraper.export_hygiene import (
+    apply_quarantine_skips,
+    classify_strict_errors,
+    format_dropped_telegram_note,
+    strip_aged_out_auctions,
+)
 from scraper.filters import make_run_id, tomorrow_min_closing_date
 from scraper.import_tracking import finalize_export_payload, stable_auction_key
 from scraper.incremental import load_export
@@ -50,7 +62,6 @@ from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
 from scraper.safety_gates import SafetyGateConfig, run_safety_gates
 from scraper.telegram_reporter import send_telegram_report
-
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_parse")
 
@@ -230,6 +241,8 @@ def run_pipeline_parse(
         }
 
         parsed_records: list[AuctionRecord] = []
+        # Defer mark_parse(ok=True) until safety gates pass (ledger honesty).
+        pending_parse_ok: list[tuple[str, bool]] = []
         stats: dict[str, Any] = {
             "html_parsed_from_disk": 0,
             "html_failures": 0,
@@ -290,7 +303,7 @@ def run_pipeline_parse(
                         raise RuntimeError(f"could not enrich {item.stable_key}")
 
                 ready = record.status != ExtractionStatus.FAILED
-                mark_parse(ledger, item.stable_key, ok=True, deploy_ready=ready)
+                pending_parse_ok.append((item.stable_key, ready))
                 parsed_records.append(record)
                 ok_count += 1
             except Exception as exc:
@@ -303,6 +316,7 @@ def run_pipeline_parse(
                     f"failed={fail_count} docs_left={docs_remaining}"
                 )
 
+        # Persist individual failures only; successes wait for gates.
         write_ledger(ledger, ledger_path)
 
         parsed_export = AuctionsExport(
@@ -324,13 +338,32 @@ def run_pipeline_parse(
                 adjusted_items.append(wp)
 
         adjusted_plan = plan.model_copy(update={"items": adjusted_items})
+        quarantine_data = load_quarantine(pull_remote=True)
+        q_keys = active_quarantine_keys(quarantine_data, pull_remote=False)
+        if q_keys:
+            _phase(f"quarantine active: {len(q_keys)}")
         candidate = materialize_incremental_export(
             work_plan=adjusted_plan,
             previous_export=previous_export,
             parsed_export=parsed_export,
             discovery_export=discovery_data,
             allow_missing_deep_parse=True,
+            min_closing_date=min_closing,
+            quarantine_keys=q_keys,
         )
+        hygiene_dropped: list[dict[str, Any]] = []
+        quarantine_added = 0
+        if q_keys:
+            q_result = apply_quarantine_skips(candidate, q_keys, min_count=min_count)
+            candidate = q_result.export
+            warnings.extend(q_result.warnings)
+        strip_result = strip_aged_out_auctions(candidate, min_closing_date=min_closing)
+        candidate = strip_result.export
+        hygiene_dropped.extend(strip_result.dropped)
+        warnings.extend(strip_result.warnings)
+        if strip_result.dropped:
+            _phase(f"hygiene: stripped {len(strip_result.dropped)} aged-out")
+
         candidate["stats"] = dict(candidate.get("stats") or {})
         candidate["stats"]["pipeline_parse"] = {
             "ok": ok_count,
@@ -353,11 +386,81 @@ def run_pipeline_parse(
             require_sources=("mstc", "eauction"),
             warn_only_sources=("gem_forward",),
         )
-        gates = run_safety_gates(
-            candidate_path,
-            config=gate_config,
-            public_dir=public_dir,
-        )
+
+        def _run_gates():
+            return run_safety_gates(
+                candidate_path,
+                config=gate_config,
+                public_dir=public_dir,
+            )
+
+        gates = _run_gates()
+        # Recoverable aged-out residuals: strip again, then auto-quarantine once.
+        if not gates.passed:
+            classified = classify_strict_errors(gates.errors)
+            if classified.aged_out and not classified.fatal:
+                _phase("gates: residual aged-out only — re-strip + re-QA")
+                strip2 = strip_aged_out_auctions(candidate, min_closing_date=min_closing)
+                candidate = strip2.export
+                hygiene_dropped.extend(strip2.dropped)
+                warnings.extend(strip2.warnings)
+                write_auctions_json(candidate_path, candidate)
+                gates = _run_gates()
+            elif classified.aged_out and classified.fatal:
+                _phase("gates: stripping aged-out before fatal re-check")
+                strip2 = strip_aged_out_auctions(candidate, min_closing_date=min_closing)
+                candidate = strip2.export
+                hygiene_dropped.extend(strip2.dropped)
+                warnings.extend(strip2.warnings)
+                write_auctions_json(candidate_path, candidate)
+                gates = _run_gates()
+
+        if not gates.passed:
+            classified = classify_strict_errors(gates.errors)
+            if classified.only_aged_out:
+                # Second residual after strip → quarantine edge cases for 48h.
+                from scraper.incremental import stable_listing_key as _sk
+
+                keys_to_q: list[str] = []
+                for err in classified.aged_out:
+                    # "record {id} closes before …"
+                    parts = err.split()
+                    aid = parts[1] if len(parts) > 1 else ""
+                    for auction in candidate.get("auctions") or []:
+                        if str(auction.get("id")) == aid or str(auction.get("source_auction_id")) == aid:
+                            keys_to_q.append(_sk(auction))
+                            break
+                    else:
+                        if aid:
+                            keys_to_q.append(f"mstc:{aid}")
+                keys_to_q = sorted(set(keys_to_q))
+                if keys_to_q:
+                    _phase(f"auto-quarantine {len(keys_to_q)} residual aged-out keys")
+                    add_quarantine_entries(
+                        keys_to_q,
+                        reason="auto_aged_out_storm",
+                        source="drain",
+                        hours=DEFAULT_AUTO_HOURS,
+                        data=quarantine_data,
+                        push_remote=True,
+                    )
+                    quarantine_added = len(keys_to_q)
+                    q_result = apply_quarantine_skips(
+                        candidate, set(keys_to_q), min_count=min_count
+                    )
+                    candidate = q_result.export
+                    warnings.extend(q_result.warnings)
+                    write_auctions_json(candidate_path, candidate)
+                    gates = _run_gates()
+                    send_telegram_report(
+                        {
+                            **payload,
+                            "quarantine_added": quarantine_added,
+                            "quarantine_hours": DEFAULT_AUTO_HOURS,
+                        },
+                        event="quarantine_added",
+                    )
+
         payload["safety_gates"] = {
             "passed": gates.passed,
             "errors": gates.errors,
@@ -365,9 +468,21 @@ def run_pipeline_parse(
             "candidate_count": gates.candidate_count,
             "production_count": gates.production_count,
         }
+        payload["hygiene"] = {
+            "dropped_aged_out": len(hygiene_dropped),
+            "dropped_ids": [d.get("id") for d in hygiene_dropped[:20]],
+            "quarantine_added": quarantine_added,
+        }
         warnings.extend(gates.warnings)
         if not gates.passed:
-            raise RuntimeError(f"safety gates failed: {gates.errors}")
+            classified = classify_strict_errors(gates.errors)
+            fatal = classified.fatal or classified.all_errors()
+            raise RuntimeError(f"safety gates failed: {fatal}")
+
+        # Gates passed — now mark parse done and push ledger.
+        for stable_key, ready in pending_parse_ok:
+            mark_parse(ledger, stable_key, ok=True, deploy_ready=ready)
+        write_ledger(ledger, ledger_path)
 
         promoted = False
         if promote:
@@ -387,6 +502,7 @@ def run_pipeline_parse(
 
         push_ledger(local_path=ledger_path)
 
+        drop_note = format_dropped_telegram_note(hygiene_dropped)
         payload.update(
             {
                 "status": "success",
@@ -397,6 +513,10 @@ def run_pipeline_parse(
                 "auctions": candidate.get("count"),
                 "ledger": ledger.status_counts(),
                 "warnings": warnings,
+                "dropped_aged_out": len(hygiene_dropped),
+                "hygiene_note": drop_note,
+                "quarantine_added": quarantine_added,
+                "recoverable_parse_errors": len(hygiene_dropped) + quarantine_added,
             }
         )
         (run_dir / "parse_report.json").write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
@@ -412,7 +532,6 @@ def run_pipeline_parse(
         raise
     finally:
         release_refresh_lock(lock_path, run_id=run_id)
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Pipeline job 2: parse raw assets")

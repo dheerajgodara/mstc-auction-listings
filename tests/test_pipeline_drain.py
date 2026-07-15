@@ -125,6 +125,45 @@ def test_drain_deploy_fail_stops_after_parse(tmp_path, monkeypatch):
     assert calls["deploy"] == 3
 
 
+def test_drain_succeeds_after_strip_recoverable(tmp_path, monkeypatch):
+    """Parse succeeds after hygiene strip — drain must not stop / burn retries."""
+    monkeypatch.setattr("scraper.pipeline_drain.REPO_ROOT", tmp_path)
+    monkeypatch.setattr("scraper.pipeline_drain.DEFAULT_PIPELINE_LEDGER", tmp_path / "pipeline_ledger.json")
+    monkeypatch.setattr("scraper.pipeline_drain.pull_ledger", lambda **kw: False)
+    monkeypatch.setattr("scraper.pipeline_drain.send_telegram_report", lambda *a, **k: True)
+    ledger_path = tmp_path / "pipeline_ledger.json"
+    _ledger_with_parse_pending(5, ledger_path)
+
+    calls = {"parse": 0}
+
+    def fake_parse(**kwargs):
+        calls["parse"] += 1
+        write_ledger(empty_ledger(), ledger_path)
+        return {
+            "status": "success",
+            "selected_count": 5,
+            "parse_ok": 5,
+            "parse_failed": 0,
+            "dropped_aged_out": 5,
+            "recoverable_parse_errors": 5,
+        }
+
+    def fake_deploy(**kwargs):
+        return {"status": "success"}
+
+    out = run_pipeline_drain(
+        repo_root=tmp_path,
+        parse_fn=fake_parse,
+        deploy_fn=fake_deploy,
+        parse_retries=3,
+        max_cycles=5,
+    )
+    assert out["status"] == "success"
+    assert calls["parse"] == 1
+    assert out["recoverable_parse_errors"] == 5
+    assert out["cycles"][0]["parse"]["dropped_aged_out"] == 5
+
+
 def test_drain_multi_cycle_until_empty(tmp_path, monkeypatch):
     monkeypatch.setattr("scraper.pipeline_drain.REPO_ROOT", tmp_path)
     monkeypatch.setattr("scraper.pipeline_drain.DEFAULT_PIPELINE_LEDGER", tmp_path / "pipeline_ledger.json")

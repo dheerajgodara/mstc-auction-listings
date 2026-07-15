@@ -161,6 +161,7 @@ def run_pipeline_drain(
             return payload
 
         cycles_completed = 0
+        recoverable_parse_errors = 0
         for cycle in range(1, cycles_cap + 1):
             pull_ledger(local_path=ledger_path)
             ledger = load_ledger(ledger_path)
@@ -181,16 +182,21 @@ def run_pipeline_drain(
                 ),
                 max_attempts=parse_retries,
             )
+            recovered = int((parse_payload or {}).get("recoverable_parse_errors") or 0)
+            recoverable_parse_errors += recovered
             cycle_info["parse"] = {
                 "ok": ok,
                 "selected": (parse_payload or {}).get("selected_count"),
                 "parse_ok": (parse_payload or {}).get("parse_ok"),
                 "parse_failed": (parse_payload or {}).get("parse_failed"),
+                "recoverable_parse_errors": recovered,
+                "dropped_aged_out": (parse_payload or {}).get("dropped_aged_out"),
                 "error": parse_err,
             }
             if not ok:
                 payload["status"] = "stopped"
                 payload["errors"] = [f"parse retries exhausted: {parse_err}"]
+                payload["recoverable_parse_errors"] = recoverable_parse_errors
                 payload["cycles"].append(cycle_info)
                 payload["finished_at"] = datetime.now(IST).isoformat()
                 payload["cycles_completed"] = cycles_completed
@@ -221,6 +227,7 @@ def run_pipeline_drain(
             if not ok:
                 payload["status"] = "stopped"
                 payload["errors"] = [f"deploy retries exhausted: {deploy_err}"]
+                payload["recoverable_parse_errors"] = recoverable_parse_errors
                 payload["cycles"].append(cycle_info)
                 payload["finished_at"] = datetime.now(IST).isoformat()
                 payload["cycles_completed"] = cycles_completed
@@ -255,6 +262,7 @@ def run_pipeline_drain(
                 "finished_at": datetime.now(IST).isoformat(),
                 "cycles_completed": cycles_completed,
                 "parse_backlog_end": parse_backlog_count(final_ledger),
+                "recoverable_parse_errors": recoverable_parse_errors,
                 "ledger": final_ledger.status_counts(),
             }
         )

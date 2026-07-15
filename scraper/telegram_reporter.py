@@ -161,13 +161,25 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
         line2 = f"{ok} ok · {fail} fail"
         if auctions is not None:
             line2 += f" · export {auctions}"
-        return _finish(
-            [_title("🧩", "Parse", "done"), line2, _ledger_bits(payload.get("ledger"))],
-            payload,
-        )
+        lines = [_title("🧩", "Parse", "done"), line2]
+        note = str(payload.get("hygiene_note") or "").strip()
+        if not note and int(payload.get("dropped_aged_out") or 0) > 0:
+            n = int(payload.get("dropped_aged_out") or 0)
+            note = f"dropped {n} aged-out"
+        if note:
+            lines.append(note)
+        lines.append(_ledger_bits(payload.get("ledger")))
+        return _finish(lines, payload)
     if event == "parse_failed":
         return _finish(
             [_title("❌", "Parse", "failed"), err or "see log", _ledger_bits(payload.get("ledger"))],
+            payload,
+        )
+    if event == "quarantine_added":
+        n = payload.get("quarantine_added") or "?"
+        hours = payload.get("quarantine_hours") or 48
+        return _finish(
+            [_title("⚠️", "Quarantine", "added"), f"added {n} · {hours}h"],
             payload,
         )
 
