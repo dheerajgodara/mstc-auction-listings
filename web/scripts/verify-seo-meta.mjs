@@ -9,7 +9,7 @@ import {
   NOINDEX_HUB_PREFIX,
   NOINDEX_UTILITY_PAGES,
   OG_TWITTER_PROPERTIES,
-  REGRESSION_DETAIL_PAGES,
+  resolveRegressionDetailPages,
   SITE_ROOT,
   extractCanonical,
   extractH1,
@@ -151,7 +151,13 @@ if (fs.existsSync(robotsPath)) {
 
 pass("no staging domain in home metadata", !hasStagingLeak(extractCanonical(indexHtml) + homeTitle));
 
-for (const { source, id } of REGRESSION_DETAIL_PAGES) {
+const regressionDetailPages = resolveRegressionDetailPages(2);
+pass(
+  "regression detail pages available for SEO meta checks",
+  regressionDetailPages.length >= 2,
+  regressionDetailPages.map((p) => `${p.source}/${p.id}`).join(", ") || "none",
+);
+for (const { source, id } of regressionDetailPages) {
   const html = readHtml(`${source}/${id}`);
   pass(`${source}/${id} exported`, Boolean(html));
   if (!html) continue;

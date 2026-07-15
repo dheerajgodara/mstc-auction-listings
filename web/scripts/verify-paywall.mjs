@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   FORBIDDEN_SITEMAP_UTILITY_PATHS,
   readHtml,
+  resolveRegressionDetailPages,
   sitemapUrlsFromXml,
 } from "./seo-lib.mjs";
 
@@ -63,11 +64,6 @@ const PUBLIC_EXPORT_FORBIDDEN = [
 ];
 
 const PLAN_ORDER = ["free", "pro", "trader", "team", "enterprise"];
-
-const REGRESSION_DETAIL_PAGES = [
-  { source: "mstc", id: "582972" },
-  { source: "mstc", id: "584985" },
-];
 
 let failed = 0;
 
@@ -235,7 +231,7 @@ check(
   "pricing page links to discover or detail",
   pricingHtml.includes("Discover") ||
     pricingHtml.includes("mstc-auctions") ||
-    pricingHtml.includes("mstc/582972"),
+    /mstc\/\d+/.test(pricingHtml),
 );
 
 for (const page of PAYWALL_UTILITY_PAGES) {
@@ -250,7 +246,15 @@ if (fs.existsSync(path.join(outDir, "sitemap.xml"))) {
   }
 }
 
-for (const { source, id } of REGRESSION_DETAIL_PAGES) {
+const regressionDetailPages = resolveRegressionDetailPages(2);
+check(
+  "regression detail pages available in build",
+  regressionDetailPages.length >= 2,
+  regressionDetailPages.length
+    ? `using ${regressionDetailPages.map((p) => `${p.source}/${p.id}`).join(", ")}`
+    : "no detail pages under out/",
+);
+for (const { source, id } of regressionDetailPages) {
   const detailHtml = readHtml(`${source}/${id}`);
   check(
     `${source}/${id} exposes source or PDF context in export`,

@@ -10,12 +10,12 @@ import {
   BASE_PATH,
   EXPECTED_ROBOTS_SITEMAP_URL,
   FORBIDDEN_SITEMAP_UTILITY_PATHS,
-  REGRESSION_DETAIL_PAGES,
   SITE_ROOT,
   STAGING_DOMAIN_MARKERS,
   hasStagingLeak,
   readHtml,
   readRootIndex,
+  resolveRegressionDetailPages,
   sitemapUrlsFromXml,
 } from "./seo-lib.mjs";
 
@@ -130,8 +130,8 @@ function evaluateDataGates(exportData, routesData) {
   const ageHours = parseAgeHours(exportData?.automation_ran_at);
   const withinFreshness =
     ageHours == null ? undefined : ageHours <= FRESHNESS_THRESHOLD_HOURS;
-  const regressionIds = ["582972", "584985", "588051"];
-  const missingRegression = regressionIds.filter(
+  const preferredRegressionIds = ["582972", "584985", "588051"];
+  const missingRegression = preferredRegressionIds.filter(
     (id) => !auctions.some((a) => String(a.id) === id),
   );
   const routeCount = routesData?.routes?.length ?? 0;
@@ -591,22 +591,19 @@ function evaluateOpsGates() {
   const verifyBuild = readRepo("web/package.json").includes("verify-launch-readiness");
   const publicExportScan = readRepo("web/scripts/verify-build.mjs").includes("PUBLIC_EXPORT_FORBIDDEN");
 
-  for (const { source, id } of REGRESSION_DETAIL_PAGES.slice(0, 3)) {
-    const html = readHtml(`${source}/${id}`);
-    if (!html) {
-      addGroup("ux", "UX & detail pages", [
-        gate(
-          `detail_${source}_${id}`,
-          `Detail page ${source}/${id}`,
-          "warn",
-          "not in current export",
-        ),
-      ]);
-      break;
-    }
+  const regressionPages = resolveRegressionDetailPages(2);
+  if (!regressionPages.length) {
+    addGroup("ux", "UX & detail pages", [
+      gate(
+        "detail_sample_missing",
+        "Detail page sample",
+        "warn",
+        "no detail pages in current build",
+      ),
+    ]);
   }
   if (!groups.some((g) => g.id === "ux")) {
-    const sample = REGRESSION_DETAIL_PAGES[0];
+    const sample = regressionPages[0];
     const html = readHtml(`${sample.source}/${sample.id}`);
     addGroup("ux", "UX & detail pages", [
       gate(

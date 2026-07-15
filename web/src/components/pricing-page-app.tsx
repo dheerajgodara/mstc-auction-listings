@@ -182,9 +182,6 @@ export function PricingPageApp({ showHeader = true }: { showHeader?: boolean }) 
               <Link href={resolveAppPath("mstc-auctions/")} className="link-action">
                 MSTC auctions
               </Link>
-              <Link href={resolveAppPath("mstc/582972/")} className="link-action">
-                Sample listing
-              </Link>
             </p>
             <p className="mt-2 text-footnote text-muted-foreground">
               Revenue design anchor: {formatRevenueTarget()}/month recurring (internal

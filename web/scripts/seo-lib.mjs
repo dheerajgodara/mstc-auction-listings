@@ -55,11 +55,58 @@ export const INDEXABLE_LANDING_SLUGS = [
   "accessibility",
 ];
 
-export const REGRESSION_DETAIL_PAGES = [
+/** Preferred detail IDs for SEO/paywall regression — may age out of the export. */
+export const PREFERRED_REGRESSION_DETAIL_PAGES = [
   { source: "mstc", id: "582972" },
   { source: "mstc", id: "584985" },
   { source: "mstc", id: "588051" },
 ];
+
+/** @deprecated Prefer resolveRegressionDetailPages(); kept for callers that only need preferred IDs. */
+export const REGRESSION_DETAIL_PAGES = PREFERRED_REGRESSION_DETAIL_PAGES;
+
+const DETAIL_SOURCE_DIRS = ["mstc", "gem-forward", "eauction"];
+
+/** List auction detail pages that exist under out/<source>/<id>/index.html. */
+export function listBuiltDetailPages(limit = 100) {
+  const pages = [];
+  for (const source of DETAIL_SOURCE_DIRS) {
+    const dir = path.join(outDir, source);
+    if (!fs.existsSync(dir)) continue;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const id = entry.name;
+      if (!fs.existsSync(path.join(dir, id, "index.html"))) continue;
+      pages.push({ source, id });
+      if (pages.length >= limit) return pages;
+    }
+  }
+  return pages;
+}
+
+/**
+ * Resolve regression detail pages from the current build.
+ * Prefers PREFERRED_REGRESSION_DETAIL_PAGES when still exported; otherwise
+ * falls back to any built detail pages so aged-out auction IDs cannot fail CI.
+ */
+export function resolveRegressionDetailPages(minCount = 2) {
+  const preferred = PREFERRED_REGRESSION_DETAIL_PAGES.filter(({ source, id }) =>
+    fs.existsSync(path.join(outDir, source, id, "index.html")),
+  );
+  if (preferred.length >= minCount) return preferred;
+
+  const seen = new Set(preferred.map((p) => `${p.source}/${p.id}`));
+  const fallback = listBuiltDetailPages(120).filter((p) => !seen.has(`${p.source}/${p.id}`));
+  const merged = [...preferred, ...fallback];
+  const target = Math.max(minCount, Math.min(PREFERRED_REGRESSION_DETAIL_PAGES.length, merged.length));
+  return merged.slice(0, target);
+}
 
 /** Utility paths that must never appear in sitemap locs. */
 export const FORBIDDEN_SITEMAP_UTILITY_PATHS = [

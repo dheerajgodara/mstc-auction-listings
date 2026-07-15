@@ -2,7 +2,6 @@
 /** Verify JSON-LD on exported auction detail pages. */
 import {
   DISALLOWED_SCHEMA_TYPES,
-  REGRESSION_DETAIL_PAGES,
   SITE_ROOT,
   collectSchemaTypes,
   extractCanonical,
@@ -10,6 +9,7 @@ import {
   hasStagingLeak,
   readHtml,
   readRootIndex,
+  resolveRegressionDetailPages,
 } from "./seo-lib.mjs";
 
 let ok = true;
@@ -39,7 +39,13 @@ if (homeBlocks.length === 0) {
   }
 }
 
-for (const { source, id } of REGRESSION_DETAIL_PAGES) {
+const regressionDetailPages = resolveRegressionDetailPages(2);
+pass(
+  "regression detail pages available for structured-data checks",
+  regressionDetailPages.length >= 2,
+  regressionDetailPages.map((p) => `${p.source}/${p.id}`).join(", ") || "none",
+);
+for (const { source, id } of regressionDetailPages) {
   const label = `${source}/${id}`;
   const html = readHtml(`${source}/${id}`);
   pass(`${label} exported`, Boolean(html));

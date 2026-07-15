@@ -167,15 +167,44 @@ def verify_live_site(
         if "?q=" in sitemap_text or "?source=" in sitemap_text:
             errors.append("sitemap contains query-string URLs")
 
-    detail_url = f"{site}/mstc/582972/"
-    detail_status, detail_body = _http_status(detail_url)
-    checked["detail_sample"] = detail_url
-    if detail_status == 404:
-        warnings.append(f"sample detail page aged out (HTTP 404): {detail_url}")
-    elif detail_status != 200:
-        warnings.append(f"sample detail page returned HTTP {detail_status}: {detail_url}")
-    elif b"<h1" not in detail_body:
-        warnings.append("sample detail page missing H1")
+    detail_candidates: list[str] = []
+    if candidate_json and candidate_json.is_file():
+        try:
+            export = json.loads(candidate_json.read_text(encoding="utf-8"))
+            for auction in export.get("auctions", []):
+                source = str(auction.get("source") or "mstc").strip().lower()
+                aid = str(auction.get("source_auction_id") or auction.get("id") or "").strip()
+                if ":" in aid:
+                    aid = aid.split(":", 1)[-1]
+                slug = {"gem_forward": "gem-forward", "eauction": "eauction"}.get(source, "mstc")
+                if aid and re.fullmatch(r"[A-Za-z0-9._-]+", aid):
+                    detail_candidates.append(f"{slug}/{aid}")
+                if len(detail_candidates) >= 8:
+                    break
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+    for fallback in ("mstc/588051", "mstc/582972", "mstc/584985"):
+        if fallback not in detail_candidates:
+            detail_candidates.append(fallback)
+
+    detail_checked = False
+    for rel in detail_candidates:
+        detail_url = f"{site}/{rel}/"
+        detail_status, detail_body = _http_status(detail_url)
+        checked["detail_sample"] = detail_url
+        if detail_status == 404:
+            continue
+        detail_checked = True
+        if detail_status != 200:
+            warnings.append(f"sample detail page returned HTTP {detail_status}: {detail_url}")
+        elif b"<h1" not in detail_body:
+            warnings.append("sample detail page missing H1")
+        break
+    if not detail_checked:
+        warnings.append(
+            "sample detail page aged out for all candidates: "
+            + ", ".join(detail_candidates[:5])
+        )
 
     return HttpVerifyResult(
         passed=not errors,

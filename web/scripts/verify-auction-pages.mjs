@@ -2,15 +2,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveRegressionDetailPages } from "./seo-lib.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const outDir = path.join(__dirname, "..", "out");
-
-const REGRESSION = [
-  { source: "mstc", id: "582972" },
-  { source: "mstc", id: "584985" },
-  { source: "mstc", id: "588051" },
-];
 
 let ok = true;
 function pass(label, cond, detail = "") {
@@ -19,7 +14,16 @@ function pass(label, cond, detail = "") {
   console.log(`${mark}  ${label}${detail ? ` — ${detail}` : ""}`);
 }
 
-for (const { source, id } of REGRESSION) {
+const regression = resolveRegressionDetailPages(2);
+pass(
+  "regression detail pages available in build",
+  regression.length >= 2,
+  regression.length
+    ? `using ${regression.map((p) => `${p.source}/${p.id}`).join(", ")}`
+    : "no detail pages under out/",
+);
+
+for (const { source, id } of regression) {
   const htmlPath = path.join(outDir, source, id, "index.html");
   pass(`detail page ${source}/${id} exists`, fs.existsSync(htmlPath));
   if (fs.existsSync(htmlPath)) {

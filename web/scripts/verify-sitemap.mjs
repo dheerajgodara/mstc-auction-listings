@@ -7,7 +7,7 @@ import {
   FORBIDDEN_SITEMAP_UTILITY_PATHS,
   INDEXABLE_LANDING_SLUGS,
   NOINDEX_UTILITY_PAGES,
-  REGRESSION_DETAIL_PAGES,
+  resolveRegressionDetailPages,
   SITE_ROOT,
   STAGING_DOMAIN_MARKERS,
   classifySitemapUrl,
@@ -88,7 +88,13 @@ if (fs.existsSync(sitemapPath)) {
     pass(`sitemap has no ${segment}`, !urls.some((u) => u.includes(segment)));
   }
 
-  for (const { source, id } of REGRESSION_DETAIL_PAGES) {
+  const regressionPages = resolveRegressionDetailPages(2);
+  pass(
+    "regression detail pages available for sitemap checks",
+    regressionPages.length >= 1,
+    regressionPages.map((p) => `${p.source}/${p.id}`).join(", ") || "none",
+  );
+  for (const { source, id } of regressionPages) {
     const expected = `${SITE_ROOT}/auctions/${source}/${id}/`;
     pass(`sitemap includes regression ${source}/${id}`, urls.includes(expected));
   }
