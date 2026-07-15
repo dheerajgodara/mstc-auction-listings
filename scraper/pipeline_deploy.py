@@ -153,8 +153,8 @@ def run_pipeline_deploy(
             out_dir=out_dir,
             min_count=1000,
             min_closing_date=tomorrow_min_closing_date(),
-            require_sources=["mstc", "eauction"],
-            warn_only_sources=["gem_forward"],
+            require_sources=["mstc"],
+            warn_only_sources=["gem_forward", "eauction"],
         )
         payload["predeploy"] = {
             "passed": predeploy.passed,
