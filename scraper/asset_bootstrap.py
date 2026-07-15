@@ -75,6 +75,7 @@ def bootstrap_production_assets(
     *,
     public_dir: Path,
     timeout_sec: int = 600,
+    dirs: tuple[str, ...] | list[str] | None = None,
 ) -> AssetBootstrapResult:
     """
     Rsync Hostinger pdfs/, docs/, thumbs/ into public_dir.
@@ -83,10 +84,16 @@ def bootstrap_production_assets(
     a temp merge is awkward; we pull with update-if-newer semantics via rsync
     default, then any newly scraped local files already present are kept by
     using --ignore-existing so local/newer scrape artifacts are not overwritten).
+
+    dirs: optional subset of ASSET_DIRS (e.g. ("pdfs",) for parse catch-up).
     """
     public_dir = Path(public_dir)
     public_dir.mkdir(parents=True, exist_ok=True)
     before = count_public_assets(public_dir)
+    pull_dirs = tuple(dirs) if dirs is not None else ASSET_DIRS
+    for name in pull_dirs:
+        if name not in ASSET_DIRS:
+            raise ValueError(f"unknown asset dir: {name}")
 
     cfg = _hostinger_ssh_config()
     if cfg is None:
@@ -112,7 +119,7 @@ def bootstrap_production_assets(
     warnings: list[str] = []
     pulled_any = False
 
-    for name in ASSET_DIRS:
+    for name in pull_dirs:
         local_dir = public_dir / name
         local_dir.mkdir(parents=True, exist_ok=True)
         remote = f"{target}:{cfg['remote_dir']}/{name}/"

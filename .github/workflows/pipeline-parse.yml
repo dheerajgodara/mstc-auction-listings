@@ -54,6 +54,7 @@ jobs:
 
       - name: Run parse pipeline
         env:
+          PYTHONUNBUFFERED: "1"
           SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
           HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
           HOSTINGER_PORT: ${{ secrets.HOSTINGER_PORT }}
@@ -72,6 +73,7 @@ jobs:
             --sources mstc,gem_forward,eauction \
             --min-count 1000 \
             --max-parse "$MAX_PARSE" \
+            --max-docs-per-run 200 \
             --break-stale-lock \
             $PROMOTE_FLAG
 

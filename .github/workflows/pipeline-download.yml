@@ -52,6 +52,7 @@ jobs:
       - name: Run download pipeline
         if: env.REFRESH_SHOULD_RUN != 'false'
         env:
+          PYTHONUNBUFFERED: "1"
           SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
           HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
           HOSTINGER_PORT: ${{ secrets.HOSTINGER_PORT }}

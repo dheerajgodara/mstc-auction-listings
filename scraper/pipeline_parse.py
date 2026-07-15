@@ -125,11 +125,13 @@ def run_pipeline_parse(
     *,
     repo_root: Path = REPO_ROOT,
     max_parse: int | None = 200,
+    max_docs_per_run: int = 200,
     min_count: int = 1000,
     sources: list[str] | None = None,
     force_min_closing_date: str | None = None,
     promote: bool = True,
     break_stale_lock: bool = True,
+    skip_docs: bool = False,
 ) -> dict[str, Any]:
     sources = sources or ["mstc", "gem_forward", "eauction"]
     run_id = f"parse_{make_run_id()}"
@@ -166,12 +168,16 @@ def run_pipeline_parse(
 
     warnings: list[str] = []
     try:
+        logger.info("bootstrap: pulling live auctions.json")
         _bootstrap_previous_production_from_live(
             production_json=production_json,
             base_url=SITE_BASE_URL or None,
             warnings=warnings,
         )
-        bootstrap_production_assets(public_dir=public_dir)
+        # Parse only needs PDFs on disk; docs/thumbs are hydrated within the shared budget.
+        logger.info("bootstrap: pulling production pdfs/ (skip docs/thumbs)")
+        bootstrap_production_assets(public_dir=public_dir, dirs=("pdfs",), timeout_sec=900)
+        logger.info("bootstrap: pulling raw HTML store + ledger")
         pull_raw_store(raw_dir=raw_dir)
         pull_ledger(local_path=ledger_path)
 
@@ -179,6 +185,7 @@ def run_pipeline_parse(
         if not previous_export or int(previous_export.get("count") or 0) <= 0:
             raise RuntimeError("parse job requires previous production export")
 
+        logger.info("discovery: starting sources=%s", sources)
         discovery_path = run_dir / "discovery_latest.json"
         discovery_export = run_discovery(
             sources=sources,
@@ -187,6 +194,7 @@ def run_pipeline_parse(
             allow_small_output=True,
         )
         discovery_data = json.loads(discovery_path.read_text(encoding="utf-8"))
+        logger.info("discovery: done count=%s", discovery_data.get("count"))
         plan = build_work_plan(discovery_data, previous_export)
         discovery_by_key = {
             stable_auction_key(a): a for a in (discovery_data.get("auctions") or [])
@@ -196,6 +204,11 @@ def run_pipeline_parse(
         selected = select_for_parse(ledger, limit=max_parse)
         payload["selected_count"] = len(selected)
         payload["ledger"] = ledger.status_counts()
+        logger.info(
+            "parse selection: %s (ledger=%s)",
+            len(selected),
+            ledger.status_counts(),
+        )
         send_telegram_report(payload, event="parse_selection")
 
         parsed_records: list[AuctionRecord] = []
@@ -209,9 +222,10 @@ def run_pipeline_parse(
             "documents": {},
         }
         ok_count = fail_count = 0
+        docs_remaining = 0 if skip_docs else max(0, int(max_docs_per_run))
         session = __import__("requests").Session()
 
-        for item in selected:
+        for idx, item in enumerate(selected, start=1):
             try:
                 if item.source == "mstc":
                     disc = discovery_by_key.get(item.stable_key)
@@ -231,13 +245,13 @@ def run_pipeline_parse(
                         mode="parse_only",
                         raw_dir=raw_dir,
                     )
-                    if record.lots:
-                        record, _ = process_auction_documents(
+                    if record.lots and docs_remaining > 0 and not skip_docs:
+                        record, docs_remaining = process_auction_documents(
                             record,
                             docs_dir=docs_dir,
                             thumbs_dir=thumbs_dir,
                             skip_docs=False,
-                            max_docs_remaining=20,
+                            max_docs_remaining=docs_remaining,
                             session=session,
                             stats=stats,
                         )
@@ -254,6 +268,15 @@ def run_pipeline_parse(
                 logger.exception("parse failed for %s", item.stable_key)
                 mark_parse(ledger, item.stable_key, ok=False, error=str(exc))
                 fail_count += 1
+            if idx % 10 == 0 or idx == len(selected):
+                logger.info(
+                    "parse progress %s/%s ok=%s failed=%s docs_left=%s",
+                    idx,
+                    len(selected),
+                    ok_count,
+                    fail_count,
+                    docs_remaining,
+                )
 
         write_ledger(ledger, ledger_path)
 
@@ -369,6 +392,13 @@ def run_pipeline_parse(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Pipeline job 2: parse raw assets")
     parser.add_argument("--max-parse", type=int, default=200, help="Max auctions to parse this run (default 200)")
+    parser.add_argument(
+        "--max-docs-per-run",
+        type=int,
+        default=200,
+        help="Shared MSTC document download budget for this parse run",
+    )
+    parser.add_argument("--skip-docs", action="store_true", help="Skip lot document/thumb downloads")
     parser.add_argument("--min-count", type=int, default=1000)
     parser.add_argument("--sources", default="mstc,gem_forward,eauction")
     parser.add_argument("--min-closing-date", default=None)
@@ -377,11 +407,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     run_pipeline_parse(
         max_parse=args.max_parse,
+        max_docs_per_run=args.max_docs_per_run,
         min_count=args.min_count,
         sources=[s.strip() for s in args.sources.split(",") if s.strip()],
         force_min_closing_date=args.min_closing_date,
         promote=not args.no_promote,
         break_stale_lock=args.break_stale_lock,
+        skip_docs=args.skip_docs,
     )
     return 0
 
