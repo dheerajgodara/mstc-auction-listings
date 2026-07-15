@@ -236,7 +236,6 @@ def run_pipeline_parse(
             "pdf_cache_hits": 0,
             "lots_parsed": 0,
             "pdf_failed_ids": [],
-            "documents": {},
         }
         ok_count = fail_count = 0
         docs_remaining = 0 if skip_docs else max(0, int(max_docs_per_run))

@@ -207,9 +207,9 @@ def process_auction_documents(
 
     for lot in record.lots:
         lot_with_refs = attach_documents_to_lot(lot)
-        doc_stats = stats.setdefault(
-            "documents",
-            {
+        doc_stats = stats.get("documents")
+        if not isinstance(doc_stats, dict) or "refs_found" not in doc_stats:
+            doc_stats = {
                 "refs_found": 0,
                 "attempted": 0,
                 "downloaded": 0,
@@ -219,8 +219,8 @@ def process_auction_documents(
                 "skipped_due_limit": 0,
                 "failed_by_reason": {},
                 "failed_by_doc_type": {},
-            },
-        )
+            }
+            stats["documents"] = doc_stats
         doc_stats["refs_found"] += len(lot_with_refs.documents)
 
         if skip_docs or not lot_with_refs.documents:
