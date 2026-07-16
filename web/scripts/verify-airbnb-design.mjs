@@ -42,6 +42,7 @@ const tailwind = read("tailwind.config.ts");
 const packageJson = read("package.json");
 const layout = read("src/app/layout.tsx");
 const appShell = read("src/components/app-shell.tsx");
+const siteDisclaimer = read("src/components/site-disclaimer.tsx");
 const auctionCard = read("src/components/auction-card.tsx");
 const discoveryToolbar = read("src/components/discovery-toolbar.tsx");
 const footer = read("src/components/site-footer.tsx");
