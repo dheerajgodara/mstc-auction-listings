@@ -118,9 +118,13 @@ def run_pipeline_deploy(
         payload["ai_cache_pull"] = cache_pull.to_dict()
         if not cache_pull.ok:
             warnings.append(f"ai cache pull failed: {cache_pull.message}")
-        elif cache_pull.file_count:
+        elif cache_pull.message == "remote AI cache pulled":
             warnings.append(
                 f"ai cache pull ok ({cache_pull.file_count} file(s) from {cache_pull.remote_path})"
+            )
+        elif cache_pull.file_count:
+            warnings.append(
+                f"ai cache using local/GHA copy ({cache_pull.file_count} file(s); {cache_pull.message})"
             )
 
         hydrate_result = hydrate_json_file(

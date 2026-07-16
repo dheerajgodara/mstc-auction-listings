@@ -6,8 +6,13 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-from scraper.ai_enrichment.queue import compute_input_hash, read_cache, read_done_cache
-from scraper.ai_enrichment.schema import validate_listing_enrichment
+from scraper.ai_enrichment.queue import (
+    compute_input_hash,
+    done_registry_entry,
+    read_cache,
+    read_done_cache,
+)
+from scraper.ai_enrichment.schema import PROMPT_VERSION, validate_listing_enrichment
 from scraper.config import AI_ENRICHMENT_CACHE_DIR, DEFAULT_JSON_OUT
 from scraper.models import AuctionRecord, LotRecord
 
@@ -109,12 +114,45 @@ def merge_ai_into_auction(record: AuctionRecord, cached: dict[str, Any]) -> Auct
     return merged
 
 
+def _cache_lookup_ids(record: AuctionRecord) -> list[str]:
+    ids = [record.id]
+    if record.source and record.source_auction_id:
+        ids.append(f"{record.source}:{record.source_auction_id}")
+    if record.source_auction_id:
+        ids.append(str(record.source_auction_id))
+    return list(dict.fromkeys(i for i in ids if i))
+
+
+def _fallback_ready_cache(record: AuctionRecord, cache_dir: Path) -> Optional[dict[str, Any]]:
+    """Use the newest ready cache file when the done-registry path is missing locally."""
+    for auction_id in _cache_lookup_ids(record):
+        safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in auction_id)[:120]
+        candidates = sorted(
+            cache_dir.glob(f"{safe_id}_*_{PROMPT_VERSION}.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for path in candidates:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if payload.get("status") == "ready":
+                return payload
+    return None
+
+
 def load_cached_enrichment(record: AuctionRecord, cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> Optional[dict[str, Any]]:
     done_cached = read_done_cache(record, cache_dir)
     if done_cached:
         return done_cached
     input_hash = compute_input_hash(record)
-    return read_cache(record.id, input_hash, cache_dir)
+    current = read_cache(record.id, input_hash, cache_dir)
+    if current:
+        return current
+    if done_registry_entry(record, cache_dir):
+        return _fallback_ready_cache(record, cache_dir)
+    return None
 
 
 def hydrate_auctions_export(
