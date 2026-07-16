@@ -154,7 +154,7 @@ def done_registry_entry(record: AuctionRecord, cache_dir: Path = AI_ENRICHMENT_C
 
 
 def is_ai_done(record: AuctionRecord, cache_dir: Path = AI_ENRICHMENT_CACHE_DIR) -> bool:
-    return done_registry_entry(record, cache_dir) is not None
+    return read_done_cache(record, cache_dir) is not None
 
 
 def mark_ai_done(
