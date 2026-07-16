@@ -33,7 +33,7 @@ from scraper.config import (
 from scraper.deploy import deploy as deploy_to_hostinger
 from scraper.discovery import run_discovery
 from scraper.export_guard import ExportGuardError
-from scraper.export_hygiene import apply_quarantine_skips, strip_aged_out_auctions
+from scraper.export_hygiene import apply_quarantine_skips, repair_absolute_asset_paths, strip_aged_out_auctions
 from scraper.filters import tomorrow_min_closing_date, make_run_id
 from scraper.http_verify import verify_live_site
 from scraper.import_tracking import finalize_export_payload
@@ -645,9 +645,13 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
         )
         candidate_data = strip_result.export
         warnings.extend(strip_result.warnings)
+        repair_result = repair_absolute_asset_paths(candidate_data)
+        candidate_data = repair_result.export
+        warnings.extend(repair_result.warnings)
         payload["export_hygiene"] = {
             "dropped_aged_out": len(strip_result.dropped),
             "dropped_ids": [d.get("id") for d in strip_result.dropped[:20]],
+            "repaired_absolute_paths": len(repair_result.repaired),
         }
 
         candidate_data = finalize_export_payload(

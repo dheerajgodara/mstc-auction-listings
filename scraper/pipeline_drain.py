@@ -191,6 +191,8 @@ def run_pipeline_drain(
                 "parse_failed": (parse_payload or {}).get("parse_failed"),
                 "recoverable_parse_errors": recovered,
                 "dropped_aged_out": (parse_payload or {}).get("dropped_aged_out"),
+                "repaired_absolute_paths": (parse_payload or {}).get("repaired_absolute_paths"),
+                "quarantined_keys": (parse_payload or {}).get("quarantined_keys"),
                 "error": parse_err,
             }
             if not ok:

@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from scraper.asset_bootstrap import bootstrap_production_assets
 from scraper.config import DEFAULT_JSON_OUT, REPO_ROOT, SITE_BASE_URL
 from scraper.deploy import deploy as deploy_to_hostinger
+from scraper.export_hygiene import repair_absolute_asset_paths
 from scraper.filters import make_run_id, tomorrow_min_closing_date
 from scraper.http_verify import verify_live_site
 from scraper.pipeline_ledger import DEFAULT_LEDGER_PATH, load_ledger, pull_ledger
@@ -25,7 +26,6 @@ from scraper.predeploy_verify import verify_predeploy_build
 from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
 from scraper.telegram_reporter import send_telegram_report
-
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_deploy")
 
@@ -145,6 +145,22 @@ def run_pipeline_deploy(
         pull_ledger(local_path=DEFAULT_LEDGER_PATH)
         ledger = load_ledger(DEFAULT_LEDGER_PATH)
         payload["ledger"] = ledger.status_counts()
+
+        if production_json.is_file():
+            try:
+                raw = json.loads(production_json.read_text(encoding="utf-8"))
+                repaired = repair_absolute_asset_paths(raw)
+                if repaired.repaired:
+                    production_json.write_text(
+                        json.dumps(repaired.export, indent=2, ensure_ascii=False) + "\n",
+                        encoding="utf-8",
+                    )
+                    warnings.append(
+                        f"repaired {len(repaired.repaired)} absolute asset path(s) before build"
+                    )
+                    payload["repaired_absolute_paths"] = len(repaired.repaired)
+            except (OSError, json.JSONDecodeError) as exc:
+                warnings.append(f"pre-build asset repair skipped: {exc}")
 
         _run(["pnpm", "run", "build:prod"], cwd=web_dir)
         _run(["pnpm", "run", "verify-build"], cwd=web_dir)

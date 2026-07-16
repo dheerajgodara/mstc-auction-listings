@@ -178,8 +178,9 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
     if event == "quarantine_added":
         n = payload.get("quarantine_added") or "?"
         hours = payload.get("quarantine_hours") or 48
+        klass = payload.get("quarantine_error_class") or "poison"
         return _finish(
-            [_title("⚠️", "Quarantine", "added"), f"added {n} · {hours}h"],
+            [_title("⚠️", "Quarantine", "added"), f"added {n} · {klass} · {hours}h"],
             payload,
         )
 

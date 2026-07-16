@@ -9,6 +9,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from scraper.config import REPO_ROOT
+from scraper.export_hygiene import repair_absolute_asset_paths
 from scraper.import_tracking import finalize_export_payload
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -36,6 +37,10 @@ def finalize_public_export(
 
     previous = json.loads(json_path.read_text(encoding="utf-8"))
     automation_ran_at = automation_ran_at or datetime.now(IST)
+    repaired = repair_absolute_asset_paths(previous)
+    previous = repaired.export
+    if repaired.repaired:
+        logger.info("repaired %s absolute asset path(s) before finalize", len(repaired.repaired))
     finalized = finalize_export_payload(
         json.loads(json.dumps(previous)),
         previous_export=previous,

@@ -38,7 +38,12 @@ from scraper.export_guard import write_auctions_json
 from scraper.export_hygiene import (
     apply_quarantine_skips,
     classify_strict_errors,
+    extract_record_keys_from_errors,
     format_dropped_telegram_note,
+    format_quarantine_telegram_note,
+    format_repair_telegram_note,
+    is_record_recoverable,
+    repair_absolute_asset_paths,
     strip_aged_out_auctions,
 )
 from scraper.filters import make_run_id, tomorrow_min_closing_date
@@ -365,6 +370,13 @@ def run_pipeline_parse(
         if strip_result.dropped:
             _phase(f"hygiene: stripped {len(strip_result.dropped)} aged-out")
 
+        repair_result = repair_absolute_asset_paths(candidate)
+        candidate = repair_result.export
+        hygiene_repaired = list(repair_result.repaired)
+        warnings.extend(repair_result.warnings)
+        if repair_result.repaired:
+            _phase(f"hygiene: repaired {len(repair_result.repaired)} absolute asset path(s)")
+
         # Recover still-future gem/eauction from previous when discovery wiped them.
         candidate, fallback_report = apply_missing_source_fallback(
             candidate,
@@ -384,6 +396,10 @@ def run_pipeline_parse(
             candidate = strip_after_fb.export
             hygiene_dropped.extend(strip_after_fb.dropped)
             warnings.extend(strip_after_fb.warnings)
+            repair_after_fb = repair_absolute_asset_paths(candidate)
+            candidate = repair_after_fb.export
+            hygiene_repaired.extend(repair_after_fb.repaired)
+            warnings.extend(repair_after_fb.warnings)
 
         candidate["stats"] = dict(candidate.get("stats") or {})
         candidate["stats"]["pipeline_parse"] = {
@@ -415,57 +431,53 @@ def run_pipeline_parse(
                 public_dir=public_dir,
             )
 
+        poison_quarantine_keys: list[str] = []
         gates = _run_gates()
-        # Recoverable aged-out residuals: strip again, then auto-quarantine once.
+
+        # Tiered recovery: repair absolute paths → strip aged-out → quarantine residual poison.
         if not gates.passed:
             classified = classify_strict_errors(gates.errors)
-            if classified.aged_out and not classified.fatal:
-                _phase("gates: residual aged-out only — re-strip + re-QA")
+            if classified.absolute_path:
+                _phase("gates: absolute paths — repair + re-QA")
+                repair2 = repair_absolute_asset_paths(candidate)
+                candidate = repair2.export
+                hygiene_repaired.extend(repair2.repaired)
+                warnings.extend(repair2.warnings)
+                write_auctions_json(candidate_path, candidate)
+                gates = _run_gates()
+                classified = classify_strict_errors(gates.errors)
+
+            if not gates.passed and classified.aged_out:
+                _phase("gates: aged-out — strip + re-QA")
                 strip2 = strip_aged_out_auctions(candidate, min_closing_date=min_closing)
                 candidate = strip2.export
                 hygiene_dropped.extend(strip2.dropped)
                 warnings.extend(strip2.warnings)
                 write_auctions_json(candidate_path, candidate)
                 gates = _run_gates()
-            elif classified.aged_out and classified.fatal:
-                _phase("gates: stripping aged-out before fatal re-check")
-                strip2 = strip_aged_out_auctions(candidate, min_closing_date=min_closing)
-                candidate = strip2.export
-                hygiene_dropped.extend(strip2.dropped)
-                warnings.extend(strip2.warnings)
-                write_auctions_json(candidate_path, candidate)
-                gates = _run_gates()
+                classified = classify_strict_errors(gates.errors)
 
-        if not gates.passed:
-            classified = classify_strict_errors(gates.errors)
-            if classified.only_aged_out:
-                # Second residual after strip → quarantine edge cases for 48h.
-                from scraper.incremental import stable_listing_key as _sk
-
-                keys_to_q: list[str] = []
-                for err in classified.aged_out:
-                    # "record {id} closes before …"
-                    parts = err.split()
-                    aid = parts[1] if len(parts) > 1 else ""
-                    for auction in candidate.get("auctions") or []:
-                        if str(auction.get("id")) == aid or str(auction.get("source_auction_id")) == aid:
-                            keys_to_q.append(_sk(auction))
-                            break
-                    else:
-                        if aid:
-                            keys_to_q.append(f"mstc:{aid}")
-                keys_to_q = sorted(set(keys_to_q))
+            if not gates.passed and is_record_recoverable(classified):
+                keys_to_q = extract_record_keys_from_errors(classified, export=candidate)
                 if keys_to_q:
-                    _phase(f"auto-quarantine {len(keys_to_q)} residual aged-out keys")
+                    error_class = (
+                        "absolute_path"
+                        if classified.absolute_path
+                        else ("aged_out" if classified.aged_out else "bad_asset_url")
+                    )
+                    _phase(f"auto-quarantine {len(keys_to_q)} · {error_class}")
                     add_quarantine_entries(
                         keys_to_q,
-                        reason="auto_aged_out_storm",
-                        source="drain",
+                        reason=f"auto_{error_class}",
+                        source="drain_parse",
                         hours=DEFAULT_AUTO_HOURS,
                         data=quarantine_data,
                         push_remote=True,
+                        error_class=error_class,
+                        last_error=(classified.record_recoverable or classified.all_errors())[0],
                     )
                     quarantine_added = len(keys_to_q)
+                    poison_quarantine_keys = keys_to_q
                     q_result = apply_quarantine_skips(
                         candidate, set(keys_to_q), min_count=min_count
                     )
@@ -478,6 +490,10 @@ def run_pipeline_parse(
                             **payload,
                             "quarantine_added": quarantine_added,
                             "quarantine_hours": DEFAULT_AUTO_HOURS,
+                            "quarantine_error_class": error_class,
+                            "hygiene_note": format_quarantine_telegram_note(
+                                keys_to_q, error_class=error_class
+                            ),
                         },
                         event="quarantine_added",
                     )
@@ -492,17 +508,28 @@ def run_pipeline_parse(
         payload["hygiene"] = {
             "dropped_aged_out": len(hygiene_dropped),
             "dropped_ids": [d.get("id") for d in hygiene_dropped[:20]],
+            "repaired_absolute_paths": len(hygiene_repaired),
             "quarantine_added": quarantine_added,
+            "quarantined_keys": poison_quarantine_keys[:50],
         }
         warnings.extend(gates.warnings)
         if not gates.passed:
             classified = classify_strict_errors(gates.errors)
-            fatal = classified.fatal or classified.all_errors()
+            fatal = classified.site_threatening or classified.all_errors()
             raise RuntimeError(f"safety gates failed: {fatal}")
 
-        # Gates passed — now mark parse done and push ledger.
+        # Gates passed — mark successes done; poison-quarantined batch keys stay failed.
+        poison_set = set(poison_quarantine_keys)
         for stable_key, ready in pending_parse_ok:
-            mark_parse(ledger, stable_key, ok=True, deploy_ready=ready)
+            if stable_key in poison_set:
+                mark_parse(
+                    ledger,
+                    stable_key,
+                    ok=False,
+                    error=f"quarantined:{stable_key}",
+                )
+            else:
+                mark_parse(ledger, stable_key, ok=True, deploy_ready=ready)
         write_ledger(ledger, ledger_path)
 
         promoted = False
@@ -523,7 +550,15 @@ def run_pipeline_parse(
 
         push_ledger(local_path=ledger_path)
 
-        drop_note = format_dropped_telegram_note(hygiene_dropped)
+        notes = [
+            format_dropped_telegram_note(hygiene_dropped),
+            format_repair_telegram_note(hygiene_repaired),
+            format_quarantine_telegram_note(
+                poison_quarantine_keys,
+                error_class="poison",
+            ),
+        ]
+        drop_note = " · ".join(n for n in notes if n)
         payload.update(
             {
                 "status": "success",
@@ -535,9 +570,13 @@ def run_pipeline_parse(
                 "ledger": ledger.status_counts(),
                 "warnings": warnings,
                 "dropped_aged_out": len(hygiene_dropped),
+                "repaired_absolute_paths": len(hygiene_repaired),
+                "quarantined_keys": poison_quarantine_keys,
                 "hygiene_note": drop_note,
                 "quarantine_added": quarantine_added,
-                "recoverable_parse_errors": len(hygiene_dropped) + quarantine_added,
+                "recoverable_parse_errors": (
+                    len(hygiene_dropped) + len(hygiene_repaired) + quarantine_added
+                ),
             }
         )
         (run_dir / "parse_report.json").write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")

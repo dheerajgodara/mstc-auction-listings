@@ -22,6 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     add_p = sub.add_parser("add", help="Quarantine one or more stable keys")
     add_p.add_argument("--key", action="append", required=True, help="stable key e.g. mstc:588636")
     add_p.add_argument("--reason", default="operator_skip")
+    add_p.add_argument("--error-class", default=None, help="e.g. absolute_path, bad_asset_url")
     add_p.add_argument("--hours", type=int, default=DEFAULT_AUTO_HOURS, help=f"TTL hours (max {MAX_MANUAL_HOURS})")
     add_p.add_argument("--source", default="manual")
     add_p.add_argument("--local-only", action="store_true", help="Do not push to Hostinger")
@@ -43,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
             source=args.source,
             hours=hours,
             push_remote=not args.local_only,
+            error_class=getattr(args, "error_class", None),
         )
         print(json.dumps(q, indent=2, default=str))
         return 0

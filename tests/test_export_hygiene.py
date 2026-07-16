@@ -127,14 +127,13 @@ def test_classify_aged_out_vs_count_floor():
     assert len(classified.missing_source) == 1
     assert len(classified.count_floor) == 1
     assert len(classified.missing_closing) == 1
-    assert len(classified.other) == 1
+    assert len(classified.schema) == 1
     assert classified.only_aged_out is False
     only = classify_strict_errors(
         ["record 1 closes before 2026-07-17: 2026-07-16T00:00:00+05:30"]
     )
     assert only.only_aged_out is True
     assert not only.fatal
-
 
 def test_quarantine_skip_and_expiry():
     rows = [

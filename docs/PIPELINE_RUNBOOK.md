@@ -29,25 +29,47 @@ Pipeline now:
 
 Count / missing-source / schema failures still hard-stop.
 
+## Record-level DLQ (poison basket)
+
+One bad auction must not stop drain. Tiered integrity:
+
+| Tier | Examples | Behavior |
+|------|----------|----------|
+| Site-threatening | Missing MSTC, count floor, schema | Hard stop |
+| Auto-repairable | Absolute `/pdfs/`, `/docs/`, `/thumbs/` | Rewrite to relative; re-QA |
+| Record-poison | Residual absolute paths, stubborn IDs | Quarantine key 48h, strip, continue |
+| Ops noise | Aged-out closings, empty eAuction | Strip / warn-only |
+
+Quarantined keys are marked ledger `failed` (not `done`). Replay later:
+
+```bash
+python -m scraper.quarantine_tool list
+python -m scraper.quarantine_tool remove --key mstc:591395
+# then reset that ledger item to parse=pending if needed, and re-run drain
+gh workflow run pipeline-drain.yml -f max_parse=100 -f max_cycles=25
+```
+
+Deploy live HTTP verify never crashes on spaced thumb URLs (invalid samples → warning).
+
 ### Quarantine escape hatch
 
-Stubborn single IDs (clock skew / bad closing parse) can be skipped via Hostinger:
+Stubborn single IDs can be skipped via Hostinger:
 
 `{domain}/auction_pipeline/auction_quarantine.json`
 
 ```bash
 # Add (default TTL 48h; max 7d)
-python -m scraper.quarantine_tool add --key mstc:588636 --reason operator_skip --hours 48
+python -m scraper.quarantine_tool add --key mstc:588636 --reason operator_skip --hours 48 --error-class absolute_path
 
 python -m scraper.quarantine_tool list
 python -m scraper.quarantine_tool remove --key mstc:588636
 ```
 
-Auto-quarantine: if residual aged-out errors remain after strip+re-QA, those IDs are quarantined **48h** and parse continues (Telegram: `Quarantine · added N · 48h`). Quarantine cannot take the export below `min_count`.
+Auto-quarantine: residual record-poison after repair/strip is quarantined **48h** (Telegram: `Quarantine · added N · absolute_path · 48h`). Quarantine cannot take the export below `min_count`.
 
-### Recovery after aged-out drain stop
+### Recovery after poison drain stop
 
-Deploy this hygiene fix, then resume (no re-download needed):
+Deploy the DLQ fix, then resume (no re-download needed):
 
 ```bash
 gh workflow run pipeline-drain.yml -f max_parse=100 -f max_cycles=25

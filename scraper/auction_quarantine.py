@@ -91,6 +91,8 @@ def add_quarantine_entries(
     hours: int | None = None,
     data: dict[str, Any] | None = None,
     push_remote: bool = True,
+    error_class: str | None = None,
+    last_error: str | None = None,
 ) -> dict[str, Any]:
     q = prune_expired(data or load_quarantine(pull_remote=push_remote))
     if hours is None:
@@ -103,12 +105,17 @@ def add_quarantine_entries(
         k = str(key).strip()
         if not k:
             continue
-        entries[k] = {
+        meta: dict[str, Any] = {
             "reason": reason,
             "added_at": now.isoformat(),
             "expires_at": expires.isoformat(),
             "source": source,
         }
+        if error_class:
+            meta["error_class"] = error_class
+        if last_error:
+            meta["last_error"] = str(last_error)[:500]
+        entries[k] = meta
     q["entries"] = entries
     save_quarantine(q, push_remote=push_remote)
     return q

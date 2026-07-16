@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,14 +27,43 @@ class HttpVerifyResult:
     checked_urls: dict[str, str] = field(default_factory=dict)
 
 
-def _http_status(url: str, *, timeout: int = 60) -> tuple[int, bytes]:
+def _encode_url_path(url: str) -> str:
+    """Percent-encode path segments that contain spaces / unsafe chars."""
+    parts = urllib.parse.urlsplit(url)
+    encoded_path = "/".join(
+        urllib.parse.quote(seg, safe=":@-._~!$&'()*+,;=") if seg else seg
+        for seg in parts.path.split("/")
+    )
+    return urllib.parse.urlunsplit(
+        (parts.scheme, parts.netloc, encoded_path, parts.query, parts.fragment)
+    )
+
+
+def _url_has_unsafe_chars(url: str) -> bool:
+    return any(ch.isspace() or ord(ch) < 32 for ch in url)
+
+
+def _http_status(url: str, *, timeout: int = 60) -> tuple[int | None, bytes, str | None]:
+    """Return (status, body, error_note). status is None when URL is invalid after encode."""
     ctx = ssl.create_default_context()
-    req = urllib.request.Request(url, headers={"User-Agent": "MSTC-Refresh-Verify/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-            return resp.status, resp.read(500_000)
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read(500_000) if exc.fp else b""
+    candidates = [url]
+    if _url_has_unsafe_chars(url):
+        candidates.append(_encode_url_path(url))
+    last_note: str | None = None
+    for candidate in candidates:
+        req = urllib.request.Request(candidate, headers={"User-Agent": "MSTC-Refresh-Verify/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+                return resp.status, resp.read(500_000), None
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read(500_000) if exc.fp else b"", None
+        except (http.client.InvalidURL, UnicodeError, ValueError) as exc:
+            last_note = f"invalid URL: {exc}"
+            continue
+        except urllib.error.URLError as exc:
+            last_note = f"URL error: {exc}"
+            continue
+    return None, b"", last_note
 
 
 def _asset_exists(output_assets_dir: Path | None, rel_url: str) -> bool:
@@ -50,30 +81,36 @@ def _pick_sample_urls(
     if not candidate_json or not candidate_json.is_file():
         return None, None, []
     data = json.loads(candidate_json.read_text(encoding="utf-8"))
-    pdf_url = thumb_url = None
     skipped_missing_assets: list[str] = []
+    pdf_candidates: list[str] = []
+    thumb_candidates: list[str] = []
     for auction in data.get("auctions", []):
         if auction.get("source") != "mstc":
             continue
-        if not pdf_url and auction.get("pdf_url"):
-            candidate_pdf = auction["pdf_url"]
+        if auction.get("pdf_url"):
+            candidate_pdf = str(auction["pdf_url"])
             if _asset_exists(output_assets_dir, candidate_pdf):
-                pdf_url = candidate_pdf
+                pdf_candidates.append(candidate_pdf)
             else:
                 skipped_missing_assets.append(candidate_pdf)
         for lot in auction.get("lots", []):
             for img in lot.get("preview_images") or []:
                 url = img if isinstance(img, str) else (img.get("url") or img.get("thumbnail_url"))
-                if url and not thumb_url:
-                    if _asset_exists(output_assets_dir, url):
-                        thumb_url = url
-                        break
-                    skipped_missing_assets.append(url)
-            if thumb_url:
-                break
-        if pdf_url and thumb_url:
-            break
-    return pdf_url, thumb_url, skipped_missing_assets[:10]
+                if not url:
+                    continue
+                url_s = str(url)
+                if _asset_exists(output_assets_dir, url_s):
+                    thumb_candidates.append(url_s)
+                else:
+                    skipped_missing_assets.append(url_s)
+
+    def _prefer_clean(urls: list[str]) -> str | None:
+        if not urls:
+            return None
+        clean = [u for u in urls if not _url_has_unsafe_chars(u)]
+        return (clean or urls)[0]
+
+    return _prefer_clean(pdf_candidates), _prefer_clean(thumb_candidates), skipped_missing_assets[:10]
 
 
 def verify_live_site(
@@ -92,23 +129,29 @@ def verify_live_site(
     json_url = f"{site}/data/auctions.json"
     data_js_url = f"{site}/data/auctions-data.js"
 
-    index_status, index_body = _http_status(index_url)
+    index_status, index_body, index_note = _http_status(index_url)
     checked["index"] = index_url
-    if index_status != 200:
+    if index_status is None:
+        errors.append(f"index URL invalid: {index_note}")
+    elif index_status != 200:
         errors.append(f"index returned HTTP {index_status}")
 
-    json_status, _json_body = _http_status(json_url)
+    json_status, _json_body, json_note = _http_status(json_url)
     checked["json"] = json_url
-    if json_status == 403:
+    if json_status is None:
+        warnings.append(f"live JSON URL invalid: {json_note}")
+    elif json_status == 403:
         warnings.append(
             "live JSON endpoint returned 403 (Hostinger may block .json; UI loads auctions-data.js client-side)"
         )
     elif json_status != 200:
         warnings.append(f"live JSON returned HTTP {json_status}")
 
-    data_js_status, data_js_body = _http_status(data_js_url)
+    data_js_status, data_js_body, data_js_note = _http_status(data_js_url)
     checked["data_js"] = data_js_url
-    if data_js_status != 200:
+    if data_js_status is None:
+        warnings.append(f"live auctions-data.js URL invalid: {data_js_note}")
+    elif data_js_status != 200:
         warnings.append(f"live auctions-data.js returned HTTP {data_js_status}")
     elif b"__AUCTIONS_EXPORT__" not in data_js_body:
         warnings.append("live auctions-data.js missing __AUCTIONS_EXPORT__ global")
@@ -141,24 +184,30 @@ def verify_live_site(
     pdf_status = thumb_status = None
     if pdf_rel:
         pdf_url = f"{site}/{pdf_rel.lstrip('/')}"
-        pdf_status, _ = _http_status(pdf_url)
+        pdf_status, _, pdf_note = _http_status(pdf_url)
         checked["pdf"] = pdf_url
-        if pdf_status != 200:
+        if pdf_status is None:
+            warnings.append(f"sample PDF URL skipped (invalid): {pdf_note or pdf_url}")
+        elif pdf_status != 200:
             errors.append(f"sample PDF returned HTTP {pdf_status}: {pdf_url}")
     else:
         warnings.append("no sample PDF URL available for HTTP check")
 
     if thumb_rel:
         thumb_url = f"{site}/{thumb_rel.lstrip('/')}"
-        thumb_status, _ = _http_status(thumb_url)
+        thumb_status, _, thumb_note = _http_status(thumb_url)
         checked["thumb"] = thumb_url
-        if thumb_status != 200:
+        if thumb_status is None:
+            warnings.append(f"sample thumbnail URL skipped (invalid): {thumb_note or thumb_url}")
+        elif thumb_status != 200:
             warnings.append(f"sample thumbnail returned HTTP {thumb_status}: {thumb_url}")
 
     sitemap_url = f"{site}/sitemap.xml"
-    sitemap_status, sitemap_body = _http_status(sitemap_url)
+    sitemap_status, sitemap_body, sitemap_note = _http_status(sitemap_url)
     checked["sitemap"] = sitemap_url
-    if sitemap_status != 200:
+    if sitemap_status is None:
+        errors.append(f"sitemap URL invalid: {sitemap_note}")
+    elif sitemap_status != 200:
         errors.append(f"sitemap returned HTTP {sitemap_status}")
     else:
         sitemap_text = sitemap_body.decode("utf-8", errors="replace")
@@ -190,8 +239,11 @@ def verify_live_site(
     detail_checked = False
     for rel in detail_candidates:
         detail_url = f"{site}/{rel}/"
-        detail_status, detail_body = _http_status(detail_url)
+        detail_status, detail_body, detail_note = _http_status(detail_url)
         checked["detail_sample"] = detail_url
+        if detail_status is None:
+            warnings.append(f"sample detail URL skipped (invalid): {detail_note or detail_url}")
+            continue
         if detail_status == 404:
             continue
         detail_checked = True

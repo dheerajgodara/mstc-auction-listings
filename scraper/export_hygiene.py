@@ -1,7 +1,8 @@
-"""Export hygiene: strip aged-out closings and classify strict QA errors."""
+"""Export hygiene: strip aged-out closings, repair asset paths, classify gate errors."""
 
 from __future__ import annotations
 
+import copy
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -17,6 +18,25 @@ IST = ZoneInfo("Asia/Kolkata")
 
 _AGED_OUT_RE = re.compile(r"closes before\s+(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
 _COUNT_FLOOR_RE = re.compile(r"(count|floor|below|min[_ ]?count|too few|empty export)", re.IGNORECASE)
+_SCHEMA_RE = re.compile(r"(schema|validation failed|json schema)", re.IGNORECASE)
+_ABSOLUTE_PATH_RE = re.compile(
+    r"(contains absolute path|absolute preview path)",
+    re.IGNORECASE,
+)
+_BAD_URL_RE = re.compile(
+    r"(control characters|invalid.?url|url can.?t contain|found at least)",
+    re.IGNORECASE,
+)
+_RECORD_ID_RE = re.compile(
+    r"(?:record\s+(\S+)|absolute preview path on\s+(\S+))",
+    re.IGNORECASE,
+)
+
+_ABSOLUTE_ASSET_PREFIXES = (
+    ("/pdfs/", "pdfs/"),
+    ("/docs/", "docs/"),
+    ("/thumbs/", "thumbs/"),
+)
 
 
 @dataclass
@@ -24,31 +44,49 @@ class HygieneResult:
     export: dict[str, Any]
     dropped: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    repaired: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
 class ClassifiedErrors:
     aged_out: list[str] = field(default_factory=list)
+    absolute_path: list[str] = field(default_factory=list)
+    bad_asset_url: list[str] = field(default_factory=list)
     missing_closing: list[str] = field(default_factory=list)
     missing_source: list[str] = field(default_factory=list)
     count_floor: list[str] = field(default_factory=list)
+    schema: list[str] = field(default_factory=list)
     other: list[str] = field(default_factory=list)
 
     @property
-    def fatal(self) -> list[str]:
+    def site_threatening(self) -> list[str]:
         return [
             *self.missing_closing,
             *self.missing_source,
             *self.count_floor,
+            *self.schema,
             *self.other,
         ]
 
     @property
+    def fatal(self) -> list[str]:
+        """Backward-compatible alias: site-threatening + leftover recoverable not yet stripped."""
+        return self.site_threatening
+
+    @property
+    def record_recoverable(self) -> list[str]:
+        return [*self.aged_out, *self.absolute_path, *self.bad_asset_url]
+
+    @property
     def only_aged_out(self) -> bool:
-        return bool(self.aged_out) and not self.fatal
+        return bool(self.aged_out) and not self.site_threatening and not self.absolute_path and not self.bad_asset_url
+
+    @property
+    def only_record_recoverable(self) -> bool:
+        return bool(self.record_recoverable) and not self.site_threatening
 
     def all_errors(self) -> list[str]:
-        return [*self.aged_out, *self.fatal]
+        return [*self.record_recoverable, *self.site_threatening]
 
 
 def aged_out_fingerprint(errors: list[str] | ClassifiedErrors) -> str:
@@ -72,15 +110,70 @@ def classify_strict_errors(errors: list[str]) -> ClassifiedErrors:
         lower = err.lower()
         if _AGED_OUT_RE.search(err):
             result.aged_out.append(err)
+        elif _ABSOLUTE_PATH_RE.search(err):
+            result.absolute_path.append(err)
+        elif _BAD_URL_RE.search(err):
+            result.bad_asset_url.append(err)
         elif "missing closing" in lower:
             result.missing_closing.append(err)
         elif "missing source" in lower or "required source missing" in lower:
             result.missing_source.append(err)
         elif _COUNT_FLOOR_RE.search(err) or "production count" in lower:
             result.count_floor.append(err)
+        elif _SCHEMA_RE.search(err):
+            result.schema.append(err)
         else:
             result.other.append(err)
     return result
+
+
+def is_site_threatening(classified: ClassifiedErrors) -> bool:
+    return bool(classified.site_threatening)
+
+
+def is_record_recoverable(classified: ClassifiedErrors) -> bool:
+    """True when only record-level poison/aged-out/absolute-path errors remain."""
+    return classified.only_record_recoverable
+
+
+def extract_record_keys_from_errors(
+    errors: list[str] | ClassifiedErrors,
+    *,
+    export: dict[str, Any] | None = None,
+    default_source: str = "mstc",
+) -> list[str]:
+    """Parse auction IDs from gate error messages into stable keys."""
+    if isinstance(errors, ClassifiedErrors):
+        msgs = errors.all_errors()
+    else:
+        msgs = list(errors or [])
+
+    by_id: dict[str, str] = {}
+    if export:
+        for auction in export.get("auctions") or []:
+            aid = str(auction.get("id") or "")
+            sid = str(auction.get("source_auction_id") or "")
+            key = stable_listing_key(auction)
+            if aid:
+                by_id[aid] = key
+            if sid:
+                by_id[sid] = key
+
+    keys: set[str] = set()
+    for msg in msgs:
+        match = _RECORD_ID_RE.search(msg)
+        if not match:
+            continue
+        aid = (match.group(1) or match.group(2) or "").strip().rstrip(":")
+        if not aid:
+            continue
+        if aid in by_id:
+            keys.add(by_id[aid])
+        elif ":" in aid:
+            keys.add(aid)
+        else:
+            keys.add(f"{default_source}:{aid}")
+    return sorted(keys)
 
 
 def _recalculate_counts(export: dict[str, Any], auctions: list[dict[str, Any]]) -> None:
@@ -100,6 +193,82 @@ def _recalculate_counts(export: dict[str, Any], auctions: list[dict[str, Any]]) 
 
 def poison_threshold(export_count: int) -> int:
     return max(50, int(export_count * 0.05))
+
+
+def _rewrite_absolute_asset_string(value: str) -> tuple[str, bool]:
+    text = value
+    changed = False
+    for absolute, relative in _ABSOLUTE_ASSET_PREFIXES:
+        if absolute in text:
+            text = text.replace(absolute, relative)
+            changed = True
+    # Leading slash only for known asset roots (preview paths like /pdfs/x).
+    for relative in ("pdfs/", "docs/", "thumbs/"):
+        prefix = f"/{relative}"
+        if text.startswith(prefix):
+            text = text[1:]
+            changed = True
+    return text, changed
+
+
+def _repair_value(value: Any, *, auction_id: Any, repaired: list[dict[str, Any]], field: str) -> Any:
+    if isinstance(value, str):
+        new_val, changed = _rewrite_absolute_asset_string(value)
+        if changed:
+            repaired.append(
+                {
+                    "id": auction_id,
+                    "field": field,
+                    "from": value[:120],
+                    "to": new_val[:120],
+                }
+            )
+            return new_val
+        return value
+    if isinstance(value, list):
+        return [
+            _repair_value(item, auction_id=auction_id, repaired=repaired, field=field)
+            for item in value
+        ]
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            out[k] = _repair_value(v, auction_id=auction_id, repaired=repaired, field=f"{field}.{k}" if field else k)
+        return out
+    return value
+
+
+def repair_absolute_asset_paths(export: dict[str, Any]) -> HygieneResult:
+    """Rewrite leading /pdfs|/docs|/thumbs absolute paths to relative asset paths."""
+    auctions_in = list(export.get("auctions") or [])
+    repaired: list[dict[str, Any]] = []
+    auctions_out: list[dict[str, Any]] = []
+
+    for auction in auctions_in:
+        aid = auction.get("id") or auction.get("source_auction_id")
+        fixed = _repair_value(
+            copy.deepcopy(auction),
+            auction_id=aid,
+            repaired=repaired,
+            field="",
+        )
+        auctions_out.append(fixed)
+
+    out = dict(export)
+    out["auctions"] = auctions_out
+    warnings: list[str] = []
+    if repaired:
+        unique = {(r.get("id"), r.get("from")): r for r in repaired}
+        repaired = list(unique.values())
+        stats = dict(out.get("stats") or {})
+        hygiene = dict(stats.get("export_hygiene") or {})
+        hygiene["repaired_absolute_paths"] = len(repaired)
+        hygiene["repaired_ids"] = sorted({str(r.get("id")) for r in repaired if r.get("id")})[:50]
+        stats["export_hygiene"] = hygiene
+        out["stats"] = stats
+        warnings.append(f"repaired {len(repaired)} absolute asset path(s)")
+
+    return HygieneResult(export=out, dropped=[], warnings=warnings, repaired=repaired)
 
 
 def strip_aged_out_auctions(
@@ -215,3 +384,19 @@ def format_dropped_telegram_note(dropped: list[dict[str, Any]]) -> str:
         ids = ", ".join(str(d.get("id") or d.get("key") or "?") for d in dropped)
         return f"dropped {n} aged-out ({ids})"
     return f"dropped {n} aged-out"
+
+
+def format_repair_telegram_note(repaired: list[dict[str, Any]]) -> str:
+    n = len(repaired)
+    if n <= 0:
+        return ""
+    return f"repaired {n} absolute paths"
+
+
+def format_quarantine_telegram_note(keys: list[str], *, error_class: str = "poison") -> str:
+    n = len(keys)
+    if n <= 0:
+        return ""
+    if n <= 3:
+        return f"quarantined {n} · {error_class} ({', '.join(keys)})"
+    return f"quarantined {n} · {error_class}"
