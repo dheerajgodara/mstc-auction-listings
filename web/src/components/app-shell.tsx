@@ -200,10 +200,6 @@ export function AppShell({
             {navLinks}
           </nav>
         )}
-        <div className="border-t border-border bg-card px-4 py-2 text-center text-footnote text-muted-foreground">
-          Official-source discovery for MSTC, GeM Forward, and eAuction.gov.in.
-          Always bid on the source portal.
-        </div>
       </header>
       <div id="main-content">{children}</div>
     </>

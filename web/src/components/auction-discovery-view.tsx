@@ -19,7 +19,6 @@ import { EndingSoonArena } from "@/components/ending-soon-arena";
 import { FilterDrawer } from "@/components/filter-drawer";
 import { HomeModules } from "@/components/home-modules";
 import { IndustrialBeltTiles } from "@/components/industrial-belt-tiles";
-import { MarketPulseTicker } from "@/components/market-pulse-ticker";
 import { PaginationBar } from "@/components/pagination-bar";
 import { VirtualizedAuctionList } from "@/components/virtualized-auction-list";
 import { Chip } from "@/components/ui/primitives";
@@ -155,8 +154,6 @@ export function AuctionDiscoveryView({
 
   return (
     <div className="space-y-4 pb-24">
-      <MarketPulseTicker auctions={auctions} />
-
       {showHero && (
       <header className="container-marketplace space-y-2 pb-2 pt-4 sm:pt-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
