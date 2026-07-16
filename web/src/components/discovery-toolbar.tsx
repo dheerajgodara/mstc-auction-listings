@@ -2,6 +2,7 @@
 
 import {
   Bookmark,
+  Clock,
   Command,
   Filter,
   LayoutGrid,
@@ -36,6 +37,7 @@ export function DiscoveryToolbar({
   onSaveSearch,
   resultCount,
   totalCount,
+  updatedLabel,
   className,
 }: {
   query: string;
@@ -52,6 +54,7 @@ export function DiscoveryToolbar({
   onSaveSearch?: () => void;
   resultCount: number;
   totalCount: number;
+  updatedLabel?: string;
   className?: string;
 }) {
   const segmentSelected =
@@ -60,10 +63,10 @@ export function DiscoveryToolbar({
   return (
     <div className={cn("surface-elevated p-[var(--space-12)]", className)}>
       <div className="flex flex-wrap items-center gap-[var(--space-8)]">
-        <div className="relative min-w-[200px] flex-1">
+        <div className="relative min-w-[200px] flex-1 basis-[min(100%,20rem)]">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            className="h-10 pl-9 text-body"
+            className="h-11 pl-9 text-body"
             placeholder="Search item, seller, location…"
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
@@ -183,6 +186,12 @@ export function DiscoveryToolbar({
           <span className="tabular-nums">{totalCount}</span>
           <span className="sr-only"> auctions match current filters</span>
         </p>
+        {updatedLabel ? (
+          <p className="flex items-center gap-1 text-footnote text-muted-foreground sm:ml-auto">
+            <Clock className="h-3 w-3 shrink-0" aria-hidden />
+            {updatedLabel}
+          </p>
+        ) : null}
       </div>
     </div>
   );

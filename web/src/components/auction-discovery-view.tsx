@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Clock } from "lucide-react";
 import {
   ActiveFilterBar,
   buildActiveFilterChips,
@@ -10,22 +9,17 @@ import {
 import { AuctionCard } from "@/components/auction-card";
 import { AuctionTable } from "@/components/auction-table";
 import { CommandPalette } from "@/components/command-palette";
-import { CommodityIndexWidget } from "@/components/commodity-index-widget";
 import { CompareTray } from "@/components/compare-tray";
 import { DiligencePanel } from "@/components/diligence-panel";
 import { DiscoveryActionBar } from "@/components/discovery-action-bar";
 import { DiscoveryToolbar } from "@/components/discovery-toolbar";
-import { EndingSoonArena } from "@/components/ending-soon-arena";
 import { FilterDrawer } from "@/components/filter-drawer";
-import { HomeModules } from "@/components/home-modules";
-import { IndustrialBeltTiles } from "@/components/industrial-belt-tiles";
 import { PaginationBar } from "@/components/pagination-bar";
 import { VirtualizedAuctionList } from "@/components/virtualized-auction-list";
-import { Chip } from "@/components/ui/primitives";
 import { useAuctionDiscovery } from "@/hooks/use-auction-discovery";
 import { trackEvent, trackNoResults } from "@/lib/analytics";
 import { auctionDetailPath } from "@/lib/seo/auction-url";
-import { formatDateTime, resolveAppPath, resolvePublicUrl } from "@/lib/utils";
+import { formatDateTime, resolveAppPath } from "@/lib/utils";
 import type { AuctionRecord } from "@/types/auction";
 
 const MAX_COMPARE = 4;
@@ -33,12 +27,12 @@ const MAX_COMPARE = 4;
 export function AuctionDiscoveryView({
   auctions,
   total,
-  generatedAt,
+  generatedAt: _generatedAt,
   automationRanAt,
-  showHomeModules = true,
-  showHero = true,
-  heroTitle = "Discover auctions",
-  heroDescription = "Search and filter MSTC, GeM Forward, and eAuction listings — filter, compare, and review diligence before you bid on official portals.",
+  showHomeModules: _showHomeModules = false,
+  showHero: _showHero = false,
+  heroTitle: _heroTitle,
+  heroDescription: _heroDescription,
   paletteOpen: paletteOpenProp,
   onPaletteOpenChange,
 }: {
@@ -46,7 +40,9 @@ export function AuctionDiscoveryView({
   total?: number;
   generatedAt?: string;
   automationRanAt?: string;
+  /** @deprecated Discover chrome removed; kept for call-site compat. */
   showHomeModules?: boolean;
+  /** @deprecated Discover chrome removed; kept for call-site compat. */
   showHero?: boolean;
   heroTitle?: string;
   heroDescription?: string;
@@ -149,59 +145,29 @@ export function AuctionDiscoveryView({
     return () => window.removeEventListener("keydown", onKey);
   }, [paletteOpen, setPaletteOpen]);
 
-  const statusPageHref = resolvePublicUrl("status/");
+  // Desktop: keep filters open by default. Mobile sheet stays closed until toggled.
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 640px)");
+    const sync = () => {
+      if (mq.matches) d.setFiltersOpen(true);
+      else d.setFiltersOpen(false);
+    };
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+    // Intentionally run once on mount + mq changes; discovery setters are stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const resultTotal = total ?? auctions.length;
+  const updatedLabel = automationRanAt
+    ? `Updated ${formatDateTime(automationRanAt)}`
+    : undefined;
 
   return (
-    <div className="space-y-4 pb-24">
-      {showHero && (
-      <header className="container-marketplace space-y-2 pb-2 pt-4 sm:pt-6">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0 space-y-1">
-            <h1 className="text-display text-foreground">{heroTitle}</h1>
-            <p className="max-w-2xl text-body text-muted-foreground">
-              {heroDescription}{" "}
-              <a
-                href={statusPageHref}
-                className="font-medium link-action hover:underline"
-              >
-                Learn more
-              </a>
-            </p>
-          </div>
-          <div className="flex flex-col items-end gap-1">
-            {automationRanAt && (
-              <Chip className="border-border bg-muted text-muted-foreground normal-case tracking-normal">
-                <Clock className="mr-1 inline h-3 w-3" />
-                Updated {formatDateTime(automationRanAt)}
-              </Chip>
-            )}
-            {generatedAt && (
-              <p className="text-footnote text-muted-foreground">
-                Data generated {formatDateTime(generatedAt)}
-              </p>
-            )}
-          </div>
-        </div>
-      </header>
-      )}
-
-      {showHomeModules && (
-        <div className="container-marketplace space-y-[var(--space-56)] py-[var(--space-16)]">
-          <EndingSoonArena auctions={auctions} />
-          <div className="grid gap-4 lg:grid-cols-2">
-            <CommodityIndexWidget />
-            <IndustrialBeltTiles />
-          </div>
-          <HomeModules
-            auctions={auctions}
-            onSelectAuction={navigateToAuction}
-          />
-        </div>
-      )}
-
+    <div className="pb-24 pt-3 sm:pt-4">
       <div className="container-marketplace">
-        <div className="flex flex-col gap-4 lg:flex-row">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
           <FilterDrawer
             open={d.filtersOpen}
             filters={d.filterValues}
@@ -212,11 +178,11 @@ export function AuctionDiscoveryView({
             cityOptions={d.cities}
             onClose={() => d.setFiltersOpen(false)}
             onReset={d.clearAllFilters}
-            className="lg:w-72 lg:shrink-0"
+            className="lg:sticky lg:top-[var(--nav-height-regular)] lg:w-72 lg:shrink-0 lg:self-start"
           />
 
           <div className="min-w-0 flex-1 space-y-3">
-            <div className="sticky top-[var(--nav-height-regular)] z-sticky space-y-2">
+            <div className="sticky top-[var(--nav-height-regular)] z-sticky -mx-1 space-y-2 bg-background/95 px-1 py-2 backdrop-blur-sm supports-[backdrop-filter]:bg-background/80">
               <DiscoveryToolbar
                 query={d.query}
                 onQueryChange={d.setQuery}
@@ -232,6 +198,8 @@ export function AuctionDiscoveryView({
                 onSaveSearch={() => d.saveCurrentSearch()}
                 resultCount={d.sorted.length}
                 totalCount={resultTotal}
+                updatedLabel={updatedLabel}
+                className="border border-border p-3 shadow-sm sm:p-4"
               />
               <ActiveFilterBar
                 chips={activeChips}
@@ -292,7 +260,9 @@ export function AuctionDiscoveryView({
                       onToggleWatch={d.onToggleWatch}
                       compact={d.density === "compact"}
                       onOpenDiligence={() => {
-                        trackEvent("diligence_open", { auction_id: auction.id });
+                        trackEvent("diligence_open", {
+                          auction_id: auction.id,
+                        });
                         setDiligenceId(auction.id);
                       }}
                       onToggleCompare={() => handleToggleCompare(auction.id)}

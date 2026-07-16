@@ -44,9 +44,10 @@ export function AuctionTableSkeleton({ rows = 8 }: { rows?: number }) {
       {Array.from({ length: rows }).map((_, i) => (
         <div key={i} className="flex gap-3 border-b border-border px-3 py-3">
           <div className="h-4 flex-1 rounded bg-muted" />
-          <div className="h-4 w-16 rounded bg-muted" />
-          <div className="h-4 w-20 rounded bg-muted" />
+          <div className="h-4 w-14 rounded bg-muted" />
           <div className="h-4 w-24 rounded bg-muted" />
+          <div className="h-4 w-28 rounded bg-muted" />
+          <div className="h-4 w-16 rounded bg-muted" />
         </div>
       ))}
     </div>

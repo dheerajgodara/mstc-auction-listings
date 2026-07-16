@@ -22,6 +22,8 @@ export function FilterBottomSheet({
 }) {
   useEffect(() => {
     if (!open) return;
+    // Sheet is mobile-only (sm:hidden); do not lock scroll on desktop.
+    if (window.matchMedia("(min-width: 640px)").matches) return;
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
@@ -30,6 +32,7 @@ export function FilterBottomSheet({
   }, [open]);
   useEffect(() => {
     if (!open) return;
+    if (window.matchMedia("(min-width: 640px)").matches) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };

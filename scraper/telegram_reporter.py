@@ -1,10 +1,11 @@
-"""Compact Telegram status for Scrap Auction India pipelines.
+"""Plain-language Telegram status for Scrap Auction India pipelines.
 
-Design rules (keep messages scannable on mobile):
-- Title line: emoji + system + outcome (≤ ~40 chars)
-- 1–3 body lines of facts only
-- Optional single GitHub link
-- Soft limit ~450 chars; never dump run_id/timestamps/section dumps
+Design rules (readable on a phone without decoding jargon):
+- Title: emoji + what happened
+- Body: short sentences a non-engineer can follow
+- Queue line: downloaded / waiting to process / ready for site
+- Optional GitHub log link
+- Soft limit ~550 chars; no run_id / timestamp dumps
 - Quiet events (started/selection/cycle) are not sent
 """
 
@@ -39,7 +40,7 @@ QUIET_EVENTS: frozenset[str] = frozenset(
     }
 )
 
-MAX_MESSAGE_CHARS = 450
+MAX_MESSAGE_CHARS = 550
 
 
 def _credentials() -> tuple[str, str] | None:
@@ -81,28 +82,39 @@ def _run_link(payload: dict[str, Any]) -> str:
     url = str(payload.get("github_run_url") or "").strip()
     if not url:
         return ""
-    return f'<a href="{escape(url, quote=True)}">log</a>'
+    return f'<a href="{escape(url, quote=True)}">full log</a>'
 
 
-def _ledger_bits(ledger: dict[str, Any] | None) -> str:
+def _queue_line(ledger: dict[str, Any] | None) -> str:
+    """Human queue snapshot: downloaded / waiting / ready for site."""
     if not ledger:
         return ""
-    dl = ledger.get("download")
-    parse = ledger.get("parse")
     parts: list[str] = []
+    dl = ledger.get("download")
     if isinstance(dl, dict) and dl:
-        pending = int(dl.get("pending") or 0)
         done = int(dl.get("done") or 0)
+        pending = int(dl.get("pending") or 0)
         failed = int(dl.get("failed") or 0)
-        parts.append(f"DL {done}✓ {pending}⏳" + (f" {failed}✗" if failed else ""))
+        bit = f"downloaded {done}"
+        if pending:
+            bit += f" · still need files {pending}"
+        if failed:
+            bit += f" · download failed {failed}"
+        parts.append(bit)
+    parse = ledger.get("parse")
     if isinstance(parse, dict) and parse:
-        pending = int(parse.get("pending") or 0) + int(parse.get("failed") or 0)
         done = int(parse.get("done") or 0)
-        parts.append(f"Parse {done}✓ {pending}⏳")
+        waiting = int(parse.get("pending") or 0) + int(parse.get("failed") or 0)
+        if waiting:
+            parts.append(f"waiting to process {waiting}")
+        else:
+            parts.append(f"processed {done} · nothing waiting")
     ready = ledger.get("deploy_ready")
-    if ready not in (None, "", 0):
-        parts.append(f"Ready {ready}")
-    return " · ".join(parts)
+    if ready not in (None, ""):
+        parts.append(f"ready for site {ready}")
+    if not parts:
+        return ""
+    return "Queue: " + " · ".join(parts)
 
 
 def _finish(lines: list[str], payload: dict[str, Any]) -> str:
@@ -115,8 +127,8 @@ def _finish(lines: list[str], payload: dict[str, Any]) -> str:
     return text
 
 
-def _title(emoji: str, system: str, outcome: str) -> str:
-    return f"<b>{_h(emoji)} {_h(system)} · {_h(outcome)}</b>"
+def _title(emoji: str, headline: str) -> str:
+    return f"<b>{_h(emoji)} {_h(headline)}</b>"
 
 
 def _prefer_fail_summary(raw: str) -> str:
@@ -136,6 +148,7 @@ def _prefer_fail_summary(raw: str) -> str:
     first = text.splitlines()[0].strip()
     return first or text
 
+
 def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
     """Build a short HTML Telegram message for pipeline / legacy refresh events."""
     pipeline = str(payload.get("pipeline") or "job")
@@ -146,52 +159,80 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
 
     # --- Download family ---
     if event == "download_done":
-        ok = payload.get("download_ok", 0)
-        fail = payload.get("download_failed", 0)
+        ok = int(payload.get("download_ok") or 0)
+        fail = int(payload.get("download_failed") or 0)
         dur = _fmt_duration(payload.get("wall_seconds"))
-        line2 = f"{ok} ok · {fail} fail" + (f" · {dur}" if dur else "")
+        if ok == 0 and fail == 0:
+            line2 = "Nothing new to download"
+        elif ok == 0 and fail > 0:
+            line2 = f"No new files · {fail} failed"
+        else:
+            line2 = f"Downloaded {ok} new file" + ("s" if ok != 1 else "")
+            if fail:
+                line2 += f" · {fail} failed"
+        if dur:
+            line2 += f" · took {dur}"
         return _finish(
-            [_title("⬇️", "Download", "done"), line2, _ledger_bits(payload.get("ledger"))],
+            [_title("⬇️", "Download finished"), line2, _queue_line(payload.get("ledger"))],
             payload,
         )
     if event == "download_failed":
         return _finish(
-            [_title("❌", "Download", "failed"), err or "see log", _ledger_bits(payload.get("ledger"))],
+            [
+                _title("❌", "Download failed"),
+                err or "See full log for details",
+                _queue_line(payload.get("ledger")),
+            ],
             payload,
         )
     if event == "download_retry_scheduled":
         attempt = payload.get("retry_attempt") or "?"
         wait = payload.get("wait_minutes") or "?"
         return _finish(
-            [_title("🔁", "Download", "retry"), f"attempt {attempt} · wait {wait}m"],
+            [
+                _title("🔁", "Download will retry"),
+                f"Attempt {attempt} · waiting {wait} minutes",
+            ],
             payload,
         )
     if event == "download_retries_exhausted":
         return _finish(
-            [_title("🛑", "Download", "retries done"), "waiting next 6h slot"],
+            [
+                _title("🛑", "Download retries used up"),
+                "Will try again on the next 6-hour slot",
+            ],
             payload,
         )
 
     # --- Parse ---
     if event == "parse_done":
-        ok = payload.get("parse_ok", 0)
-        fail = payload.get("parse_failed", 0)
+        ok = int(payload.get("parse_ok") or 0)
+        fail = int(payload.get("parse_failed") or 0)
         auctions = payload.get("auctions")
-        line2 = f"{ok} ok · {fail} fail"
+        if ok == 0 and fail == 0:
+            line2 = "No auctions processed this round"
+        else:
+            line2 = f"Processed {ok} OK"
+            if fail:
+                line2 += f" · {fail} failed"
         if auctions is not None:
-            line2 += f" · export {auctions}"
-        lines = [_title("🧩", "Parse", "done"), line2]
+            line2 += f" · site list now {auctions} auctions"
+        lines = [_title("🧩", "Processing finished"), line2]
         note = str(payload.get("hygiene_note") or "").strip()
         if not note and int(payload.get("dropped_aged_out") or 0) > 0:
             n = int(payload.get("dropped_aged_out") or 0)
-            note = f"dropped {n} aged-out"
+            note = f"Removed {n} aged-out auction" + ("s" if n != 1 else "")
         if note:
             lines.append(note)
-        lines.append(_ledger_bits(payload.get("ledger")))
+        lines.append(_queue_line(payload.get("ledger")))
         return _finish(lines, payload)
     if event == "parse_failed":
         return _finish(
-            [_title("❌", "Parse", "failed"), err or "see log", _ledger_bits(payload.get("ledger"))],
+            [
+                _title("❌", "Processing failed"),
+                err or "See full log for details",
+                _queue_line(payload.get("ledger")),
+            ],
             payload,
         )
     if event == "quarantine_added":
@@ -199,39 +240,57 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
         hours = payload.get("quarantine_hours") or 48
         klass = payload.get("quarantine_error_class") or "poison"
         return _finish(
-            [_title("⚠️", "Quarantine", "added"), f"added {n} · {klass} · {hours}h"],
+            [
+                _title("⚠️", "Quarantine added"),
+                f"Parked {n} bad item(s) ({klass}) for {hours}h",
+            ],
             payload,
         )
 
     # --- Deploy ---
     if event == "deploy_done":
-        if payload.get("deploy_skipped_unchanged"):
-            outcome = "skipped (unchanged)"
-        else:
-            outcome = "done"
         n = payload.get("auctions")
-        line2 = f"{n} auctions" if n is not None else "live updated"
-        return _finish([_title("🚀", "Deploy", outcome), line2], payload)
+        if payload.get("deploy_skipped_unchanged"):
+            line2 = (
+                f"No change — site already has {n} auctions"
+                if n is not None
+                else "No change — site already up to date"
+            )
+            return _finish([_title("🚀", "Site update skipped"), line2], payload)
+        line2 = f"Pushed {n} auctions live" if n is not None else "Live site updated"
+        return _finish([_title("🚀", "Site updated"), line2], payload)
     if event == "deploy_failed":
-        return _finish([_title("❌", "Deploy", "failed"), err or "see log"], payload)
+        return _finish(
+            [_title("❌", "Site update failed"), err or "See full log for details"],
+            payload,
+        )
 
     # --- Drain ---
     if event == "drain_done":
-        cycles = payload.get("cycles_completed", 0)
+        cycles = int(payload.get("cycles_completed") or 0)
         left = payload.get("parse_backlog_end")
-        line2 = f"{cycles} cycles"
+        if cycles == 0:
+            line2 = "Nothing was waiting — already clear"
+        elif cycles == 1:
+            line2 = "Cleared the backlog in 1 round"
+        else:
+            line2 = f"Cleared the backlog in {cycles} rounds"
         if left is not None:
-            line2 += f" · parse left {left}"
+            left_n = int(left)
+            if left_n == 0:
+                line2 += " · nothing left to process"
+            else:
+                line2 += f" · still waiting: {left_n}"
         return _finish(
-            [_title("✅", "Drain", "done"), line2, _ledger_bits(payload.get("ledger"))],
+            [_title("✅", "Catch-up finished"), line2, _queue_line(payload.get("ledger"))],
             payload,
         )
     if event == "drain_stopped":
         return _finish(
             [
-                _title("🛑", "Drain", "stopped"),
-                err or "see log",
-                _ledger_bits(payload.get("ledger")),
+                _title("🛑", "Catch-up stopped"),
+                err or "See full log for details",
+                _queue_line(payload.get("ledger")),
             ],
             payload,
         )
@@ -239,29 +298,36 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
     # --- Legacy refresh / UI deploy ---
     if event in {"success", "completed"}:
         n = payload.get("total_auctions") or payload.get("auctions")
-        line2 = f"{n} auctions" if n is not None else "ok"
+        line2 = f"{n} auctions on site" if n is not None else "Finished OK"
         by = payload.get("by_source") or {}
         if by:
             line2 += " · " + ", ".join(f"{k}={v}" for k, v in sorted(by.items())[:4])
-        return _finish([_title("✅", "Refresh", "done"), line2], payload)
+        return _finish([_title("✅", "Refresh finished"), line2], payload)
     if event in {"failed", "blocked"}:
         system = "Refresh" if pipeline != "deploy_ui" else "UI deploy"
-        return _finish([_title("❌" if event == "failed" else "🚫", system, event), err or "see log"], payload)
+        word = "failed" if event == "failed" else "blocked"
+        return _finish(
+            [
+                _title("❌" if event == "failed" else "🚫", f"{system} {word}"),
+                err or "See full log for details",
+            ],
+            payload,
+        )
 
     # Quiet / unknown: still return a tiny stub (may be unused when QUIET filters)
-    return _finish([_title("ℹ️", pipeline.title(), event)], payload)
+    return _finish([_title("ℹ️", f"{pipeline.title()} · {event}")], payload)
 
 
 def build_ai_enrichment_message(payload: dict[str, Any], *, event: str = "report") -> str:
     """Short AI enrichment Telegram card."""
     if event == "started":
-        return _finish([_title("🤖", "AI", "started")], payload)
+        return _finish([_title("🤖", "AI enrichment started")], payload)
     if event == "skipped":
         reason = _clip(payload.get("error") or payload.get("skip_reason") or "skipped", 120)
-        return _finish([_title("⏭️", "AI", "skipped"), reason], payload)
+        return _finish([_title("⏭️", "AI enrichment skipped"), reason], payload)
     if event == "failed":
         return _finish(
-            [_title("❌", "AI", "failed"), _clip(payload.get("error") or "see log", 140)],
+            [_title("❌", "AI enrichment failed"), _clip(payload.get("error") or "see log", 140)],
             payload,
         )
 
@@ -272,19 +338,22 @@ def build_ai_enrichment_message(payload: dict[str, Any], *, event: str = "report
     processed = payload.get("processed", 0)
     budget = payload.get("budget") or {}
     selection = payload.get("selection") or {}
-    line2 = f"{ready} ready · {failed} fail · {skipped} skip · {processed} ran"
+    line2 = f"{ready} ready · {failed} failed · {skipped} skipped · {processed} ran"
     line3_parts: list[str] = []
     if budget:
         rem = budget.get("remaining_today")
         if rem is not None:
-            line3_parts.append(f"budget left {rem}")
+            line3_parts.append(f"budget left today: {rem}")
     rem_sel = selection.get("remaining_after_selection")
     if rem_sel is not None:
-        line3_parts.append(f"queue {rem_sel}")
+        line3_parts.append(f"still in queue: {rem_sel}")
     dur = _fmt_duration(payload.get("duration_sec"))
     if dur:
-        line3_parts.append(dur)
-    lines = [_title("🤖", "AI", "done" if event in {"complete", "report"} else event), line2]
+        line3_parts.append(f"took {dur}")
+    lines = [
+        _title("🤖", "AI enrichment finished" if event in {"complete", "report"} else f"AI · {event}"),
+        line2,
+    ]
     if line3_parts:
         lines.append(" · ".join(line3_parts))
     return _finish(lines, payload)

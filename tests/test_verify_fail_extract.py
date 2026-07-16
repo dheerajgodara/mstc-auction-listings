@@ -66,7 +66,7 @@ def test_deploy_failed_telegram_shows_fail_not_ok_tail():
     )
     plain = _plain(msg)
     assert len(msg) <= MAX_MESSAGE_CHARS
-    assert "Deploy" in plain and "failed" in plain
+    assert "Site update failed" in plain
     assert "app shell keeps marketplace source disclaimer" in plain
     assert "sitemap excludes /watchlist" not in plain
 

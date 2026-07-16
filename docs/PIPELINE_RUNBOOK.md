@@ -65,7 +65,7 @@ python -m scraper.quarantine_tool list
 python -m scraper.quarantine_tool remove --key mstc:588636
 ```
 
-Auto-quarantine: residual record-poison after repair/strip is quarantined **48h** (Telegram: `Quarantine · added N · absolute_path · 48h`). Quarantine cannot take the export below `min_count`.
+Auto-quarantine: residual record-poison after repair/strip is quarantined **48h** (Telegram: `Quarantine added` / parked N bad items). Quarantine cannot take the export below `min_count`.
 
 ### Recovery after poison drain stop
 
@@ -125,7 +125,8 @@ Before any nav/route/chrome edit + force deploy:
 cd web && pnpm run verify-design
 ```
 
-Deploy-failed Telegram messages now prefer extracted `FAIL …` lines instead of the OK tail of verify-build output.
+Deploy-failed Telegram messages prefer extracted `FAIL …` lines instead of the OK tail of verify-build output.
+Pipeline Telegram copy is plain language (e.g. “Nothing new to download”, “waiting to process N”, “Catch-up finished”).
 
 ## GeM / eAuction
 

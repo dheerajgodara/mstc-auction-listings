@@ -121,7 +121,7 @@ export function useAuctionDiscovery(auctions: AuctionRecord[]) {
   const [watchlistOnly, setWatchlistOnly] = useState(
     urlInit?.watchlistOnly ?? false,
   );
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(true);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSizeState] = useState(50);
   const [watchlist, setWatchlist] = useState<Set<string>>(() => new Set());
