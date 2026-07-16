@@ -50,6 +50,14 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
+      - name: Restore AI enrichment cache
+        uses: actions/cache@v4
+        with:
+          path: data/ai_enrichment_cache
+          key: ai-enrichment-${{ runner.os }}-${{ hashFiles('scraper/ai_enrichment/schema.py', 'scraper/ai_enrichment/payload.py') }}
+          restore-keys: |
+            ai-enrichment-${{ runner.os }}-
+
       - name: Run tests
         run: PYTHONPATH=. python -m pytest tests/ -q
 

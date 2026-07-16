@@ -230,6 +230,13 @@ def cmd_enrich(args: argparse.Namespace) -> int:
             return 3
     elif ledger_sync_events:
         payload["ledger_sync"] = ledger_sync_events
+    if args.ledger_sync == "hostinger" and allow_network and not args.dry_run:
+        from scraper.ai_enrichment.cache_sync import push_remote_ai_cache
+
+        cache_push = push_remote_ai_cache(args.cache_dir)
+        payload["cache_sync"] = cache_push.to_dict()
+        if not cache_push.ok:
+            payload["error"] = payload.get("error") or "remote_cache_push_failed"
     if args.report_json:
         args.report_json.parent.mkdir(parents=True, exist_ok=True)
         args.report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

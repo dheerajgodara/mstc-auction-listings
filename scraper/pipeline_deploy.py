@@ -15,7 +15,9 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from scraper.asset_bootstrap import bootstrap_production_assets
-from scraper.config import DEFAULT_JSON_OUT, REPO_ROOT, SITE_BASE_URL
+from scraper.ai_enrichment.cache_sync import pull_remote_ai_cache
+from scraper.ai_enrichment.hydrate import hydrate_json_file
+from scraper.config import AI_ENRICHMENT_CACHE_DIR, DEFAULT_JSON_OUT, REPO_ROOT, SITE_BASE_URL
 from scraper.deploy import deploy as deploy_to_hostinger
 from scraper.export_hygiene import repair_absolute_asset_paths
 from scraper.filters import make_run_id, tomorrow_min_closing_date
@@ -111,6 +113,25 @@ def run_pipeline_deploy(
         )
         if not production_json.is_file() or production_json.stat().st_size < 10:
             raise RuntimeError("no auctions.json available for deploy")
+
+        cache_pull = pull_remote_ai_cache(cache_dir=AI_ENRICHMENT_CACHE_DIR)
+        payload["ai_cache_pull"] = cache_pull.to_dict()
+        if not cache_pull.ok:
+            warnings.append(f"ai cache pull failed: {cache_pull.message}")
+        elif cache_pull.file_count:
+            warnings.append(
+                f"ai cache pull ok ({cache_pull.file_count} file(s) from {cache_pull.remote_path})"
+            )
+
+        hydrate_result = hydrate_json_file(
+            production_json,
+            cache_dir=AI_ENRICHMENT_CACHE_DIR,
+            write=True,
+        )
+        payload["ai_hydrate"] = hydrate_result
+        ai_stats = hydrate_result.get("stats") or {}
+        if ai_stats.get("ready"):
+            warnings.append(f"ai hydrate merged {ai_stats.get('ready')} ready listing(s) into export")
 
         export_sha = _export_sha256(production_json)
         payload["export_sha256"] = export_sha

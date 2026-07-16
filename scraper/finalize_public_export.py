@@ -8,7 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from scraper.config import REPO_ROOT
+from scraper.ai_enrichment.hydrate import hydrate_auctions_export
+from scraper.config import AI_ENRICHMENT_CACHE_DIR, REPO_ROOT
 from scraper.export_hygiene import repair_absolute_asset_paths
 from scraper.import_tracking import finalize_export_payload
 
@@ -41,6 +42,16 @@ def finalize_public_export(
     previous = repaired.export
     if repaired.repaired:
         logger.info("repaired %s absolute asset path(s) before finalize", len(repaired.repaired))
+    hydrated_export, ai_stats = hydrate_auctions_export(previous, cache_dir=AI_ENRICHMENT_CACHE_DIR)
+    previous = hydrated_export
+    if ai_stats.get("ready"):
+        logger.info(
+            "merged cached AI enrichment into export (ready=%s missing=%s rejected=%s failed=%s)",
+            ai_stats.get("ready"),
+            ai_stats.get("missing"),
+            ai_stats.get("rejected"),
+            ai_stats.get("failed"),
+        )
     finalized = finalize_export_payload(
         json.loads(json.dumps(previous)),
         previous_export=previous,

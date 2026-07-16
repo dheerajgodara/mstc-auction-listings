@@ -92,7 +92,25 @@ gh workflow run pipeline-drain.yml -f max_parse=100 -f max_cycles=25
 - `{domain}/auction_pipeline/download_retry_state.json`
 - `{domain}/auction_pipeline/last_deploy.json`
 - `{domain}/auction_pipeline/auction_quarantine.json`
+- `{domain}/ai_enrichment_state/cache.tar.gz` — durable AI enrichment cache for deploy hydration
+- `{domain}/ai_enrichment_state/_daily_usage.json` — OpenRouter daily budget ledger
 - Public: `…/public_html/auctions/{pdfs,docs,thumbs,data}`
+
+## AI enrichment on live site
+
+Scheduled `ai-enrichment.yml` writes ready/rejected payloads into `data/ai_enrichment_cache`, pushes `cache.tar.gz` to Hostinger, and updates the done-registry ledger.
+
+Every deploy path now:
+
+1. Restores the GHA AI cache (when present).
+2. Pulls `cache.tar.gz` from Hostinger (best-effort).
+3. Merges cached AI into `web/public/data/auctions.json` before `build:prod` (`finalize_public_export` also hydrates).
+
+Force a republish after AI cache changes without a parse batch:
+
+```bash
+gh workflow run pipeline-deploy.yml -f deploy=true -f force=true
+```
 
 ## GeM / eAuction
 
