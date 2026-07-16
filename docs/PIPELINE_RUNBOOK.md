@@ -112,6 +112,21 @@ Force a republish after AI cache changes without a parse batch:
 gh workflow run pipeline-deploy.yml -f deploy=true -f force=true
 ```
 
+## UI / design verify (before force-deploy)
+
+`verify-airbnb-design.mjs` is a **source-only** gate (no `next build`). It runs:
+
+1. Early via `pnpm run verify-deploy-prereqs` (GHA, before expensive build)
+2. Again inside `pnpm run verify-build` after build
+
+Before any nav/route/chrome edit + force deploy:
+
+```bash
+cd web && pnpm run verify-design
+```
+
+Deploy-failed Telegram messages now prefer extracted `FAIL …` lines instead of the OK tail of verify-build output.
+
 ## GeM / eAuction
 
 No raw HTML download stage. Discovery during download marks them parse-ready; drain parse live-enriches in batches; deploy publishes with MSTC.

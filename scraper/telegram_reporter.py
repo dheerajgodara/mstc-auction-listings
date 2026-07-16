@@ -119,11 +119,30 @@ def _title(emoji: str, system: str, outcome: str) -> str:
     return f"<b>{_h(emoji)} {_h(system)} · {_h(outcome)}</b>"
 
 
+def _prefer_fail_summary(raw: str) -> str:
+    """Keep FAIL check labels when present; otherwise return cleaned error text."""
+    from scraper.verify_fail_extract import extract_fail_lines
+
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    # Already a short summary from pipeline_deploy._run
+    if "FAIL " in text and "\n" not in text:
+        return text
+    fails = extract_fail_lines(text, limit=3)
+    if fails:
+        return "; ".join(f"FAIL {label}" for label in fails)
+    # Drop huge OK tails: keep first line of RuntimeError-style messages
+    first = text.splitlines()[0].strip()
+    return first or text
+
 def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
     """Build a short HTML Telegram message for pipeline / legacy refresh events."""
     pipeline = str(payload.get("pipeline") or "job")
     errors = payload.get("errors") or []
-    err = _clip(errors[0] if errors else payload.get("error") or "", 140)
+    raw_err = str(errors[0] if errors else payload.get("error") or "")
+    # Prefer FAIL labels so deploy_failed is not drowned by OK verify tails.
+    err = _clip(_prefer_fail_summary(raw_err), 140)
 
     # --- Download family ---
     if event == "download_done":

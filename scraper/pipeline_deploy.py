@@ -28,6 +28,8 @@ from scraper.predeploy_verify import verify_predeploy_build
 from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
 from scraper.telegram_reporter import send_telegram_report
+from scraper.verify_fail_extract import summarize_command_failure
+
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_deploy")
 
@@ -58,8 +60,17 @@ def _run(cmd: list[str], *, cwd: Path) -> None:
     logger.info("Running: %s (cwd=%s)", " ".join(cmd), cwd)
     result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     if result.returncode != 0:
-        tail = (result.stdout or "")[-4000:] + "\n" + (result.stderr or "")[-4000:]
-        raise RuntimeError(f"command failed ({result.returncode}): {' '.join(cmd)}\n{tail}")
+        short, fails, tail = summarize_command_failure(
+            cmd,
+            returncode=result.returncode,
+            stdout=result.stdout or "",
+            stderr=result.stderr or "",
+        )
+        if fails:
+            logger.error("Command failed with FAIL lines: %s", "; ".join(fails))
+        if tail.strip():
+            logger.error("Command output tail:\n%s", tail[-2000:])
+        raise RuntimeError(short)
 
 
 def _export_sha256(path: Path) -> str:

@@ -3,6 +3,7 @@
  * Fast pre-scrape / pre-deploy gate for repo files that verify-build also checks.
  * Runs without web/out so CI fails in seconds instead of after a long scrape.
  */
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,6 +87,19 @@ if (failed > 0) {
     `\n${failed} deploy prerequisite(s) failed. Fix and commit these files before scrape/deploy.`,
   );
   process.exit(1);
+}
+
+// Fast design-token / chrome gate (no next build). Catches brittle UI mismatches
+// before the expensive build:prod step in GHA.
+const design = spawnSync(process.execPath, [path.join(__dirname, "verify-airbnb-design.mjs")], {
+  cwd: webRoot,
+  encoding: "utf8",
+});
+if (design.stdout) process.stdout.write(design.stdout);
+if (design.stderr) process.stderr.write(design.stderr);
+if (design.status !== 0) {
+  console.error("\nverify-design (verify-airbnb-design) failed during deploy prerequisites.");
+  process.exit(design.status || 1);
 }
 
 console.log("\nAll deploy prerequisites OK.");
