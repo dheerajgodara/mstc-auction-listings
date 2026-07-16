@@ -55,6 +55,26 @@ def _load_auctions(json_path: Path) -> list[AuctionRecord]:
     return [AuctionRecord.model_validate(a) for a in export.get("auctions") or []]
 
 
+def _push_remote_ai_state(
+    cache_dir: Path,
+    *,
+    ledger_sync_events: list[dict[str, object]],
+    allow_local_ledger_fallback: bool,
+) -> tuple[list[dict[str, object]], dict[str, object], str | None]:
+    from scraper.ai_enrichment.cache_sync import push_remote_ai_cache
+
+    events = list(ledger_sync_events)
+    push = push_remote_daily_usage(cache_dir)
+    events.append(push.to_dict())
+    cache_push = push_remote_ai_cache(cache_dir)
+    error = None
+    if not push.ok and not allow_local_ledger_fallback:
+        error = "remote_ledger_push_failed"
+    elif not cache_push.ok:
+        error = "remote_cache_push_failed"
+    return events, cache_push.to_dict(), error
+
+
 def cmd_enrich(args: argparse.Namespace) -> int:
     started = time.monotonic()
     started_at = datetime.now(IST).isoformat()
@@ -190,9 +210,29 @@ def cmd_enrich(args: argparse.Namespace) -> int:
             "finished_at": datetime.now(IST).isoformat(),
             "duration_sec": round(time.monotonic() - started, 2),
         }
+        if args.ledger_sync == "hostinger" and allow_network and not args.dry_run:
+            events, cache_sync, error = _push_remote_ai_state(
+                args.cache_dir,
+                ledger_sync_events=ledger_sync_events,
+                allow_local_ledger_fallback=args.allow_local_ledger_fallback,
+            )
+            payload["ledger_sync"] = events
+            payload["cache_sync"] = cache_sync
+            if error == "remote_ledger_push_failed" and not args.allow_local_ledger_fallback:
+                if args.report_json:
+                    args.report_json.parent.mkdir(parents=True, exist_ok=True)
+                    args.report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+                if args.telegram_report:
+                    send_ai_enrichment_report(payload, event="failed")
+                print(json.dumps(payload, indent=2))
+                return 3
+            if error:
+                payload["error"] = error
         if args.report_json:
             args.report_json.parent.mkdir(parents=True, exist_ok=True)
             args.report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        if args.telegram_report:
+            send_ai_enrichment_report(payload, event="skipped")
         print(json.dumps(payload, indent=2))
         return 0
 
@@ -216,11 +256,15 @@ def cmd_enrich(args: argparse.Namespace) -> int:
     payload["duration_sec"] = round(time.monotonic() - started, 2)
     payload["cache_stats"] = count_cache_stats(args.cache_dir)
     if args.ledger_sync == "hostinger" and allow_network and not args.dry_run:
-        push = push_remote_daily_usage(args.cache_dir)
-        ledger_sync_events.append(push.to_dict())
-        payload["ledger_sync"] = ledger_sync_events
-        if not push.ok and not args.allow_local_ledger_fallback:
-            payload["error"] = "remote_ledger_push_failed"
+        events, cache_sync, error = _push_remote_ai_state(
+            args.cache_dir,
+            ledger_sync_events=ledger_sync_events,
+            allow_local_ledger_fallback=args.allow_local_ledger_fallback,
+        )
+        payload["ledger_sync"] = events
+        payload["cache_sync"] = cache_sync
+        if error == "remote_ledger_push_failed" and not args.allow_local_ledger_fallback:
+            payload["error"] = error
             if args.report_json:
                 args.report_json.parent.mkdir(parents=True, exist_ok=True)
                 args.report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -228,15 +272,10 @@ def cmd_enrich(args: argparse.Namespace) -> int:
                 send_ai_enrichment_report(payload, event="failed")
             print(json.dumps(payload, indent=2))
             return 3
+        if error:
+            payload["error"] = error
     elif ledger_sync_events:
         payload["ledger_sync"] = ledger_sync_events
-    if args.ledger_sync == "hostinger" and allow_network and not args.dry_run:
-        from scraper.ai_enrichment.cache_sync import push_remote_ai_cache
-
-        cache_push = push_remote_ai_cache(args.cache_dir)
-        payload["cache_sync"] = cache_push.to_dict()
-        if not cache_push.ok:
-            payload["error"] = payload.get("error") or "remote_cache_push_failed"
     if args.report_json:
         args.report_json.parent.mkdir(parents=True, exist_ok=True)
         args.report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
