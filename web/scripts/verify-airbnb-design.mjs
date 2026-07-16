@@ -115,7 +115,10 @@ check("Tailwind darkMode data-theme", tailwind.includes('data-theme="dark"'));
 
 // Components
 check("app shell uses marketplace container", appShell.includes("container-marketplace"));
-check("app shell keeps marketplace source disclaimer", appShell.includes("MSTC") && appShell.includes("source portal"));
+check(
+  "site disclaimer keeps marketplace source messaging",
+  siteDisclaimer.includes("MSTC") && siteDisclaimer.includes("before bidding"),
+);
 check("auction card uses marketplace title scale", auctionCard.includes("text-title"));
 check("auction card keeps buyer-critical fields", ["PriceDisplay", "formatImportedDate", "LotDetails", "LotPreviewStrip"].every((s) => auctionCard.includes(s)));
 const componentSource = walkFiles(path.join(srcDir, "components"))
