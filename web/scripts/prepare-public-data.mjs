@@ -84,6 +84,15 @@ fs.writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`, "utf8");
 const publicMetaPath = path.join(webRoot, "public", "data", "export-meta.json");
 fs.writeFileSync(publicMetaPath, `${JSON.stringify(meta, null, 2)}\n`, "utf8");
 
+const centroidsPublic = path.join(webRoot, "public", "data", "city-centroids.json");
+const centroidsOut = path.join(outDataDir, "city-centroids.json");
+if (fs.existsSync(centroidsPublic)) {
+  fs.copyFileSync(centroidsPublic, centroidsOut);
+} else {
+  console.error("prepare-public-data: missing public/data/city-centroids.json — run generate-city-centroids");
+  process.exit(1);
+}
+
 const jsonBytes = fs.statSync(sourcePath).size;
 const jsBytes = fs.statSync(jsPath).size;
 console.log(

@@ -8,6 +8,7 @@ import { getAuctionCoords, type CentroidMap } from "@/lib/geo-filter";
 import { resolvePublicUrl } from "@/lib/utils";
 import type { AuctionRecord } from "@/types/auction";
 import { cn } from "@/lib/utils";
+import { FALLBACK_CENTROIDS } from "@/lib/city-centroid-fallback";
 interface CityCluster {
   key: string;
   city: string;
@@ -82,12 +83,15 @@ export function MapViewClient({
   useEffect(() => {
     let cancelled = false;
     fetch(resolvePublicUrl("data/city-centroids.json"))
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`city-centroids HTTP ${r.status}`);
+        return r.json();
+      })
       .then((data: CentroidMap) => {
-        if (!cancelled) setCentroids(data);
+        if (!cancelled) setCentroids({ ...FALLBACK_CENTROIDS, ...data });
       })
       .catch(() => {
-        if (!cancelled) setCentroids({});
+        if (!cancelled) setCentroids(FALLBACK_CENTROIDS);
       });
     return () => {
       cancelled = true;
