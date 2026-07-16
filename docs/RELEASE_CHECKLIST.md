@@ -25,7 +25,7 @@ Use this checklist before promoting a candidate export to production (Hostinger)
 - [ ] `web/out/seo-report.json` and `web/out/sitemap-summary.json` generated (`pnpm run verify-build` tail)
 - [ ] `web/out/launch-readiness.json` and `web/out/launch-readiness.md` reviewed before soft launch (`node web/scripts/verify-launch-readiness.mjs`)
 - [ ] SEO/analytics runbook reviewed: `docs/SEO_ANALYTICS_RUNBOOK.md`
-- [ ] Utility pages (`map`, `watchlist`, `saved`, `insights`, `liquidate`) emit `noindex`
+- [ ] Utility pages (`map`, `watchlist`, `saved`, `insights`) emit `noindex`
 - [ ] Paywall utility pages (`account`, `support`, `terms`, `privacy`, `refund-policy`) emit `noindex`; `/pricing/` indexable and in sitemap
 - [ ] **Browser review:** manually open `/pricing/`, `/account/?waitlist=1`, `/support/`, `/terms/`, `/privacy/`, `/refund-policy/` — confirm copy, waitlist CTAs, and no live billing UI
 - [ ] **Legal review gate:** counsel has reviewed terms/privacy/refund before any live billing (pages are draft until then)

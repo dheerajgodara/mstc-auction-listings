@@ -32,7 +32,6 @@ const routes = [
   "/saved",
   "/map",
   "/insights",
-  "/liquidate",
   "/status",
   "/accessibility",
   "/pricing",

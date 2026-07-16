@@ -109,13 +109,6 @@ export function AppShell({
         <Bookmark className="h-4 w-4 shrink-0" aria-hidden />
         <span>Saved</span>
       </Link>
-      <Link
-        href={appRoute("liquidate/")}
-        onClick={() => setMobileOpen(false)}
-        className="inline-flex min-h-[44px] items-center rounded-full px-3 text-xs font-semibold text-muted-foreground hover:text-foreground"
-      >
-        Liquidate
-      </Link>
     </>
   );
 
