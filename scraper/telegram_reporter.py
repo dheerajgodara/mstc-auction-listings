@@ -167,7 +167,16 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
         batches = payload.get("estimated_download_batches")
         disc = payload.get("discovery") or {}
         total = disc.get("total") if isinstance(disc, dict) else None
-        line2 = f"Queued {queued} for download"
+        q_new = payload.get("queued_new")
+        q_sync = payload.get("queued_sync")
+        q_repair = payload.get("queued_repair")
+        if q_new is not None and q_sync is not None and q_repair is not None:
+            line2 = (
+                f"Queued {queued} (new {int(q_new)} · sync {int(q_sync)} · "
+                f"repair {int(q_repair)})"
+            )
+        else:
+            line2 = f"Queued {queued} for download"
         if batches is not None:
             line2 += f" · ~{batches} batch" + ("es" if int(batches) != 1 else "") + " of 25"
         if total is not None:

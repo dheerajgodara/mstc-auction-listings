@@ -120,6 +120,8 @@ def _download_one_mstc(
     base, _ = resolve_auction_listing(item.source_auction_id)
     base.source = "mstc"
     try:
+        html_before = int(stats.get("html_downloaded") or 0)
+        pdf_before = int(stats.get("pdf_downloaded") or 0)
         downloaded = enrich_auction(
             base,
             pdf_dir=pdf_dir,
@@ -152,6 +154,11 @@ def _download_one_mstc(
             if not skip_pdf and not has_pdf:
                 parts.append("missing or invalid catalogue PDF")
             err = "; ".join(parts) if parts else "download incomplete"
+        html_new = int(stats.get("html_downloaded") or 0) > html_before
+        pdf_new = int(stats.get("pdf_downloaded") or 0) > pdf_before
+        content_changed = html_new or pdf_new
+        # New PDF bytes or Hostinger sync still owed → keep media_synced False until flush.
+        require_media_resync = pdf_new or (getattr(item, "media_synced", None) is not True)
         mark_download(
             ledger,
             item.stable_key,
@@ -159,6 +166,8 @@ def _download_one_mstc(
             raw_html_path=raw_html_rel_path("mstc", item.source_auction_id) if has_html else None,
             pdf_path=f"pdfs/{item.source_auction_id}.pdf" if has_pdf else None,
             error=err,
+            content_changed=content_changed,
+            require_media_resync=require_media_resync,
         )
         return ok, docs_remaining
     except Exception as exc:

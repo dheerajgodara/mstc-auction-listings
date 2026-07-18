@@ -3,7 +3,7 @@
 ## Production flow
 
 1. **Discover** (`pipeline-discover.yml`) — every **6h IST** (`00/06/12/18`), queue fill cap **2000**. Owns discovery + bootstrap + ledger upsert. No PDF download.
-2. **Download** (`pipeline-download.yml`) — after Discover **success**: drain ledger in **batches of 25**, flush PDFs to Hostinger each batch, until backlog clear (max **80** batches).
+2. **Download** (`pipeline-download.yml`) — after Discover **success**: drain ledger in **batches of 25**, flush PDFs to Hostinger each batch, until backlog clear (max **80** batches). Requeue trusts ledger durability (`download=done` + `pdf_path` + `media_synced=True`); an empty CI `pdfs/` tree does **not** imply re-download.
 3. **Drain** (`pipeline-drain.yml`) — after Download **success** (and 6h safety sweep): **Parse 100 → Deploy** until parse backlog clear.
 4. **Parse / Deploy** workflows — **manual emergency only** (drain owns the loop).
 

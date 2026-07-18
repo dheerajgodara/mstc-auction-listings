@@ -164,6 +164,9 @@ def test_discover_and_download_batch_messages():
     done = build_telegram_message(
         {
             "queued_count": 200,
+            "queued_new": 50,
+            "queued_sync": 120,
+            "queued_repair": 30,
             "estimated_download_batches": 8,
             "discovery": {"total": 2310},
             "ledger": {
@@ -174,7 +177,10 @@ def test_discover_and_download_batch_messages():
         },
         event="discover_done",
     )
-    _assert_compact(done, must_contain=["Discover finished", "Queued 200", "8 batch"])
+    _assert_compact(
+        done,
+        must_contain=["Discover finished", "Queued 200", "new 50", "sync 120", "repair 30", "8 batch"],
+    )
     empty = build_telegram_message(
         {"queued_count": 0, "discovery": {"total": 2200}},
         event="discover_empty",

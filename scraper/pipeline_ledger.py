@@ -191,40 +191,106 @@ def upsert_from_work_plan(
     return ledger
 
 
+def mstc_download_eligible(item: LedgerItem) -> bool:
+    """True when MSTC row still owes download or Hostinger PDF sync.
+
+    Ledger durability wins over empty CI disks: ``done`` + ``pdf_path`` +
+    ``media_synced=True`` is never requeued merely because the local file is absent.
+    """
+    if item.source != "mstc":
+        return False
+    if item.download in ("pending", "failed") and item.download_attempts < MAX_STAGE_ATTEMPTS:
+        return True
+    if item.download != "done":
+        return False
+    # Durable on Hostinger — skip even if runner has no local PDF.
+    if item.media_synced is True and (item.pdf_path or "").strip():
+        return False
+    # Hostinger flush not confirmed.
+    if item.media_synced is False:
+        return True
+    # Legacy media_synced=None: only incomplete PDF history still needs work.
+    # (Rows with pdf_path are grandfathered to True in Discover before select.)
+    if not (item.pdf_path or "").strip():
+        return True
+    return False
+
+
+def _download_select_tier(item: LedgerItem) -> int:
+    """Lower tier = higher priority under the download cap."""
+    if item.download in ("pending", "failed"):
+        return 0
+    if item.media_synced is False:
+        return 1
+    # done without pdf_path (true repair)
+    return 2
+
+
+def classify_download_queue_item(item: LedgerItem) -> str:
+    """Label for Telegram / metrics: new | sync | repair."""
+    if item.download in ("pending", "failed"):
+        return "new"
+    if item.media_synced is False:
+        return "sync"
+    return "repair"
+
+
+def grandfather_media_synced_legacy(ledger: PipelineLedger) -> int:
+    """Promote legacy ``media_synced=None`` + done + pdf_path → True.
+
+    Returns number of rows updated. Call once per Discover before select.
+    """
+    now = _now_iso()
+    updated = 0
+    for item in list(ledger.items):
+        if item.source != "mstc":
+            continue
+        if item.download != "done":
+            continue
+        if item.media_synced is not None:
+            continue
+        if not (item.pdf_path or "").strip():
+            continue
+        item.media_synced = True
+        item.media_synced_at = now
+        _replace_item(ledger, item)
+        updated += 1
+    return updated
+
+
 def select_for_download(
     ledger: PipelineLedger,
     *,
     limit: int,
     pdf_dir: Path | None = None,
 ) -> list[LedgerItem]:
-    """Select MSTC auctions that still need raw HTML/PDF download.
+    """Select MSTC auctions that still need download or Hostinger PDF sync.
 
-    Also re-queues:
-    - ``download=done`` rows missing a valid local catalogue PDF
-    - ``download=done`` rows with ``media_synced is False`` (Hostinger flush pending)
+    ``pdf_dir`` is accepted for API compatibility but does **not** invent
+    eligibility from empty local disks (ledger flags are source of truth).
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
+    _ = pdf_dir  # retained for callers; durability is ledger-based
 
-    eligible: list[LedgerItem] = []
-    for i in ledger.items:
-        if i.source != "mstc":
-            continue
-        # Local PDF missing/corrupt — must re-download from MSTC.
-        if i.download == "done" and _mstc_needs_pdf(i, pdf_dir):
-            eligible.append(i)
-            continue
-        # Local OK but Hostinger sync not confirmed — re-run ensure + mid-run flush.
-        if i.download == "done" and i.media_synced is False:
-            eligible.append(i)
-            continue
-        if i.download in ("pending", "failed") and i.download_attempts < MAX_STAGE_ATTEMPTS:
-            eligible.append(i)
-    eligible.sort(key=lambda i: (-i.priority_score, i.first_queued_at or "", i.stable_key))
+    eligible = [i for i in ledger.items if mstc_download_eligible(i)]
+    eligible.sort(
+        key=lambda i: (
+            _download_select_tier(i),
+            -i.priority_score,
+            i.first_queued_at or "",
+            i.stable_key,
+        )
+    )
     return eligible[:limit]
 
 
 def _mstc_needs_pdf(item: LedgerItem, pdf_dir: Path | None) -> bool:
+    """True when catalogue PDF is missing from ledger or invalid on disk.
+
+    Used for local ensure/fetch decisions after a row is already selected —
+    not for inventing download eligibility on empty CI runners.
+    """
     from scraper.pdf_downloader import validate_pdf_file
 
     if not (item.pdf_path or "").strip():
@@ -269,6 +335,8 @@ def mark_download(
     raw_html_path: str | None = None,
     pdf_path: str | None = None,
     error: str | None = None,
+    content_changed: bool = True,
+    require_media_resync: bool = True,
 ) -> LedgerItem | None:
     item = ledger.by_key().get(stable_key)
     if item is None:
@@ -282,16 +350,17 @@ def mark_download(
             item.raw_html_path = raw_html_path
         # Always record PDF path on success (required for MSTC foolproof download).
         item.pdf_path = pdf_path
-        if pdf_path:
+        if pdf_path and require_media_resync:
             # Hostinger durability is confirmed only after mid-run / final flush.
             item.media_synced = False
             item.media_synced_at = None
-        # Successful re-download implies parse should re-run.
-        if item.parse == "done":
-            item.parse = "pending"
-            item.deploy_ready = False
-        elif item.parse == "blocked" and item.parse_attempts < MAX_STAGE_ATTEMPTS:
-            item.parse = "pending"
+        # Only a real content change should force parse to re-run.
+        if content_changed:
+            if item.parse == "done":
+                item.parse = "pending"
+                item.deploy_ready = False
+            elif item.parse == "blocked" and item.parse_attempts < MAX_STAGE_ATTEMPTS:
+                item.parse = "pending"
     else:
         item.last_error = error
         # Clear stale pdf_path when download fails PDF requirement.

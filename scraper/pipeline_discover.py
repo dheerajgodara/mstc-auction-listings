@@ -27,7 +27,9 @@ from scraper.filters import make_run_id, tomorrow_min_closing_date
 from scraper.incremental import load_export
 from scraper.incremental_plan import build_work_plan
 from scraper.pipeline_ledger import (
+    classify_download_queue_item,
     estimated_download_runs_to_clear,
+    grandfather_media_synced_legacy,
     load_ledger,
     pull_ledger,
     push_ledger,
@@ -165,6 +167,9 @@ def run_pipeline_discover(
             previous_export=previous_export,
             public_dir=public_dir,
         )
+        grandfathered = grandfather_media_synced_legacy(ledger)
+        if grandfathered:
+            _phase(f"ledger: grandfathered media_synced=True for {grandfathered} legacy row(s)")
         # Preview who would be selected for download (cap = queue_cap).
         queued = select_for_download(ledger, limit=queue_cap, pdf_dir=pdf_dir)
         write_ledger(ledger, ledger_path)
@@ -182,6 +187,9 @@ def run_pipeline_discover(
         push_ledger(local_path=ledger_path)
 
         queued_count = len(queued)
+        queued_new = sum(1 for i in queued if classify_download_queue_item(i) == "new")
+        queued_sync = sum(1 for i in queued if classify_download_queue_item(i) == "sync")
+        queued_repair = sum(1 for i in queued if classify_download_queue_item(i) == "repair")
         est_batches = int(math.ceil(queued_count / batch_size)) if queued_count else 0
         finished = datetime.now(IST).isoformat()
         payload.update(
@@ -194,6 +202,10 @@ def run_pipeline_discover(
                     "by_source": ((discovery_data.get("stats") or {}).get("by_source") or {}),
                 },
                 "queued_count": queued_count,
+                "queued_new": queued_new,
+                "queued_sync": queued_sync,
+                "queued_repair": queued_repair,
+                "media_synced_grandfathered": grandfathered,
                 "estimated_download_batches": est_batches,
                 "estimated_runs_to_clear": estimated_download_runs_to_clear(
                     ledger, cap=batch_size, pdf_dir=pdf_dir
