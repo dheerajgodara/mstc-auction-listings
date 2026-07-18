@@ -1,0 +1,57 @@
+name: Pipeline Discover Retry
+
+on:
+  workflow_run:
+    workflows: ["Pipeline Discover"]
+    types: [completed]
+
+jobs:
+  discover-retry:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    concurrency:
+      group: auction-pipeline-serial
+      cancel-in-progress: false
+    permissions:
+      actions: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Configure SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
+          chmod 600 ~/.ssh/hostinger_key
+
+      - name: Schedule / dispatch discover retry
+        env:
+          PYTHONUNBUFFERED: "1"
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+          FAILED_RUN_ID: ${{ github.event.workflow_run.id }}
+          FAILED_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
+          HOSTINGER_PORT: ${{ secrets.HOSTINGER_PORT }}
+          HOSTINGER_USERNAME: ${{ secrets.HOSTINGER_USERNAME }}
+          HOSTINGER_SSH_KEY: ~/.ssh/hostinger_key
+          HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          PYTHONPATH=. python -m scraper.discover_retry_controller \
+            --failed-run-id "$FAILED_RUN_ID" \
+            --failed-run-url "$FAILED_RUN_URL" \
+            --queue-cap 2000

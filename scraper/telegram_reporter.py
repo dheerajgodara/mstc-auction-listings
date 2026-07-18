@@ -29,6 +29,7 @@ QUIET_EVENTS: frozenset[str] = frozenset(
         "started",
         "comparison_done",
         "deep_scrape_done",
+        "discover_started",
         "download_started",
         "download_selection",
         "parse_started",
@@ -101,6 +102,9 @@ def _queue_line(ledger: dict[str, Any] | None) -> str:
         if failed:
             bit += f" · download failed {failed}"
         parts.append(bit)
+    awaiting = ledger.get("awaiting_hostinger_sync")
+    if awaiting:
+        parts.append(f"waiting on server sync {int(awaiting)}")
     parse = ledger.get("parse")
     if isinstance(parse, dict) and parse:
         done = int(parse.get("done") or 0)
@@ -157,11 +161,83 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
     # Prefer FAIL labels so deploy_failed is not drowned by OK verify tails.
     err = _clip(_prefer_fail_summary(raw_err), 140)
 
+    # --- Discover family ---
+    if event == "discover_done":
+        queued = int(payload.get("queued_count") or 0)
+        batches = payload.get("estimated_download_batches")
+        disc = payload.get("discovery") or {}
+        total = disc.get("total") if isinstance(disc, dict) else None
+        line2 = f"Queued {queued} for download"
+        if batches is not None:
+            line2 += f" · ~{batches} batch" + ("es" if int(batches) != 1 else "") + " of 25"
+        if total is not None:
+            line2 += f" · found {total} live"
+        return _finish(
+            [_title("🔎", "Discover finished"), line2, _queue_line(payload.get("ledger"))],
+            payload,
+        )
+    if event == "discover_empty":
+        disc = payload.get("discovery") or {}
+        total = disc.get("total") if isinstance(disc, dict) else None
+        line2 = "Nothing new to queue for download"
+        if total is not None:
+            line2 += f" · scanned {total}"
+        return _finish(
+            [_title("🔎", "Discover finished"), line2, _queue_line(payload.get("ledger"))],
+            payload,
+        )
+    if event == "discover_failed":
+        return _finish(
+            [
+                _title("❌", "Discover failed"),
+                err or "See full log for details",
+                _queue_line(payload.get("ledger")),
+            ],
+            payload,
+        )
+    if event == "discover_retry_scheduled":
+        attempt = payload.get("retry_attempt") or "?"
+        wait = payload.get("wait_minutes") or "?"
+        return _finish(
+            [
+                _title("🔁", "Discover will retry"),
+                f"Attempt {attempt} · waiting {wait} minutes",
+            ],
+            payload,
+        )
+    if event == "discover_retries_exhausted":
+        return _finish(
+            [
+                _title("🛑", "Discover retries used up"),
+                "Will try again on the next 6-hour slot",
+            ],
+            payload,
+        )
+
     # --- Download family ---
+    if event == "download_batch_done":
+        batch = payload.get("batch_number") or "?"
+        ok = int(payload.get("batch_ok") or 0)
+        fail = int(payload.get("batch_failed") or 0)
+        flushed = int(payload.get("batch_flushed") or 0)
+        left = payload.get("backlog_left")
+        line2 = f"Batch {batch}: downloaded {ok}"
+        if fail:
+            line2 += f" · {fail} failed"
+        if flushed:
+            line2 += f" · +{flushed} PDFs on server"
+        if left is not None:
+            line2 += f" · {left} left"
+        return _finish(
+            [_title("⬇️", "Download batch"), line2, _queue_line(payload.get("ledger"))],
+            payload,
+        )
     if event == "download_done":
         ok = int(payload.get("download_ok") or 0)
         fail = int(payload.get("download_failed") or 0)
+        batches = payload.get("batches_completed")
         dur = _fmt_duration(payload.get("wall_seconds"))
+        left = payload.get("backlog_left")
         if ok == 0 and fail == 0:
             line2 = "Nothing new to download"
         elif ok == 0 and fail > 0:
@@ -170,6 +246,10 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
             line2 = f"Downloaded {ok} new file" + ("s" if ok != 1 else "")
             if fail:
                 line2 += f" · {fail} failed"
+        if batches:
+            line2 += f" · {batches} batch" + ("es" if int(batches) != 1 else "")
+        if left is not None and int(left) == 0:
+            line2 += " · catch-up clear"
         if dur:
             line2 += f" · took {dur}"
         return _finish(

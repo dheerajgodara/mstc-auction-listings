@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -98,6 +99,8 @@ def _dispatch_download(*, max_download: int, retry_of: str | None) -> None:
     if not repo or not token:
         raise RuntimeError("GITHUB_REPOSITORY and GITHUB_TOKEN required to dispatch download")
     # Prefer gh if available.
+    batch_size = 25
+    max_batches = max(1, int(math.ceil(max_download / batch_size)))
     if subprocess.run(["which", "gh"], capture_output=True).returncode == 0:
         cmd = [
             "gh",
@@ -105,7 +108,9 @@ def _dispatch_download(*, max_download: int, retry_of: str | None) -> None:
             "run",
             "pipeline-download.yml",
             "-f",
-            f"max_download={max_download}",
+            f"batch_size={batch_size}",
+            "-f",
+            f"max_batches={max_batches}",
         ]
         if retry_of:
             cmd.extend(["-f", f"retry_of={retry_of}"])
@@ -117,7 +122,8 @@ def _dispatch_download(*, max_download: int, retry_of: str | None) -> None:
     body = {
         "ref": os.environ.get("GITHUB_REF_NAME") or "main",
         "inputs": {
-            "max_download": str(max_download),
+            "batch_size": str(batch_size),
+            "max_batches": str(max_batches),
             "retry_of": retry_of or "",
         },
     }

@@ -1,20 +1,27 @@
-# 3-job + drain pipeline runbook
+# 4-stage pipeline runbook
 
 ## Production flow
 
-1. **Download** (`pipeline-download.yml`) — every **6h IST**, cap **2000** MSTC deep downloads (new/changed/needs_repair pending).
-2. **Drain** (`pipeline-drain.yml`) — after successful download (and 6h safety sweep): **Parse 100 → Deploy** until parse backlog clear.
-3. **Parse / Deploy** workflows — **manual emergency only** (drain owns the loop).
+1. **Discover** (`pipeline-discover.yml`) — every **6h IST** (`00/06/12/18`), queue fill cap **2000**. Owns discovery + bootstrap + ledger upsert. No PDF download.
+2. **Download** (`pipeline-download.yml`) — after Discover **success**: drain ledger in **batches of 25**, flush PDFs to Hostinger each batch, until backlog clear (max **80** batches).
+3. **Drain** (`pipeline-drain.yml`) — after Download **success** (and 6h safety sweep): **Parse 100 → Deploy** until parse backlog clear.
+4. **Parse / Deploy** workflows — **manual emergency only** (drain owns the loop).
 
-## Fast download retry
+```text
+Cron 6h IST → Discover → Download drain (25×N) → Parse/Deploy drain
+```
 
-If Download hard-fails:
+## Fast retries
+
+If **Discover** hard-fails: `pipeline-discover-retry.yml` (+15m / +45m, max 2/slot).
+
+If **Download** hard-fails:
 
 1. Same job retries once (~2 min).
 2. `pipeline-download-retry.yml` schedules auto re-dispatch at **+15 min** then **+45 min** (max **2** per 6h slot).
-3. Only then wait for the next scheduled 6h download.
+3. Only then wait for the next scheduled 6h discover.
 
-Telegram: `download_retry_scheduled`, `download_retries_exhausted`.
+Telegram: `discover_retry_*`, `download_retry_scheduled`, `download_retries_exhausted`.
 
 ## Aged-out closing dates
 
@@ -134,16 +141,58 @@ No raw HTML download stage. Discovery during download marks them parse-ready; dr
 
 **Empty eAuction after midnight is warn-only.** When there are no future-closing eAuction rows, parse may still promote (with source fallback for any still-valid previous rows). Deploy predeploy, sitemap, and launch-readiness must **not** hard-fail on zero eAuction — only MSTC is required. Drain continues.
 
+## Detail 404 / shallow JSON / empty crawler search (class failures)
+
+Do **not** hand-edit Hostinger HTML for a missing auction URL.
+
+1. **Detail 404 for a known portal id** — check ledger status → download + drain until backlog clear → full `build:prod` deploy only. Listing data and detail HTML must ship together (parse must not rsync `auctions.json` alone).
+2. **Shallow `/api/auction/...json`** (`lots: []`, `enrichment_status: listing_only`) — expected until deep scrape; queue prioritizes incomplete + high-value keywords. After deep parse + deploy, API must match detail lot count.
+3. **Crawler sees only “Loading auctions…”** — use dedicated HTML landings (`/aluminium-scrap/`, `/metal-scrap/`, `/large-scrap-lots/`, `/closing-soon/`) or `api/search-index.json` / `api/search/{topic}.json`. There is no dynamic `?q=` search API on static hosting.
+4. **Deploy gate** — never deploy until `pnpm run build:prod && pnpm run verify-build` is green, including `verify-crawlable-landings` (raw HTML auction content on aluminium, metal-scrap, large-lots, closing-soon).
+
+## Lot documents / photos media sync
+
+Parse downloads lot photos into `web/public/{docs,thumbs}` and **must** `push_public_media` before promoting `auctions.json`. Deploy also safety-net pushes media after bootstrap.
+
+`finalize_public_export` / promote scrub orphan `lot.documents[].cached_url` / `thumbnail_url` (status → `pending_cache`) so JSON never claims files that are not on disk.
+
+Gates:
+
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `MEDIA_PUSH_REQUIRED` | `1` | Parse refuses promote if media push fails |
+| `PREDEPLOY_DOCS_MODE` | `warn` | Missing lot.documents files warn; set `fail` after backfill |
+
+### Broken photos playbook (e.g. 589631)
+
+1. Local hydrate (no Hostinger):  
+   `PYTHONPATH=. python -m scraper.media_backfill --auction-id 589631 --max-docs 50 --no-push`
+2. After operator says **deploy12** only:  
+   `gh workflow run pipeline-media-backfill.yml -f auction_ids=589631 -f max_docs=500 -f push_media=true`  
+   then `gh workflow run pipeline-drain.yml -f max_parse=100 -f max_cycles=2` (or force deploy).
+3. Verify live:  
+   `curl -sI https://scrapauctionindia.com/auctions/docs/589631/Photo_….pdf` → 200  
+   Listing page shows thumbs; no “Bid on MSTC” CTAs.
+
+### UI contract
+
+- Listing page (`/auctions/` cards + table): show local cached photos only.
+- No outbound “Bid on MSTC / View on {source}” CTAs anywhere in the UI.
+- Local `Open PDF` / cached `/auctions/docs/*` links remain.
+
 ## Manual triggers
 
 ```bash
-gh workflow run pipeline-download.yml -f max_download=2000
+gh workflow run pipeline-discover.yml -f queue_cap=2000
+gh workflow run pipeline-download.yml -f batch_size=25 -f max_batches=80
 gh workflow run pipeline-drain.yml -f max_parse=100 -f max_cycles=25
 gh workflow run pipeline-parse.yml -f max_parse=100
 gh workflow run pipeline-deploy.yml -f deploy=true -f force=true
+# Only after deploy12 approval:
+gh workflow run pipeline-media-backfill.yml -f auction_ids=589631 -f max_docs=500
 ```
 
 ## Locks
 
-- `work/download.lock`, `work/parse.lock`, `work/deploy.lock`, `work/drain.lock`
-- GHA concurrency `auction-pipeline-serial` serializes download ↔ drain SSH.
+- `work/discover.lock`, `work/download.lock`, `work/parse.lock`, `work/deploy.lock`, `work/drain.lock`
+- GHA concurrency `auction-pipeline-serial` serializes discover ↔ download ↔ drain SSH.

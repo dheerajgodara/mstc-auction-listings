@@ -137,6 +137,11 @@ def test_q5_retry_and_ai_messages():
     _assert_compact(retry, must_contain=["retry", "15"])
     exhausted = build_telegram_message({}, event="download_retries_exhausted")
     _assert_compact(exhausted, must_contain=["retries", "6-hour"])
+    disc_retry = build_telegram_message(
+        {"retry_attempt": 2, "wait_minutes": 45},
+        event="discover_retry_scheduled",
+    )
+    _assert_compact(disc_retry, must_contain=["Discover", "45"])
     ai = build_ai_enrichment_message(
         {
             "ready": 40,
@@ -155,8 +160,43 @@ def test_q5_retry_and_ai_messages():
     assert "Top Selected" not in ai
 
 
+def test_discover_and_download_batch_messages():
+    done = build_telegram_message(
+        {
+            "queued_count": 200,
+            "estimated_download_batches": 8,
+            "discovery": {"total": 2310},
+            "ledger": {
+                "download": {"done": 1800, "pending": 200},
+                "parse": {"done": 1700, "pending": 50},
+                "deploy_ready": 1700,
+            },
+        },
+        event="discover_done",
+    )
+    _assert_compact(done, must_contain=["Discover finished", "Queued 200", "8 batch"])
+    empty = build_telegram_message(
+        {"queued_count": 0, "discovery": {"total": 2200}},
+        event="discover_empty",
+    )
+    _assert_compact(empty, must_contain=["Nothing new to queue"])
+    batch = build_telegram_message(
+        {
+            "batch_number": 3,
+            "batch_ok": 25,
+            "batch_failed": 0,
+            "batch_flushed": 25,
+            "backlog_left": 150,
+            "ledger": {"download": {"done": 1850, "pending": 150}, "parse": {"pending": 40}},
+        },
+        event="download_batch_done",
+    )
+    _assert_compact(batch, must_contain=["Batch 3", "+25 PDFs", "150 left"])
+
+
 def test_q6_quiet_events_not_sent():
     assert "download_started" in QUIET_EVENTS
+    assert "discover_started" in QUIET_EVENTS
     assert "drain_cycle" in QUIET_EVENTS
     assert send_telegram_report({"run_id": "x"}, event="download_started") is True
     assert send_telegram_report({"run_id": "x"}, event="parse_selection") is True

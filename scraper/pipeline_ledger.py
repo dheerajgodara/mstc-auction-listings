@@ -63,10 +63,16 @@ class PipelineLedger(BaseModel):
     def status_counts(self) -> dict[str, Any]:
         download = Counter(i.download for i in self.items)
         parse = Counter(i.parse for i in self.items)
+        awaiting_sync = sum(
+            1
+            for i in self.items
+            if i.source == "mstc" and i.download == "done" and i.media_synced is False
+        )
         return {
             "download": dict(download),
             "parse": dict(parse),
             "deploy_ready": sum(1 for i in self.items if i.deploy_ready),
+            "awaiting_hostinger_sync": awaiting_sync,
             "total": len(self.items),
         }
 

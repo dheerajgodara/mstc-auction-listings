@@ -6,21 +6,24 @@
 - **Host:** Hostinger static export at `domains/scrapauctionindia.com/public_html/auctions`
 - **Canonical domain only:** `scrapauctionindia.com`. Hostinger preview subdomains are not production and must not receive scheduled auction deploys.
 
-## Production workflow (authoritative) — Download → Drain
+## Production workflow (authoritative) — Discover → Download → Drain
 
 | Job | Workflow | Module | Schedule / trigger |
 |-----|----------|--------|-------------------|
-| **1. Download** | `pipeline-download.yml` | `scraper.pipeline_download` | `30 0,6,12,18 * * *` UTC (= **00/06/12/18 IST**), cap **2000** |
+| **0. Discover** | `pipeline-discover.yml` | `scraper.pipeline_discover` | `30 0,6,12,18 * * *` UTC (= **00/06/12/18 IST**), queue cap **2000** |
+| **0b. Discover retry** | `pipeline-discover-retry.yml` | `scraper.discover_retry_controller` | on Discover **failure** (+15m / +45m, max 2/slot) |
+| **1. Download** | `pipeline-download.yml` | `scraper.pipeline_download` | after Discover **success**; batches of **25**, max **80** |
 | **1b. Download retry** | `pipeline-download-retry.yml` | `scraper.download_retry_controller` | on Download **failure** (+15m / +45m, max 2/slot) |
 | **2. Drain** | `pipeline-drain.yml` | `scraper.pipeline_drain` | after Download **success** + safety `0 */6 * * *` UTC |
 | Parse / Deploy | `pipeline-parse.yml` / `pipeline-deploy.yml` | modules | **manual emergency only** |
 
 Drain loop each cycle: **Parse 100 → Deploy** (job retries ×3 each) until parse backlog clear (max 25 cycles).
 
-- **Download:** MSTC-only deep raw/PDF; GeM/eAuction discover → parse live enrich
-- **Ledger / markers:** `{domain}/auction_pipeline/{pipeline_ledger,download_retry_state,last_deploy}.json` + `raw/`
+- **Discover:** live discovery + bootstrap + ledger queue (no PDF download)
+- **Download:** MSTC HTML/PDF drain; Hostinger flush every 25; GeM/eAuction enrich remains parse-time
+- **Ledger / markers:** `{domain}/auction_pipeline/{pipeline_ledger,download_retry_state,discover_retry_state,last_deploy}.json` + `raw/`
 - **Safety gates:** on Parse → promote inside drain
-- **Concurrency:** `auction-pipeline-serial` (download ↔ drain serialized)
+- **Concurrency:** `auction-pipeline-serial` (discover ↔ download ↔ drain serialized)
 - **Legacy monolith:** `refresh-and-deploy.yml` manual emergency only
 - **Ops:** `docs/PIPELINE_RUNBOOK.md`, `docs/PIPELINE_OPS_PLAN.md`
 

@@ -132,6 +132,12 @@ DEFAULT_PIPELINE_LEDGER = REPO_ROOT / "work" / "pipeline_ledger.json"
 # Download job default (MSTC deep work per run). Steady-state 100 kept for ops docs.
 PIPELINE_DOWNLOAD_CAP_CATCHUP = 2000
 PIPELINE_DOWNLOAD_CAP_STEADY = 100
+# Process 1 download drain: auctions per batch (Hostinger PDF flush cadence matches this).
+PIPELINE_DOWNLOAD_BATCH_SIZE = 25
+# Max batches per download drain job (2000 / 25 = 80).
+PIPELINE_DOWNLOAD_MAX_BATCHES = 80
+# Hostinger mid-run PDF flush every N successful catalogue PDFs.
+PIPELINE_PDF_PUSH_EVERY = 25
 PIPELINE_PARSE_CAP_DEFAULT = 100
 PIPELINE_DRAIN_MAX_CYCLES = 25
 PIPELINE_DRAIN_PARSE_RETRIES = 3

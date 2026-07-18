@@ -1,55 +1,57 @@
-name: Pipeline Download
+name: Pipeline Discover
 
 on:
-  workflow_run:
-    workflows: ["Pipeline Discover"]
-    types: [completed]
+  schedule:
+    # 00/06/12/18 IST (= 30 0,6,12,18 UTC) — owns the 6h slot
+    - cron: "30 0,6,12,18 * * *"
   workflow_dispatch:
     inputs:
-      batch_size:
-        description: "Auctions per download batch (default 25)"
+      queue_cap:
+        description: "Max MSTC auctions to queue for download (default 2000)"
         required: false
-        default: "25"
-      max_batches:
-        description: "Max batches this drain job (default 80 = 2000)"
-        required: false
-        default: "80"
+        default: "2000"
       retry_of:
         description: "Optional failed run id this dispatch retries"
         required: false
         default: ""
 
 jobs:
-  pipeline-download:
+  pipeline-discover:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 180
     concurrency:
       group: auction-pipeline-serial
       cancel-in-progress: false
-    # After discover: only on success. Manual always.
-    if: >
-      github.event_name != 'workflow_run' ||
-      github.event.workflow_run.conclusion == 'success'
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Scheduled slot guard
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.retry_of == '' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: PYTHONPATH=. python -m scraper.schedule_guard --workflow pipeline-discover.yml
+
       - name: Set up Python
+        if: env.REFRESH_SHOULD_RUN != 'false'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install Python dependencies
+        if: env.REFRESH_SHOULD_RUN != 'false'
         run: pip install -r requirements.txt
 
       - name: Configure SSH key
+        if: env.REFRESH_SHOULD_RUN != 'false'
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
 
-      - name: Run download drain
+      - name: Run discover pipeline
+        if: env.REFRESH_SHOULD_RUN != 'false'
         env:
           PYTHONUNBUFFERED: "1"
           SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
@@ -60,36 +62,33 @@ jobs:
           HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MEDIA_PUSH_REQUIRED: "1"
-          PDF_PUSH_EVERY: "25"
         run: |
           set -euo pipefail
-          BATCH="${{ github.event.inputs.batch_size || '25' }}"
-          MAX_B="${{ github.event.inputs.max_batches || '80' }}"
+          QUEUE_CAP="${{ github.event.inputs.queue_cap || '2000' }}"
           for attempt in 1 2; do
-            echo "Download drain attempt ${attempt}/2 (batch_size=$BATCH max_batches=$MAX_B)"
-            if PYTHONPATH=. python -m scraper.pipeline_download \
-              --batch-size "$BATCH" \
-              --max-batches "$MAX_B" \
-              --pdf-push-every 25 \
-              --skip-docs \
+            echo "Discover attempt ${attempt}/2 (queue_cap=$QUEUE_CAP)"
+            if PYTHONPATH=. python -m scraper.pipeline_discover \
+              --sources mstc,gem_forward,eauction \
+              --queue-cap "$QUEUE_CAP" \
+              --batch-size 25 \
               --break-stale-lock; then
               exit 0
             fi
             if [ "$attempt" -eq 1 ]; then
-              echo "Download failed; sleeping 120s before intra-job retry"
+              echo "Discover failed; sleeping 120s before intra-job retry"
               sleep 120
             fi
           done
           exit 1
 
-      - name: Upload download reports
-        if: always()
+      - name: Upload discover reports
+        if: always() && env.REFRESH_SHOULD_RUN != 'false'
         uses: actions/upload-artifact@v4
         with:
-          name: pipeline-download-${{ github.run_id }}
+          name: pipeline-discover-${{ github.run_id }}
           path: |
             work/pipeline_ledger.json
-            work/runs/download_*/download_report.json
-            work/runs/download_*/download.log
+            work/runs/discover_*/discover_report.json
+            work/runs/discover_*/discover.log
+            work/runs/discover_*/discovery_latest.json
           if-no-files-found: ignore
