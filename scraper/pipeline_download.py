@@ -66,7 +66,8 @@ IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_download")
 
 # Mid-run Hostinger PDF flush cadence. Cap (max_download) stays independent.
-DEFAULT_PDF_PUSH_EVERY = 25
+# TEMP TEST: flush every 1 so Hostinger count rises immediately. Revert to 25 after verify.
+DEFAULT_PDF_PUSH_EVERY = 1
 
 
 def _pdf_push_every() -> int:

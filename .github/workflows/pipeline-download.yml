@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       max_download:
-        description: "Max MSTC auctions to download (default 2000)"
+        description: "Max MSTC auctions to download (TEMP TEST default 10)"
         required: false
-        default: "2000"
+        default: "10"
       max_docs_per_run:
         description: "Max MSTC document downloads per run"
         required: false
@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 360
     concurrency:
       group: auction-pipeline-serial
-      cancel-in-progress: false
+      cancel-in-progress: true
 
     steps:
       - name: Checkout repository
@@ -68,18 +68,20 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MEDIA_PUSH_REQUIRED: "1"
-          PDF_PUSH_EVERY: "25"
+          # TEMP TEST: flush every PDF immediately. Revert to 25 after verify.
+          PDF_PUSH_EVERY: "1"
         run: |
           set -euo pipefail
-          MAX_DL="${{ github.event.inputs.max_download || '2000' }}"
+          MAX_DL="${{ github.event.inputs.max_download || '10' }}"
           MAX_DOCS="${{ github.event.inputs.max_docs_per_run || '2000' }}"
           # Intra-job retry once (~2 min) for flaky setup/SSH.
           for attempt in 1 2; do
-            echo "Download attempt ${attempt}/2"
+            echo "Download attempt ${attempt}/2 (max_download=$MAX_DL pdf_push_every=1)"
             if PYTHONPATH=. python -m scraper.pipeline_download \
               --sources mstc,gem_forward,eauction \
               --max-download "$MAX_DL" \
               --max-docs-per-run "$MAX_DOCS" \
+              --pdf-push-every 1 \
               --break-stale-lock; then
               exit 0
             fi
