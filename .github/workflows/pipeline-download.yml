@@ -67,6 +67,8 @@ jobs:
           HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MEDIA_PUSH_REQUIRED: "1"
+          PDF_PUSH_EVERY: "25"
         run: |
           set -euo pipefail
           MAX_DL="${{ github.event.inputs.max_download || '2000' }}"

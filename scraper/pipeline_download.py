@@ -46,12 +46,14 @@ from scraper.pipeline_ledger import (
 )
 from scraper.media_sync import media_push_required
 from scraper.pdf_downloader import validate_pdf_file
+from scraper.pdf_flush import CataloguePdfFlushQueue, mark_pdfs_hostinger_synced
 from scraper.pipeline_markers import reset_download_retry_state
 from scraper.raw_store import (
+    _hostinger_ssh_config,
     has_raw_html,
+    pull_public_pdf_files,
     pull_raw_store,
     push_public_media,
-    push_public_pdf_files,
     push_raw_store,
     raw_html_rel_path,
 )
@@ -177,13 +179,24 @@ def run_pipeline_download(
 
     warnings: list[str] = []
     errors: list[str] = []
+    flush_queue: CataloguePdfFlushQueue | None = None
     try:
+        # Fail fast: production download must be able to land PDFs on Hostinger.
+        if not skip_pdf and media_push_required() and _hostinger_ssh_config() is None:
+            raise RuntimeError(
+                "download requires Hostinger SSH (HOSTINGER_*) when MEDIA_PUSH_REQUIRED=1"
+            )
+
         _bootstrap_previous_production_from_live(
             production_json=production_json,
             base_url=SITE_BASE_URL or None,
             warnings=warnings,
         )
-        bootstrap_production_assets(public_dir=public_dir)
+        # Skip full PDF tree bootstrap (slow ~GB rsync). Pull only selected IDs later.
+        boot = bootstrap_production_assets(public_dir=public_dir, dirs=("docs", "thumbs"))
+        if boot.warnings:
+            warnings.extend(boot.warnings)
+        _phase(boot.message)
         pull_raw_store(raw_dir=raw_dir)
         pull_ledger(local_path=ledger_path)
 
@@ -217,6 +230,16 @@ def run_pipeline_download(
         selected = select_for_download(ledger, limit=max_download, pdf_dir=pdf_dir)
         write_ledger(ledger, ledger_path)
 
+        # Selective Hostinger PDF pull for the selected set only (fast path).
+        if not skip_pdf and selected:
+            pdf_names = [f"{i.source_auction_id}.pdf" for i in selected if i.source == "mstc"]
+            _phase(f"media: selective PDF pull for {len(pdf_names)} selected MSTC id(s)")
+            pull_result = pull_public_pdf_files(public_dir=public_dir, filenames=pdf_names)
+            payload["pdf_selective_pull"] = pull_result.to_dict()
+            if pull_result.warnings:
+                warnings.extend(pull_result.warnings)
+            _phase(pull_result.message)
+
         payload["discovery"] = {
             "total": discovery_data.get("count") or len(discovery_data.get("auctions") or []),
             "by_source": ((discovery_data.get("stats") or {}).get("by_source") or {}),
@@ -238,6 +261,7 @@ def run_pipeline_download(
             "pdf_failed_ids": [],
             "pdf_hostinger_flushed": 0,
             "pdf_hostinger_flush_batches": 0,
+            "pdf_hostinger_flush_failures": 0,
             "documents": {},
         }
         docs_remaining = max_docs_per_run
@@ -245,35 +269,18 @@ def run_pipeline_download(
         ok_count = 0
         fail_count = 0
         last_ledger_push_ok = 0
-        pending_pdf_push: list[str] = []
         loop_started = time.monotonic()
         total_selected = len(selected)
 
-        def _flush_pending_pdfs(*, force: bool = False) -> None:
-            """Rsync queued catalogue PDFs to Hostinger so remote count rises mid-run."""
-            if skip_pdf or not pending_pdf_push:
-                return
-            if not force and len(pending_pdf_push) < flush_every:
-                return
-            batch = list(pending_pdf_push)
-            pending_pdf_push.clear()
-            _phase(f"media: mid-run PDF flush ({len(batch)} file(s)) -> Hostinger")
-            result = push_public_pdf_files(public_dir=public_dir, filenames=batch)
-            stats["pdf_hostinger_flush_batches"] = int(stats.get("pdf_hostinger_flush_batches") or 0) + 1
-            if result.ok:
-                stats["pdf_hostinger_flushed"] = int(stats.get("pdf_hostinger_flushed") or 0) + len(batch)
-                warnings.append(f"mid-run PDF flush ok (+{len(batch)}; total={stats['pdf_hostinger_flushed']})")
-                _phase(
-                    f"Hostinger PDF flush ok +{len(batch)} "
-                    f"(flushed_total={stats['pdf_hostinger_flushed']})"
-                )
-            else:
-                warnings.append(f"mid-run PDF flush failed: {result.message}")
-                if media_push_required():
-                    raise RuntimeError(
-                        f"mid-run PDF push to Hostinger failed: {result.message}"
-                    )
-                # Soft mode: leave files on disk for the final full media push.
+        flush_queue = CataloguePdfFlushQueue(
+            public_dir=public_dir,
+            ledger=ledger,
+            flush_every=flush_every,
+            skip=skip_pdf,
+            phase=_phase,
+            stats=stats,
+            warnings=warnings,
+        )
 
         for idx, item in enumerate(selected, start=1):
             # Non-MSTC: mark download done if we at least capture listing; deep assets via full enrich later in parse.
@@ -349,8 +356,10 @@ def run_pipeline_download(
                     if ok:
                         ok_count += 1
                         if has_pdf:
-                            pending_pdf_push.append(f"{item.source_auction_id}.pdf")
-                            _flush_pending_pdfs(force=False)
+                            flush_queue.enqueue(item.source_auction_id)
+                            flushed = flush_queue.maybe_flush()
+                            if flushed is not None and flushed.ok:
+                                write_ledger(ledger, ledger_path)
                     else:
                         fail_count += 1
                 except Exception as exc:
@@ -364,7 +373,7 @@ def run_pipeline_download(
                 _phase(
                     f"progress {idx}/{total_selected} ok={ok_count} failed={fail_count} "
                     f"pdf_flushed={stats.get('pdf_hostinger_flushed', 0)} "
-                    f"pending_flush={len(pending_pdf_push)} "
+                    f"pending_flush={flush_queue.pending_count} "
                     f"elapsed_min={elapsed/60:.1f} ok_per_min={rate:.1f}"
                 )
             if ok_count >= last_ledger_push_ok + 50:
@@ -374,14 +383,21 @@ def run_pipeline_download(
                 _phase(f"mid-run ledger push at ok={ok_count}")
 
         # Drain any remainder before the full media safety-net push.
-        _flush_pending_pdfs(force=True)
-
+        flush_queue.flush(force=True)
         write_ledger(ledger, ledger_path)
         push_raw_store(raw_dir=raw_dir)
         _phase("media: final pdfs/docs/thumbs push to Hostinger")
         media_result = push_public_media(public_dir=public_dir)
         payload["media_push"] = media_result.to_dict()
         if media_result.ok:
+            # Final push confirms all local pdfs/ are on Hostinger — mark remaining synced.
+            synced_names = [
+                f"{i.source_auction_id}.pdf"
+                for i in ledger.items
+                if i.source == "mstc" and i.download == "done" and i.media_synced is False and i.pdf_path
+            ]
+            if synced_names:
+                mark_pdfs_hostinger_synced(ledger, synced_names, synced=True)
             warnings.append("media push ok")
         else:
             warnings.append(f"media push failed: {media_result.message}")
@@ -429,6 +445,8 @@ def run_pipeline_download(
         return payload
     except Exception as exc:
         logger.exception("pipeline download failed")
+        if flush_queue is not None:
+            flush_queue.emergency_flush()
         errors.append(str(exc))
         payload["status"] = "failed"
         payload["errors"] = errors

@@ -193,8 +193,9 @@ def select_for_download(
 ) -> list[LedgerItem]:
     """Select MSTC auctions that still need raw HTML/PDF download.
 
-    Also re-queues ``download=done`` rows missing a valid local catalogue PDF
-    (backfill for historical HTML-only successes).
+    Also re-queues:
+    - ``download=done`` rows missing a valid local catalogue PDF
+    - ``download=done`` rows with ``media_synced is False`` (Hostinger flush pending)
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -203,8 +204,12 @@ def select_for_download(
     for i in ledger.items:
         if i.source != "mstc":
             continue
-        # Repair path: previously marked done without a durable PDF on disk.
+        # Local PDF missing/corrupt — must re-download from MSTC.
         if i.download == "done" and _mstc_needs_pdf(i, pdf_dir):
+            eligible.append(i)
+            continue
+        # Local OK but Hostinger sync not confirmed — re-run ensure + mid-run flush.
+        if i.download == "done" and i.media_synced is False:
             eligible.append(i)
             continue
         if i.download in ("pending", "failed") and i.download_attempts < MAX_STAGE_ATTEMPTS:
@@ -271,6 +276,10 @@ def mark_download(
             item.raw_html_path = raw_html_path
         # Always record PDF path on success (required for MSTC foolproof download).
         item.pdf_path = pdf_path
+        if pdf_path:
+            # Hostinger durability is confirmed only after mid-run / final flush.
+            item.media_synced = False
+            item.media_synced_at = None
         # Successful re-download implies parse should re-run.
         if item.parse == "done":
             item.parse = "pending"

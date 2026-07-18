@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import requests
@@ -34,6 +35,8 @@ def validate_pdf_file(path: Path) -> bool:
 
 def download_pdf(auction_id: str, output_path: Path) -> Path:
     """Download auction catalogue PDF. Validates response is a real PDF."""
+    import tempfile
+
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -58,7 +61,22 @@ def download_pdf(auction_id: str, output_path: Path) -> Path:
             f"bytes={len(resp.content)}"
         )
 
-    output_path.write_bytes(resp.content)
+    # Atomic write: avoid leaving a truncated/corrupt *.pdf if the process dies mid-write.
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{auction_id}.", suffix=".pdf.part", dir=output_path.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        with open(fd, "wb") as fh:
+            fh.write(resp.content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp_path.replace(output_path)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
     logger.info("Saved PDF %s (%d bytes)", output_path.name, len(resp.content))
     return output_path
 

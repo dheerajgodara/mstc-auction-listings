@@ -86,6 +86,7 @@ class RawSyncResult:
     ok: bool
     message: str
     warnings: list[str] = field(default_factory=list)
+    files: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -93,6 +94,8 @@ class RawSyncResult:
             "ok": self.ok,
             "message": self.message,
             "warnings": list(self.warnings),
+            "files": list(self.files),
+            "file_count": len(self.files),
         }
 
 
@@ -283,6 +286,10 @@ def push_public_media(*, public_dir: Path, timeout_sec: int = 900) -> RawSyncRes
         local = public_dir / name
         if not local.is_dir():
             continue
+        mkdir_err = _ensure_remote_dir(cfg, f"{cfg['remote_dir']}/{name}")
+        if mkdir_err:
+            warnings.append(f"{name}: {mkdir_err}")
+            continue
         remote = f"{target}:{cfg['remote_dir']}/{name}/"
         cmd = [
             "rsync",
@@ -294,15 +301,73 @@ def push_public_media(*, public_dir: Path, timeout_sec: int = 900) -> RawSyncRes
         ]
         logger.info("Pushing media %s -> %s", local, remote)
         try:
-            subprocess.run(cmd, check=True, timeout=timeout_sec, capture_output=True, text=True)
+            _run_rsync_with_retries(cmd, timeout_sec=timeout_sec, label=f"media:{name}")
         except subprocess.CalledProcessError as exc:
             msg = (exc.stderr or exc.stdout or str(exc)).strip()
             warnings.append(f"{name}: {msg[:200]}")
         except subprocess.TimeoutExpired:
             warnings.append(f"{name}: timed out")
+        except RuntimeError as exc:
+            warnings.append(f"{name}: {exc}")
     if warnings:
         return RawSyncResult(True, False, "media push partial failure", warnings)
     return RawSyncResult(True, True, "media pushed")
+
+
+def _ensure_remote_dir(cfg: dict[str, str], remote_path: str) -> str | None:
+    """Create remote directory; return error message or None on success."""
+    target = f"{cfg['username']}@{cfg['host']}"
+    mkdir_cmd = [
+        "ssh",
+        "-i",
+        cfg["key_path"],
+        "-p",
+        cfg["port"],
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "BatchMode=yes",
+        target,
+        f"mkdir -p {remote_path}",
+    ]
+    try:
+        subprocess.run(mkdir_cmd, check=True, timeout=60, capture_output=True, text=True)
+    except Exception as exc:
+        return f"mkdir failed: {exc}"
+    return None
+
+
+def _run_rsync_with_retries(
+    cmd: list[str],
+    *,
+    timeout_sec: int,
+    label: str,
+    attempts: int = 3,
+    input_text: str | None = None,
+) -> None:
+    """Run rsync with short backoff. Raises on final failure."""
+    import time
+
+    last_exc: Exception | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            kwargs: dict = {
+                "check": True,
+                "timeout": timeout_sec,
+                "capture_output": True,
+                "text": True,
+            }
+            if input_text is not None:
+                kwargs["input"] = input_text
+            subprocess.run(cmd, **kwargs)
+            return
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            last_exc = exc
+            logger.warning("%s rsync attempt %d/%d failed: %s", label, attempt, attempts, exc)
+            if attempt < attempts:
+                time.sleep(min(2 ** attempt, 8))
+    assert last_exc is not None
+    raise last_exc
 
 
 def push_public_pdf_files(
@@ -310,13 +375,14 @@ def push_public_pdf_files(
     public_dir: Path,
     filenames: list[str],
     timeout_sec: int = 300,
+    attempts: int = 3,
 ) -> RawSyncResult:
     """Push specific catalogue PDF basenames to Hostinger ``pdfs/`` (no --delete).
 
     Used for mid-run flushes so Hostinger ``pdfs/`` count rises during a download
     job while the per-run auction cap stays unchanged.
     """
-    names = sorted({Path(n).name for n in filenames if str(n).strip()})
+    names = sorted({Path(n).name for n in filenames if str(n).strip() and Path(n).name.endswith(".pdf")})
     if not names:
         return RawSyncResult(False, True, "no PDF filenames to push")
 
@@ -337,9 +403,12 @@ def push_public_pdf_files(
             [f"missing: {', '.join(missing[:10])}"],
         )
 
+    mkdir_err = _ensure_remote_dir(cfg, f"{cfg['remote_dir']}/pdfs")
+    if mkdir_err:
+        return RawSyncResult(True, False, f"PDF push failed: {mkdir_err}", [mkdir_err])
+
     target = f"{cfg['username']}@{cfg['host']}"
     remote = f"{target}:{cfg['remote_dir']}/pdfs/"
-    # Relative paths from pdfs/ so rsync places files directly in remote pdfs/.
     files_from = "\n".join(existing) + "\n"
     cmd = [
         "rsync",
@@ -352,22 +421,100 @@ def push_public_pdf_files(
     ]
     logger.info("Pushing %d PDF file(s) -> %s", len(existing), remote)
     try:
-        subprocess.run(
+        _run_rsync_with_retries(
             cmd,
-            input=files_from,
-            check=True,
-            timeout=timeout_sec,
-            capture_output=True,
-            text=True,
+            timeout_sec=timeout_sec,
+            label="pdf-files",
+            attempts=attempts,
+            input_text=files_from,
         )
     except subprocess.CalledProcessError as exc:
         msg = (exc.stderr or exc.stdout or str(exc)).strip()
         return RawSyncResult(True, False, f"PDF push failed: {msg[:300]}", [msg[:300]])
     except subprocess.TimeoutExpired:
         return RawSyncResult(True, False, "PDF push timed out", ["PDF push timed out"])
+    except Exception as exc:
+        return RawSyncResult(True, False, f"PDF push failed: {exc}", [str(exc)])
 
     warnings = [f"missing local: {n}" for n in missing[:20]] if missing else []
     msg = f"pushed {len(existing)} PDF file(s)"
     if missing:
         msg += f" ({len(missing)} missing locally)"
-    return RawSyncResult(True, True, msg, warnings)
+    return RawSyncResult(True, True, msg, warnings, files=list(existing))
+
+
+def pull_public_pdf_files(
+    *,
+    public_dir: Path,
+    filenames: list[str],
+    timeout_sec: int = 600,
+    attempts: int = 3,
+) -> RawSyncResult:
+    """Selectively pull catalogue PDF basenames from Hostinger into local ``pdfs/``.
+
+    Avoids full-tree PDF bootstrap so download jobs can start flushing sooner.
+    Missing remote files are non-fatal (will be fetched from MSTC next).
+    """
+    names = sorted({Path(n).name for n in filenames if str(n).strip() and Path(n).name.endswith(".pdf")})
+    if not names:
+        return RawSyncResult(False, True, "no PDF filenames to pull")
+
+    cfg = _hostinger_ssh_config()
+    if cfg is None:
+        return RawSyncResult(False, False, "Hostinger SSH incomplete; skip PDF pull", ["pdf pull skipped"])
+    if shutil.which("rsync") is None:
+        return RawSyncResult(False, False, "rsync unavailable", ["pdf pull skipped"])
+
+    local_pdfs = Path(public_dir) / "pdfs"
+    local_pdfs.mkdir(parents=True, exist_ok=True)
+    needed = [n for n in names if not (local_pdfs / n).is_file()]
+    if not needed:
+        return RawSyncResult(False, True, f"all {len(names)} PDFs already local", files=list(names))
+
+    target = f"{cfg['username']}@{cfg['host']}"
+    remote = f"{target}:{cfg['remote_dir']}/pdfs/"
+    files_from = "\n".join(needed) + "\n"
+    cmd = [
+        "rsync",
+        "-az",
+        "--ignore-missing-args",
+        "-e",
+        _ssh_cmd(cfg),
+        "--files-from=-",
+        remote,
+        f"{local_pdfs}/",
+    ]
+    logger.info("Pulling up to %d PDF file(s) from Hostinger", len(needed))
+    try:
+        _run_rsync_with_retries(
+            cmd,
+            timeout_sec=timeout_sec,
+            label="pdf-pull",
+            attempts=attempts,
+            input_text=files_from,
+        )
+    except subprocess.CalledProcessError as exc:
+        msg = (exc.stderr or exc.stdout or str(exc)).strip()
+        # Partial / missing remote files are common during backfill.
+        if "No such file" in msg or "code 23" in msg or "rsync error: some files" in msg.lower():
+            present = [n for n in needed if (local_pdfs / n).is_file()]
+            return RawSyncResult(
+                True,
+                True,
+                f"partial PDF pull ({len(present)}/{len(needed)} present remotely)",
+                [msg[:200]],
+                files=present,
+            )
+        return RawSyncResult(True, False, f"PDF pull failed: {msg[:300]}", [msg[:300]])
+    except subprocess.TimeoutExpired:
+        return RawSyncResult(True, False, "PDF pull timed out", ["PDF pull timed out"])
+    except Exception as exc:
+        return RawSyncResult(True, False, f"PDF pull failed: {exc}", [str(exc)])
+
+    present = [n for n in needed if (local_pdfs / n).is_file()]
+    return RawSyncResult(
+        True,
+        True,
+        f"pulled {len(present)}/{len(needed)} PDF file(s)",
+        files=present,
+    )

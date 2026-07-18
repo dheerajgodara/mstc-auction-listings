@@ -218,6 +218,66 @@ def test_select_for_download_requeues_done_without_valid_pdf(tmp_path: Path):
     assert estimated_download_runs_to_clear(ledger, cap=2, pdf_dir=pdf_dir) == 2
 
 
+def test_select_for_download_requeues_unsynced_media(tmp_path: Path):
+    pdf_dir = tmp_path / "pdfs"
+    pdf_dir.mkdir()
+    good = pdf_dir / "ok.pdf"
+    good.write_bytes(b"%PDF-1.4\n" + (b"y" * 2000))
+    now = datetime.now(IST).isoformat()
+    ledger = empty_ledger()
+    ledger.items.append(
+        LedgerItem(
+            stable_key="mstc:ok",
+            source="mstc",
+            source_auction_id="ok",
+            download="done",
+            parse="pending",
+            pdf_path="pdfs/ok.pdf",
+            media_synced=False,
+            priority_score=10,
+            first_queued_at=now,
+            updated_at=now,
+        )
+    )
+    ledger.items.append(
+        LedgerItem(
+            stable_key="mstc:synced",
+            source="mstc",
+            source_auction_id="synced",
+            download="done",
+            parse="pending",
+            pdf_path="pdfs/ok.pdf",
+            media_synced=True,
+            priority_score=99,
+            first_queued_at=now,
+            updated_at=now,
+        )
+    )
+    # Put a valid local file for synced id too
+    (pdf_dir / "synced.pdf").write_bytes(b"%PDF-1.4\n" + (b"y" * 2000))
+    selected = select_for_download(ledger, limit=10, pdf_dir=pdf_dir)
+    assert [s.stable_key for s in selected] == ["mstc:ok"]
+
+
+def test_mark_download_sets_media_synced_false_until_flush():
+    ledger = empty_ledger()
+    ledger.items.append(
+        LedgerItem(
+            stable_key="mstc:1",
+            source="mstc",
+            source_auction_id="1",
+            download="pending",
+            parse="pending",
+            first_queued_at=datetime.now(IST).isoformat(),
+            updated_at=datetime.now(IST).isoformat(),
+        )
+    )
+    mark_download(ledger, "mstc:1", ok=True, pdf_path="pdfs/1.pdf")
+    item = ledger.by_key()["mstc:1"]
+    assert item.download == "done"
+    assert item.media_synced is False
+
+
 def test_mark_download_clears_pdf_path_on_failure():
     ledger = empty_ledger()
     ledger.items.append(
