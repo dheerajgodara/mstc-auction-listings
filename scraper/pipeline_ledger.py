@@ -185,19 +185,45 @@ def upsert_from_work_plan(
     return ledger
 
 
-def select_for_download(ledger: PipelineLedger, *, limit: int) -> list[LedgerItem]:
-    """Select MSTC auctions that still need raw HTML/PDF download."""
+def select_for_download(
+    ledger: PipelineLedger,
+    *,
+    limit: int,
+    pdf_dir: Path | None = None,
+) -> list[LedgerItem]:
+    """Select MSTC auctions that still need raw HTML/PDF download.
+
+    Also re-queues ``download=done`` rows missing a valid local catalogue PDF
+    (backfill for historical HTML-only successes).
+    """
     if limit <= 0:
         raise ValueError("limit must be positive")
-    eligible = [
-        i
-        for i in ledger.items
-        if i.source == "mstc"
-        and i.download in ("pending", "failed")
-        and i.download_attempts < MAX_STAGE_ATTEMPTS
-    ]
+
+    eligible: list[LedgerItem] = []
+    for i in ledger.items:
+        if i.source != "mstc":
+            continue
+        # Repair path: previously marked done without a durable PDF on disk.
+        if i.download == "done" and _mstc_needs_pdf(i, pdf_dir):
+            eligible.append(i)
+            continue
+        if i.download in ("pending", "failed") and i.download_attempts < MAX_STAGE_ATTEMPTS:
+            eligible.append(i)
     eligible.sort(key=lambda i: (-i.priority_score, i.first_queued_at or "", i.stable_key))
     return eligible[:limit]
+
+
+def _mstc_needs_pdf(item: LedgerItem, pdf_dir: Path | None) -> bool:
+    from scraper.pdf_downloader import validate_pdf_file
+
+    if not (item.pdf_path or "").strip():
+        return True
+    if pdf_dir is None:
+        return False
+    aid = str(item.source_auction_id or "").strip()
+    if not aid:
+        return True
+    return not validate_pdf_file(Path(pdf_dir) / f"{aid}.pdf")
 
 
 def select_for_parse(ledger: PipelineLedger, *, limit: int | None = None) -> list[LedgerItem]:
@@ -243,8 +269,8 @@ def mark_download(
         item.last_error = None
         if raw_html_path:
             item.raw_html_path = raw_html_path
-        if pdf_path:
-            item.pdf_path = pdf_path
+        # Always record PDF path on success (required for MSTC foolproof download).
+        item.pdf_path = pdf_path
         # Successful re-download implies parse should re-run.
         if item.parse == "done":
             item.parse = "pending"
@@ -253,6 +279,9 @@ def mark_download(
             item.parse = "pending"
     else:
         item.last_error = error
+        # Clear stale pdf_path when download fails PDF requirement.
+        if pdf_path is None:
+            item.pdf_path = None
         if item.download_attempts >= MAX_STAGE_ATTEMPTS:
             item.download = "blocked"
         else:
@@ -295,13 +324,18 @@ def _replace_item(ledger: PipelineLedger, item: LedgerItem) -> None:
     ledger.items = sorted(items, key=lambda i: (-i.priority_score, i.stable_key))
 
 
-def estimated_download_runs_to_clear(ledger: PipelineLedger, *, cap: int) -> int:
-    pending = sum(
-        1
-        for i in ledger.items
-        if i.source == "mstc" and i.download in ("pending", "failed")
-    )
-    if pending <= 0 or cap <= 0:
+def estimated_download_runs_to_clear(
+    ledger: PipelineLedger,
+    *,
+    cap: int,
+    pdf_dir: Path | None = None,
+) -> int:
+    """Estimate download job runs left, including done-without-valid-PDF repairs."""
+    if cap <= 0:
+        return 0
+    # Same eligibility as select_for_download, without applying the per-run cap.
+    pending = len(select_for_download(ledger, limit=10**9, pdf_dir=pdf_dir))
+    if pending <= 0:
         return 0
     return int(math.ceil(pending / cap))
 

@@ -33,7 +33,7 @@ from scraper.mstc_api import (
     parse_mstc_datetime,
 )
 from scraper.models import AuctionRecord, AuctionsExport, ExtractionStatus, ListingApiAuction, ListingApiOfficeResponse
-from scraper.pdf_downloader import download_pdf
+from scraper.pdf_downloader import ensure_catalogue_pdf, validate_pdf_file
 from scraper.pdf_parser import parse_pdf_header, parse_pdf_lots
 from scraper.export_guard import write_auctions_json
 from scraper.raw_store import has_raw_html, load_raw_html, save_raw_html
@@ -150,9 +150,8 @@ def enrich_auction(
         if not skip_pdf:
             try:
                 time.sleep(REQUEST_DELAY_SEC)
-                pdf_path = pdf_dir / f"{base.id}.pdf"
-                if not pdf_path.exists():
-                    download_pdf(base.id, pdf_path)
+                _path, downloaded = ensure_catalogue_pdf(base.id, pdf_dir)
+                if downloaded:
                     stats["pdf_downloaded"] = stats.get("pdf_downloaded", 0) + 1
                 else:
                     stats["pdf_cache_hits"] = stats.get("pdf_cache_hits", 0) + 1
@@ -163,10 +162,18 @@ def enrich_auction(
                 base.errors.append(f"pdf_download: {exc}")
                 stats["pdf_failures"] = stats.get("pdf_failures", 0) + 1
                 stats.setdefault("pdf_failed_ids", []).append(base.id)
+                # Foolproof download_only: PDF is required for MSTC catalogue rows.
+                base.status = ExtractionStatus.FAILED
+                return base
 
-        if base.errors and not has_raw_html(source, base.id, raw_dir=raw_root) and not (
-            pdf_dir / f"{base.id}.pdf"
-        ).exists():
+        has_html = has_raw_html(source, base.id, raw_dir=raw_root)
+        has_pdf = validate_pdf_file(pdf_dir / f"{base.id}.pdf")
+        if not skip_pdf and not has_pdf:
+            base.status = ExtractionStatus.FAILED
+            if "pdf_download: missing after ensure" not in " ".join(base.errors):
+                base.errors.append("pdf_download: missing after ensure")
+            return base
+        if base.errors and not has_html and not has_pdf:
             base.status = ExtractionStatus.FAILED
         else:
             base.status = ExtractionStatus.LISTING_ONLY
@@ -209,16 +216,19 @@ def enrich_auction(
             pdf_path = pdf_dir / f"{base.id}.pdf"
             if mode != "parse_only":
                 time.sleep(REQUEST_DELAY_SEC)
-                if not pdf_path.exists():
-                    download_pdf(base.id, pdf_path)
+                _path, downloaded = ensure_catalogue_pdf(base.id, pdf_dir)
+                if downloaded:
                     stats["pdf_downloaded"] = stats.get("pdf_downloaded", 0) + 1
                 else:
                     logger.debug("Using cached PDF %s", pdf_path)
                     stats["pdf_cache_hits"] = stats.get("pdf_cache_hits", 0) + 1
+                pdf_path = _path
             elif not pdf_path.exists():
                 # parse_only cannot invent lots; leave auction pending/repair upstream.
                 raise FileNotFoundError(f"PDF missing for parse_only: {pdf_path}")
             else:
+                if not validate_pdf_file(pdf_path):
+                    raise FileNotFoundError(f"PDF invalid for parse_only: {pdf_path}")
                 stats["pdf_cache_hits"] = stats.get("pdf_cache_hits", 0) + 1
             pdf_lots = parse_pdf_lots(pdf_path)
             pdf_header = parse_pdf_header(pdf_path)
@@ -227,6 +237,11 @@ def enrich_auction(
         except FileNotFoundError as exc:
             if mode == "parse_only" and "PDF missing for parse_only" in str(exc):
                 logger.warning("PDF missing for parse_only %s: %s", base.id, exc)
+                stats["pdf_failures"] = stats.get("pdf_failures", 0) + 1
+                stats.setdefault("pdf_failed_ids", []).append(base.id)
+                raise
+            if mode == "parse_only" and "PDF invalid for parse_only" in str(exc):
+                logger.warning("PDF invalid for parse_only %s: %s", base.id, exc)
                 stats["pdf_failures"] = stats.get("pdf_failures", 0) + 1
                 stats.setdefault("pdf_failed_ids", []).append(base.id)
                 raise

@@ -144,3 +144,95 @@ def test_mark_download_resets_parse_when_redownloaded():
     item = ledger.by_key()["mstc:9"]
     assert item.parse == "pending"
     assert item.deploy_ready is False
+
+
+def test_select_for_download_requeues_done_without_valid_pdf(tmp_path: Path):
+    pdf_dir = tmp_path / "pdfs"
+    pdf_dir.mkdir()
+    now = datetime.now(IST).isoformat()
+    ledger = empty_ledger()
+    # Done but no pdf_path → must requeue.
+    ledger.items.append(
+        LedgerItem(
+            stable_key="mstc:missing",
+            source="mstc",
+            source_auction_id="missing",
+            download="done",
+            parse="done",
+            pdf_path=None,
+            priority_score=50,
+            first_queued_at=now,
+            updated_at=now,
+        )
+    )
+    # Done with path but corrupt on disk → requeue.
+    corrupt = pdf_dir / "corrupt.pdf"
+    corrupt.write_bytes(b"<html>nope</html>" + (b"x" * 2000))
+    ledger.items.append(
+        LedgerItem(
+            stable_key="mstc:corrupt",
+            source="mstc",
+            source_auction_id="corrupt",
+            download="done",
+            parse="pending",
+            pdf_path="pdfs/corrupt.pdf",
+            priority_score=40,
+            first_queued_at=now,
+            updated_at=now,
+        )
+    )
+    # Done with valid PDF → skip.
+    good = pdf_dir / "good.pdf"
+    good.write_bytes(b"%PDF-1.4\n" + (b"y" * 2000))
+    ledger.items.append(
+        LedgerItem(
+            stable_key="mstc:good",
+            source="mstc",
+            source_auction_id="good",
+            download="done",
+            parse="pending",
+            pdf_path="pdfs/good.pdf",
+            priority_score=99,
+            first_queued_at=now,
+            updated_at=now,
+        )
+    )
+    # Pending still wins priority alongside repairs.
+    ledger.items.append(
+        LedgerItem(
+            stable_key="mstc:new",
+            source="mstc",
+            source_auction_id="new",
+            download="pending",
+            parse="pending",
+            priority_score=80,
+            first_queued_at=now,
+            updated_at=now,
+        )
+    )
+
+    selected = select_for_download(ledger, limit=10, pdf_dir=pdf_dir)
+    keys = [s.stable_key for s in selected]
+    assert "mstc:good" not in keys
+    assert keys == ["mstc:new", "mstc:missing", "mstc:corrupt"]
+    assert estimated_download_runs_to_clear(ledger, cap=2, pdf_dir=pdf_dir) == 2
+
+
+def test_mark_download_clears_pdf_path_on_failure():
+    ledger = empty_ledger()
+    ledger.items.append(
+        LedgerItem(
+            stable_key="mstc:1",
+            source="mstc",
+            source_auction_id="1",
+            download="pending",
+            parse="pending",
+            pdf_path="pdfs/1.pdf",
+            first_queued_at=datetime.now(IST).isoformat(),
+            updated_at=datetime.now(IST).isoformat(),
+        )
+    )
+    mark_download(ledger, "mstc:1", ok=False, pdf_path=None, error="missing PDF")
+    item = ledger.by_key()["mstc:1"]
+    assert item.download == "failed"
+    assert item.pdf_path is None

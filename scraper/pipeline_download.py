@@ -44,6 +44,8 @@ from scraper.pipeline_ledger import (
     upsert_from_work_plan,
     write_ledger,
 )
+from scraper.media_sync import media_push_required
+from scraper.pdf_downloader import validate_pdf_file
 from scraper.pipeline_markers import reset_download_retry_state
 from scraper.raw_store import (
     has_raw_html,
@@ -194,7 +196,7 @@ def run_pipeline_download(
             previous_export=previous_export,
             public_dir=public_dir,
         )
-        selected = select_for_download(ledger, limit=max_download)
+        selected = select_for_download(ledger, limit=max_download, pdf_dir=pdf_dir)
         write_ledger(ledger, ledger_path)
 
         payload["discovery"] = {
@@ -203,7 +205,9 @@ def run_pipeline_download(
         }
         payload["ledger"] = ledger.status_counts()
         payload["selected_count"] = len(selected)
-        payload["estimated_runs_to_clear"] = estimated_download_runs_to_clear(ledger, cap=max_download)
+        payload["estimated_runs_to_clear"] = estimated_download_runs_to_clear(
+            ledger, cap=max_download, pdf_dir=pdf_dir
+        )
         send_telegram_report(payload, event="download_selection")
 
         by_disc = _discovery_by_key(discovery_data)
@@ -272,15 +276,28 @@ def run_pipeline_download(
                                 stats=stats,
                             )
                     has_html = has_raw_html("mstc", item.source_auction_id, raw_dir=raw_dir)
-                    has_pdf = (pdf_dir / f"{item.source_auction_id}.pdf").is_file()
-                    ok = has_html or has_pdf
+                    has_pdf = validate_pdf_file(pdf_dir / f"{item.source_auction_id}.pdf")
+                    # Foolproof MSTC download: HTML + valid catalogue PDF required
+                    # (unless --skip-pdf for local debugging).
+                    if skip_pdf:
+                        ok = has_html
+                    else:
+                        ok = has_html and has_pdf
+                    err = None
+                    if not ok:
+                        parts = list(downloaded.errors or [])
+                        if not has_html:
+                            parts.append("missing raw HTML")
+                        if not skip_pdf and not has_pdf:
+                            parts.append("missing or invalid catalogue PDF")
+                        err = "; ".join(parts) if parts else "download incomplete"
                     mark_download(
                         ledger,
                         item.stable_key,
                         ok=ok,
                         raw_html_path=raw_html_rel_path("mstc", item.source_auction_id) if has_html else None,
                         pdf_path=f"pdfs/{item.source_auction_id}.pdf" if has_pdf else None,
-                        error="; ".join(downloaded.errors) if downloaded.errors and not ok else None,
+                        error=err,
                     )
                     if ok:
                         ok_count += 1
@@ -306,7 +323,24 @@ def run_pipeline_download(
 
         write_ledger(ledger, ledger_path)
         push_raw_store(raw_dir=raw_dir)
-        push_public_media(public_dir=public_dir)
+        _phase("media: pushing pdfs/docs/thumbs to Hostinger")
+        media_result = push_public_media(public_dir=public_dir)
+        payload["media_push"] = media_result.to_dict()
+        if media_result.ok:
+            warnings.append("media push ok")
+        else:
+            warnings.append(f"media push failed: {media_result.message}")
+            # Foolproof Hostinger save: never report success if PDFs were not synced.
+            if (
+                not skip_pdf
+                and media_push_required()
+                and ok_count > 0
+                and not media_result.ok
+            ):
+                raise RuntimeError(
+                    f"download media push failed (PDFs not confirmed on Hostinger): "
+                    f"{media_result.message}"
+                )
         push_ledger(local_path=ledger_path)
 
         finished = datetime.now(IST).isoformat()
@@ -328,7 +362,9 @@ def run_pipeline_download(
                 "ledger": ledger.status_counts(),
                 "warnings": warnings,
                 "docs_budget_left": docs_remaining,
-                "estimated_runs_to_clear": estimated_download_runs_to_clear(ledger, cap=max_download),
+                "estimated_runs_to_clear": estimated_download_runs_to_clear(
+                    ledger, cap=max_download, pdf_dir=pdf_dir
+                ),
                 "wall_seconds": round(wall_seconds, 1),
                 "ok_per_min": round(ok_count / (wall_seconds / 60.0), 2) if wall_seconds > 0 else None,
             }
