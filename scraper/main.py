@@ -216,6 +216,7 @@ def enrich_auction(
                     logger.debug("Using cached PDF %s", pdf_path)
                     stats["pdf_cache_hits"] = stats.get("pdf_cache_hits", 0) + 1
             elif not pdf_path.exists():
+                # parse_only cannot invent lots; leave auction pending/repair upstream.
                 raise FileNotFoundError(f"PDF missing for parse_only: {pdf_path}")
             else:
                 stats["pdf_cache_hits"] = stats.get("pdf_cache_hits", 0) + 1
@@ -223,6 +224,16 @@ def enrich_auction(
             pdf_header = parse_pdf_header(pdf_path)
             pdf_url = f"pdfs/{base.id}.pdf"
             stats["lots_parsed"] = stats.get("lots_parsed", 0) + len(pdf_lots or [])
+        except FileNotFoundError as exc:
+            if mode == "parse_only" and "PDF missing for parse_only" in str(exc):
+                logger.warning("PDF missing for parse_only %s: %s", base.id, exc)
+                stats["pdf_failures"] = stats.get("pdf_failures", 0) + 1
+                stats.setdefault("pdf_failed_ids", []).append(base.id)
+                raise
+            logger.warning("PDF failed for %s: %s", base.id, exc)
+            base.errors.append(f"pdf: {exc}")
+            stats["pdf_failures"] = stats.get("pdf_failures", 0) + 1
+            stats.setdefault("pdf_failed_ids", []).append(base.id)
         except Exception as exc:
             logger.warning("PDF failed for %s: %s", base.id, exc)
             base.errors.append(f"pdf: {exc}")

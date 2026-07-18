@@ -79,3 +79,91 @@ def test_materialize_fails_when_deep_parse_record_is_missing():
             previous_export=previous,
             parsed_export=_export(),
         )
+
+
+def test_materialize_keeps_previous_when_deep_parse_failed():
+    previous = _export(_auction("1", title="Prior enriched"))
+    previous["auctions"][0]["ai_clean_heading"] = "Keep me"
+    discovery = _export(_auction("1", title="Shell", closing="2026-07-16T10:00:00+05:30"))
+    discovery["stats"] = {"discovery_only": True, "source_stats": {"mstc": {"complete": True}}}
+    plan = build_work_plan(discovery, previous)
+    failed = _auction("1", title="Broken parse", closing="2026-07-16T10:00:00+05:30")
+    failed["status"] = "failed"
+    failed["lots"] = []
+    failed["errors"] = ["pdf: PDF missing for parse_only: /tmp/1.pdf"]
+
+    out = materialize_incremental_export(
+        work_plan=plan,
+        previous_export=previous,
+        parsed_export=_export(failed),
+        discovery_export=discovery,
+        allow_missing_deep_parse=True,
+    )
+
+    assert out["count"] == 1
+    row = out["auctions"][0]
+    assert row["ai_clean_heading"] == "Keep me"
+    assert row["item_summary"] == "Prior enriched"
+    assert "parse_repair_pending" in row["warnings"]
+    assert out["stats"]["incremental_materialize"]["repair_kept_previous"] == 1
+
+
+def test_materialize_reuse_previous_falls_back_to_discovery_for_new_listings():
+    previous = _export(_auction("old", title="Old"))
+    discovery = _export(
+        _auction("old", title="Old"),
+        _auction("new", title="Brand new listing"),
+    )
+    discovery["stats"] = {"discovery_only": True, "source_stats": {"mstc": {"complete": True}}}
+    plan = build_work_plan(discovery, previous)
+    # Simulate parse-job rewrite: unselected deep_parse → reuse_previous (buggy path)
+    # Materialize must still keep discovery-only rows via discovery fallback.
+    adjusted = plan.model_copy(
+        update={
+            "items": [
+                item.model_copy(update={"action": "reuse_previous"})
+                if item.action == "deep_parse"
+                else item
+                for item in plan.items
+            ]
+        }
+    )
+
+    out = materialize_incremental_export(
+        work_plan=adjusted,
+        previous_export=previous,
+        parsed_export=_export(),
+        discovery_export=discovery,
+        allow_missing_deep_parse=True,
+    )
+
+    by_id = {a["source_auction_id"]: a for a in out["auctions"]}
+    assert out["count"] == 2
+    assert by_id["new"]["status"] == "listing_only"
+    assert "deep_enrichment_pending" in by_id["new"]["warnings"]
+
+
+def test_materialize_carries_unplanned_previous_when_incomplete_discovery_omits_keys():
+    previous = _export(
+        _auction("kept_in_plan", title="In plan"),
+        _auction("only_previous", title="Omitted from plan"),
+    )
+    discovery = _export(_auction("kept_in_plan", title="In plan"))
+    discovery["stats"] = {
+        "discovery_only": True,
+        "source_stats": {"mstc": {"complete": False}},
+    }
+    plan = build_work_plan(discovery, previous)
+
+    out = materialize_incremental_export(
+        work_plan=plan,
+        previous_export=previous,
+        parsed_export=_export(),
+        discovery_export=discovery,
+        allow_missing_deep_parse=True,
+    )
+
+    by_id = {a["source_auction_id"]: a for a in out["auctions"]}
+    assert "kept_in_plan" in by_id
+    assert "only_previous" in by_id
+    assert out["stats"]["incremental_materialize"]["carried_forward_unplanned_previous"] >= 1

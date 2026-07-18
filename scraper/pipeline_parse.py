@@ -21,6 +21,9 @@ from scraper.auction_quarantine import (
     add_quarantine_entries,
     load_quarantine,
 )
+from scraper.finalize_public_export import remove_missing_local_asset_links
+from scraper.media_sync import export_needs_media_push, media_push_required
+from scraper.raw_store import push_public_media
 from scraper.config import (
     DEFAULT_DOCS_DIR,
     DEFAULT_JSON_OUT,
@@ -48,7 +51,7 @@ from scraper.export_hygiene import (
 )
 from scraper.filters import make_run_id, tomorrow_min_closing_date
 from scraper.import_tracking import finalize_export_payload, stable_auction_key
-from scraper.incremental import load_export
+from scraper.incremental import build_record_index, load_export
 from scraper.incremental_materialize import materialize_incremental_export
 from scraper.incremental_plan import build_work_plan
 from scraper.main import enrich_auction, resolve_auction_listing
@@ -68,8 +71,29 @@ from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
 from scraper.safety_gates import SafetyGateConfig, run_safety_gates
 from scraper.source_fallback import apply_missing_source_fallback
 from scraper.telegram_reporter import send_telegram_report
+
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_parse")
+
+
+def _should_defer_parse_overlay(record: AuctionRecord) -> bool:
+    """True when this parse must not replace previous production in materialize."""
+    if record.status == ExtractionStatus.FAILED:
+        return True
+    errors = [str(e).lower() for e in (record.errors or [])]
+    if any("pdf missing for parse_only" in err for err in errors):
+        return True
+    return False
+
+
+def _parse_defer_reason(record: AuctionRecord) -> str:
+    for err in record.errors or []:
+        text = str(err)
+        if "pdf missing for parse_only" in text.lower():
+            return f"parse_repair_pending:{text[:160]}"
+    if record.errors:
+        return f"parse_repair_pending:{str(record.errors[0])[:160]}"
+    return f"parse_repair_pending:status={record.status}"
 
 
 def _phase(msg: str) -> None:
@@ -228,8 +252,12 @@ def run_pipeline_parse(
             raw_dir=raw_dir,
             timeout_sec=300,
         )
-        # Parse only needs PDFs on disk; docs/thumbs are hydrated within the shared budget.
-        bootstrap_production_assets(public_dir=public_dir, dirs=("pdfs",), timeout_sec=900)
+        # Pull existing Hostinger media so parse can reuse caches and avoid re-downloads.
+        bootstrap_production_assets(
+            public_dir=public_dir,
+            dirs=("pdfs", "docs", "thumbs"),
+            timeout_sec=900,
+        )
 
         _phase(f"discovery: starting sources={sources}")
         discovery_path = run_dir / "discovery_latest.json"
@@ -308,6 +336,17 @@ def run_pipeline_parse(
                     if record is None:
                         raise RuntimeError(f"could not enrich {item.stable_key}")
 
+                if _should_defer_parse_overlay(record):
+                    # Missing PDF / failed enrich must not replace prior production.
+                    mark_parse(
+                        ledger,
+                        item.stable_key,
+                        ok=False,
+                        error=_parse_defer_reason(record),
+                    )
+                    fail_count += 1
+                    continue
+
                 ready = record.status != ExtractionStatus.FAILED
                 pending_parse_ok.append((item.stable_key, ready))
                 parsed_records.append(record)
@@ -332,14 +371,19 @@ def run_pipeline_parse(
             stats=stats,
         ).model_dump(mode="json")
 
-        # Build full work plan: mark selected as deep_parse, everything else reuse.
+        # Selected → deep_parse. Unselected deep work: keep previous when present,
+        # otherwise reuse discovery shallow so new listings are not dropped.
+        previous_keys = set(build_record_index(previous_export))
         selected_keys = {i.stable_key for i in selected}
         adjusted_items = []
         for wp in plan.items:
             if wp.stable_key in selected_keys:
                 adjusted_items.append(wp.model_copy(update={"action": "deep_parse"}))
             elif wp.action == "deep_parse":
-                adjusted_items.append(wp.model_copy(update={"action": "reuse_previous"}))
+                if wp.stable_key in previous_keys:
+                    adjusted_items.append(wp.model_copy(update={"action": "reuse_previous"}))
+                else:
+                    adjusted_items.append(wp.model_copy(update={"action": "reuse_discovery"}))
             else:
                 adjusted_items.append(wp)
 
@@ -532,6 +576,73 @@ def run_pipeline_parse(
                 mark_parse(ledger, stable_key, ok=True, deploy_ready=ready)
         write_ledger(ledger, ledger_path)
 
+        # Scrub orphan local asset refs (incl. lot.documents) before media push / promote.
+        removed = remove_missing_local_asset_links(candidate, public_dir=public_dir)
+        if any(removed.values()):
+            cand_stats = dict(candidate.get("stats") or {})
+            cand_stats["missing_local_asset_links_removed"] = sum(removed.values())
+            candidate["stats"] = cand_stats
+            write_auctions_json(candidate_path, candidate)
+            warnings.append(
+                f"scrubbed missing local assets: pdfs={removed['pdfs']} "
+                f"docs={removed['docs']} thumbs={removed['thumbs']}"
+            )
+
+        doc_stats = (stats.get("documents") or {}) if isinstance(stats, dict) else {}
+        docs_downloaded = int(doc_stats.get("downloaded") or 0)
+        needs_media = export_needs_media_push(
+            candidate,
+            public_dir=public_dir,
+            documents_downloaded=docs_downloaded,
+        )
+        media_result = None
+        if needs_media:
+            _phase("media: pushing docs/thumbs/pdfs to Hostinger")
+            media_result = push_public_media(public_dir=public_dir)
+            payload["media_push"] = media_result.to_dict()
+            if media_result.ok:
+                warnings.append(
+                    f"media push ok ({docs_downloaded} new docs this run)"
+                    if docs_downloaded
+                    else "media push ok"
+                )
+                now_iso = datetime.now(IST).isoformat()
+                for stable_key, _ready in pending_parse_ok:
+                    if stable_key in poison_set:
+                        continue
+                    item = ledger.by_key().get(stable_key)
+                    if item is None:
+                        continue
+                    item.media_synced = True
+                    item.media_synced_at = now_iso
+                    item.deploy_ready = True
+            else:
+                msg = media_result.message or "media push failed"
+                warnings.append(f"media push failed: {msg}")
+                if media_push_required():
+                    for stable_key, _ready in pending_parse_ok:
+                        if stable_key in poison_set:
+                            continue
+                        mark_parse(
+                            ledger,
+                            stable_key,
+                            ok=False,
+                            error=f"media_push_failed:{msg[:120]}",
+                        )
+                        item = ledger.by_key().get(stable_key)
+                        if item is not None:
+                            item.media_synced = False
+                            item.deploy_ready = False
+                    write_ledger(ledger, ledger_path)
+                    raise RuntimeError(
+                        f"media push required but failed: {msg}; "
+                        "set MEDIA_PUSH_REQUIRED=0 to scrub and promote without sync"
+                    )
+                # Escape hatch: scrub again and allow promote with pending_cache.
+                remove_missing_local_asset_links(candidate, public_dir=public_dir)
+                write_auctions_json(candidate_path, candidate)
+            write_ledger(ledger, ledger_path)
+
         promoted = False
         if promote:
             promote_export(
@@ -546,7 +657,8 @@ def run_pipeline_parse(
                 run_id=run_id,
             )
             promoted = True
-            _push_auctions_json(production_json)
+            # Public Hostinger surfaces update only via pipeline_deploy build:prod.
+            # Do not rsync auctions.json alone (listing/HTML drift).
 
         push_ledger(local_path=ledger_path)
 

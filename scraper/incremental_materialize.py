@@ -24,6 +24,24 @@ def _count_by(records: list[dict[str, Any]], field: str) -> dict[str, int]:
     return dict(counter)
 
 
+def _usable_deep_parse(record: dict[str, Any] | None) -> bool:
+    """Failed / empty parse overlays must not replace a prior production row."""
+    if record is None:
+        return False
+    status = str(record.get("status") or "").lower()
+    if status == "failed":
+        return False
+    errors = record.get("errors") or []
+    if status in {"partial", "listing_only"} and any(
+        "pdf missing for parse_only" in str(err).lower() or "pdf: " in str(err).lower()
+        for err in errors
+    ):
+        # Missing PDF should stay pending/repair, not shrink/replace prior lots.
+        if not (record.get("lots") or []):
+            return False
+    return True
+
+
 def materialize_incremental_export(
     *,
     work_plan: IncrementalWorkPlan,
@@ -40,7 +58,7 @@ def materialize_incremental_export(
     min_closing = parse_min_closing_date(min_closing_date) if min_closing_date else None
     blocked = set(quarantine_keys or ())
 
-    records: list[dict[str, Any]] = []
+    records_by_key: dict[str, dict[str, Any]] = {}
     missing_deep_parse: list[str] = []
     reused = 0
     reused_discovery = 0
@@ -48,6 +66,8 @@ def materialize_incremental_export(
     removed = 0
     excluded_aged_out_reuse = 0
     excluded_quarantine = 0
+    carried_forward_unplanned = 0
+    repair_kept_previous = 0
 
     def _accept(stable_key: str, record: dict[str, Any] | None) -> bool:
         nonlocal excluded_aged_out_reuse, excluded_quarantine
@@ -61,37 +81,44 @@ def materialize_incremental_export(
             return False
         return True
 
+    def _keep_previous_or_discovery(stable_key: str, *, mark_repair: bool = False) -> bool:
+        nonlocal reused, reused_discovery, repair_kept_previous
+        previous_record = previous_idx.get(stable_key)
+        if _accept(stable_key, previous_record):
+            assert previous_record is not None
+            kept = dict(previous_record)
+            if mark_repair:
+                kept = _mark_pending_repair(kept)
+                repair_kept_previous += 1
+            records_by_key[stable_key] = kept
+            reused += 1
+            return True
+        discovery_record = discovery_idx.get(stable_key)
+        if _accept(stable_key, discovery_record):
+            assert discovery_record is not None
+            records_by_key[stable_key] = _mark_pending_shallow(discovery_record)
+            reused_discovery += 1
+            return True
+        return False
+
+    planned_keys = {item.stable_key for item in work_plan.items}
+
     for item in work_plan.items:
         if item.action == "reuse_previous":
-            previous_record = previous_idx.get(item.stable_key)
-            if _accept(item.stable_key, previous_record):
-                assert previous_record is not None
-                records.append(previous_record)
-                reused += 1
-            elif previous_record is None:
-                missing_deep_parse.append(item.stable_key)
+            if not _keep_previous_or_discovery(item.stable_key):
+                if previous_idx.get(item.stable_key) is None and discovery_idx.get(item.stable_key) is None:
+                    missing_deep_parse.append(item.stable_key)
         elif item.action == "deep_parse":
             parsed_record = parsed_idx.get(item.stable_key)
+            if not _usable_deep_parse(parsed_record):
+                parsed_record = None
             if _accept(item.stable_key, parsed_record):
                 assert parsed_record is not None
-                records.append(parsed_record)
+                records_by_key[item.stable_key] = parsed_record
                 deep_used += 1
-            elif allow_missing_deep_parse and parsed_record is None:
-                previous_record = previous_idx.get(item.stable_key)
-                if _accept(item.stable_key, previous_record):
-                    assert previous_record is not None
-                    records.append(previous_record)
-                    reused += 1
-                    missing_deep_parse.append(item.stable_key)
-                else:
-                    discovery_record = discovery_idx.get(item.stable_key)
-                    if _accept(item.stable_key, discovery_record):
-                        assert discovery_record is not None
-                        records.append(_mark_pending_shallow(discovery_record))
-                        reused_discovery += 1
-                        missing_deep_parse.append(item.stable_key)
-                    elif previous_record is None and discovery_record is None:
-                        missing_deep_parse.append(item.stable_key)
+            elif allow_missing_deep_parse:
+                _keep_previous_or_discovery(item.stable_key, mark_repair=True)
+                missing_deep_parse.append(item.stable_key)
             elif parsed_record is None:
                 missing_deep_parse.append(item.stable_key)
         elif item.action == "reuse_discovery":
@@ -99,21 +126,39 @@ def materialize_incremental_export(
             previous_record = previous_idx.get(item.stable_key)
             if _accept(item.stable_key, discovery_record):
                 assert discovery_record is not None
-                records.append(_mark_pending_shallow(discovery_record))
+                records_by_key[item.stable_key] = _mark_pending_shallow(discovery_record)
                 reused_discovery += 1
             elif _accept(item.stable_key, previous_record):
                 assert previous_record is not None
-                records.append(previous_record)
+                records_by_key[item.stable_key] = previous_record
                 reused += 1
                 missing_deep_parse.append(item.stable_key)
             elif discovery_record is None and previous_record is None:
                 missing_deep_parse.append(item.stable_key)
         elif item.action == "mark_removed":
             removed += 1
+            records_by_key.pop(item.stable_key, None)
+
+    # Always retain previous production rows that still pass filters even if the
+    # work plan omitted them (e.g. incomplete discovery skipped "removed" keys).
+    removed_keys = {item.stable_key for item in work_plan.items if item.action == "mark_removed"}
+    for stable_key, previous_record in previous_idx.items():
+        if stable_key in planned_keys or stable_key in removed_keys:
+            continue
+        if stable_key in records_by_key:
+            continue
+        if _accept(stable_key, previous_record):
+            records_by_key[stable_key] = previous_record
+            reused += 1
+            carried_forward_unplanned += 1
 
     if missing_deep_parse and not allow_missing_deep_parse:
-        raise ValueError(f"Missing parsed records for {len(missing_deep_parse)} work-plan item(s): {missing_deep_parse[:10]}")
+        raise ValueError(
+            f"Missing parsed records for {len(missing_deep_parse)} work-plan item(s): "
+            f"{missing_deep_parse[:10]}"
+        )
 
+    records = list(records_by_key.values())
     records.sort(key=lambda r: r.get("closing") or "")
     generated_at = parsed_export.get("generated_at") or datetime.now(IST).isoformat()
     stats = dict(parsed_export.get("stats") or {})
@@ -126,6 +171,8 @@ def materialize_incremental_export(
         "removed_records": removed,
         "excluded_aged_out_reuse": excluded_aged_out_reuse,
         "excluded_quarantine": excluded_quarantine,
+        "carried_forward_unplanned_previous": carried_forward_unplanned,
+        "repair_kept_previous": repair_kept_previous,
         "missing_deep_parse_records": len(missing_deep_parse),
         "missing_deep_parse_keys": missing_deep_parse[:50],
         "action_counts": work_plan.action_counts,
@@ -158,6 +205,17 @@ def _mark_pending_shallow(record: dict[str, Any]) -> dict[str, Any]:
     pending["warnings"] = warnings
     pending["missing_fields"] = sorted(set((pending.get("missing_fields") or []) + ["lots"]))
     pending.setdefault("lots", [])
+    return pending
+
+
+def _mark_pending_repair(record: dict[str, Any]) -> dict[str, Any]:
+    """Keep prior production content but flag the row for download/parse repair."""
+    pending = dict(record)
+    warnings = list(pending.get("warnings") or [])
+    for flag in ("deep_enrichment_pending", "parse_repair_pending"):
+        if flag not in warnings:
+            warnings.append(flag)
+    pending["warnings"] = warnings
     return pending
 
 

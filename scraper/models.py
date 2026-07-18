@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, field_validator
 
 
 class ExtractionStatus(str, Enum):
@@ -66,6 +66,7 @@ class ContactInfo(BaseModel):
 LotDocumentType = Literal["photo", "annexure", "document", "unknown"]
 LotDocumentStatus = Literal[
     "pending",
+    "pending_cache",
     "downloaded",
     "thumbnail_ready",
     "thumbnail_failed",
@@ -84,6 +85,26 @@ class LotDocument(BaseModel):
     mime_type: Optional[str] = None
     status: LotDocumentStatus = "pending"
     error: Optional[str] = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_document_status(cls, value: Any) -> str:
+        text = str(value or "pending").strip().lower()
+        allowed = {
+            "pending",
+            "pending_cache",
+            "downloaded",
+            "thumbnail_ready",
+            "thumbnail_failed",
+            "failed",
+            "skipped",
+        }
+        if text in allowed:
+            return text
+        # Legacy / scrub aliases → pending_cache (awaiting local media sync).
+        if text in {"pending-cache", "cache_pending", "not_cached", "uncached"}:
+            return "pending_cache"
+        return "pending"
 
 
 class LotRecord(BaseModel):
