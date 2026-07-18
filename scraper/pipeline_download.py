@@ -135,6 +135,7 @@ def run_pipeline_download(
     force_min_closing_date: str | None = None,
     break_stale_lock: bool = True,
     pdf_push_every: int | None = None,
+    fast_test: bool = False,
 ) -> dict[str, Any]:
     import os
 
@@ -170,6 +171,7 @@ def run_pipeline_download(
         "min_closing_date": min_closing,
         "max_download": max_download,
         "pdf_push_every": flush_every,
+        "fast_test": fast_test,
         "sources": sources,
         "site_base_url": SITE_BASE_URL,
         "github_run_url": _github_run_url(),
@@ -188,48 +190,62 @@ def run_pipeline_download(
                 "download requires Hostinger SSH (HOSTINGER_*) when MEDIA_PUSH_REQUIRED=1"
             )
 
-        _bootstrap_previous_production_from_live(
-            production_json=production_json,
-            base_url=SITE_BASE_URL or None,
-            warnings=warnings,
-        )
-        # Skip full PDF tree bootstrap (slow ~GB rsync). Pull only selected IDs later.
-        boot = bootstrap_production_assets(public_dir=public_dir, dirs=("docs", "thumbs"))
-        if boot.warnings:
-            warnings.extend(boot.warnings)
-        _phase(boot.message)
-        pull_raw_store(raw_dir=raw_dir)
-        pull_ledger(local_path=ledger_path)
+        pdf_dir.mkdir(parents=True, exist_ok=True)
+        raw_dir.mkdir(parents=True, exist_ok=True)
 
-        previous_export = load_export(production_json)
-        if not previous_export or int(previous_export.get("count") or 0) <= 0:
-            raise RuntimeError("download job requires bootstrapped previous production export")
+        if fast_test:
+            # TEMP smoke path: skip discovery / full raw bootstrap so PDF flush is testable in minutes.
+            _phase("FAST TEST: skip discovery, asset bootstrap, and full raw pull")
+            warnings.append("fast_test=1: ledger-only selection; no discovery")
+            pull_ledger(local_path=ledger_path)
+            ledger = load_ledger(ledger_path)
+            selected = select_for_download(ledger, limit=max_download, pdf_dir=pdf_dir)
+            write_ledger(ledger, ledger_path)
+            discovery_data = {"count": 0, "auctions": [], "stats": {"by_source": {}}}
+            _phase(f"FAST TEST selected {len(selected)} MSTC row(s) from ledger")
+        else:
+            _bootstrap_previous_production_from_live(
+                production_json=production_json,
+                base_url=SITE_BASE_URL or None,
+                warnings=warnings,
+            )
+            # Skip full PDF tree bootstrap (slow ~GB rsync). Pull only selected IDs later.
+            boot = bootstrap_production_assets(public_dir=public_dir, dirs=("docs", "thumbs"))
+            if boot.warnings:
+                warnings.extend(boot.warnings)
+            _phase(boot.message)
+            pull_raw_store(raw_dir=raw_dir)
+            pull_ledger(local_path=ledger_path)
 
-        discovery_path = run_dir / "discovery_latest.json"
-        discovery_export = run_discovery(
-            sources=sources,
-            out_path=discovery_path,
-            min_closing_date=min_closing,
-            allow_small_output=True,
-        )
-        discovery_data = discovery_export.model_dump(mode="json") if hasattr(discovery_export, "model_dump") else json.loads(
-            discovery_path.read_text(encoding="utf-8")
-        )
-        # Prefer file content for consistency
-        if discovery_path.is_file():
-            discovery_data = json.loads(discovery_path.read_text(encoding="utf-8"))
+            previous_export = load_export(production_json)
+            if not previous_export or int(previous_export.get("count") or 0) <= 0:
+                raise RuntimeError("download job requires bootstrapped previous production export")
 
-        plan = build_work_plan(discovery_data, previous_export)
-        deep_items = [i for i in plan.items if i.action == "deep_parse"]
-        ledger = load_ledger(ledger_path)
-        ledger = upsert_from_work_plan(
-            ledger,
-            deep_items=deep_items,
-            previous_export=previous_export,
-            public_dir=public_dir,
-        )
-        selected = select_for_download(ledger, limit=max_download, pdf_dir=pdf_dir)
-        write_ledger(ledger, ledger_path)
+            discovery_path = run_dir / "discovery_latest.json"
+            discovery_export = run_discovery(
+                sources=sources,
+                out_path=discovery_path,
+                min_closing_date=min_closing,
+                allow_small_output=True,
+            )
+            discovery_data = discovery_export.model_dump(mode="json") if hasattr(discovery_export, "model_dump") else json.loads(
+                discovery_path.read_text(encoding="utf-8")
+            )
+            # Prefer file content for consistency
+            if discovery_path.is_file():
+                discovery_data = json.loads(discovery_path.read_text(encoding="utf-8"))
+
+            plan = build_work_plan(discovery_data, previous_export)
+            deep_items = [i for i in plan.items if i.action == "deep_parse"]
+            ledger = load_ledger(ledger_path)
+            ledger = upsert_from_work_plan(
+                ledger,
+                deep_items=deep_items,
+                previous_export=previous_export,
+                public_dir=public_dir,
+            )
+            selected = select_for_download(ledger, limit=max_download, pdf_dir=pdf_dir)
+            write_ledger(ledger, ledger_path)
 
         # Selective Hostinger PDF pull for the selected set only (fast path).
         if not skip_pdf and selected:
@@ -474,6 +490,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--min-closing-date", default=None)
     parser.add_argument("--break-stale-lock", action="store_true", default=True)
+    parser.add_argument(
+        "--fast-test",
+        action="store_true",
+        help="TEMP: skip discovery/bootstrap/raw pull; ledger-only select for Hostinger PDF flush smoke tests",
+    )
     args = parser.parse_args(argv)
     sources = [s.strip() for s in args.sources.split(",") if s.strip()]
     run_pipeline_download(
@@ -485,6 +506,7 @@ def main(argv: list[str] | None = None) -> int:
         force_min_closing_date=args.min_closing_date,
         break_stale_lock=args.break_stale_lock,
         pdf_push_every=args.pdf_push_every,
+        fast_test=args.fast_test,
     )
     return 0
 
