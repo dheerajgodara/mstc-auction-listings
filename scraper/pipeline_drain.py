@@ -135,13 +135,15 @@ def run_pipeline_drain(
     }
 
     try:
-        pull_ledger(local_path=ledger_path)
+        # Remote ledger is authoritative. Never invent "empty backlog" from a failed pull.
+        pull_ledger(local_path=ledger_path, require=True)
         ledger = load_ledger(ledger_path)
         backlog = parse_backlog_count(ledger)
         cycles_cap = max_cycles if max_cycles is not None else compute_max_cycles(backlog)
         payload["parse_backlog_start"] = backlog
         payload["max_cycles"] = cycles_cap
         payload["ledger"] = ledger.status_counts()
+        payload["ledger_pulled"] = True
         send_telegram_report(payload, event="drain_started")
         _phase(f"start backlog={backlog} max_cycles={cycles_cap} max_parse={max_parse}")
 
@@ -163,7 +165,7 @@ def run_pipeline_drain(
         cycles_completed = 0
         recoverable_parse_errors = 0
         for cycle in range(1, cycles_cap + 1):
-            pull_ledger(local_path=ledger_path)
+            pull_ledger(local_path=ledger_path, require=True)
             ledger = load_ledger(ledger_path)
             remaining = parse_backlog_count(ledger)
             if remaining <= 0:
@@ -241,7 +243,7 @@ def run_pipeline_drain(
                 raise RuntimeError(payload["errors"][0])
 
             cycles_completed += 1
-            pull_ledger(local_path=ledger_path)
+            pull_ledger(local_path=ledger_path, require=True)
             cycle_info["remaining_after"] = parse_backlog_count(load_ledger(ledger_path))
             payload["cycles"].append(cycle_info)
             payload["ledger"] = load_ledger(ledger_path).status_counts()
@@ -256,7 +258,7 @@ def run_pipeline_drain(
                 event="drain_cycle",
             )
 
-        pull_ledger(local_path=ledger_path)
+        pull_ledger(local_path=ledger_path, require=True)
         final_ledger = load_ledger(ledger_path)
         payload.update(
             {
@@ -273,10 +275,23 @@ def run_pipeline_drain(
         )
         send_telegram_report(payload, event="drain_done")
         return payload
-    except Exception:
+    except Exception as exc:
         if payload.get("status") not in {"stopped", "success"}:
+            err_text = str(exc)
+            if "ledger pull failed" in err_text.lower():
+                payload["message"] = "ledger pull failed"
+                payload["errors"] = [
+                    err_text
+                    if err_text.lower().startswith("ledger pull failed")
+                    else f"ledger pull failed: {exc}"
+                ]
+            elif not payload.get("errors"):
+                payload["errors"] = [err_text]
             payload["status"] = "failed"
             payload["finished_at"] = datetime.now(IST).isoformat()
+            (run_dir / "drain_report.json").write_text(
+                json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
+            )
             send_telegram_report(payload, event="drain_stopped")
         raise
     finally:

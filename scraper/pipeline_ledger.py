@@ -37,6 +37,8 @@ class LedgerItem(BaseModel):
     download: StageStatus = "pending"
     parse: StageStatus = "pending"
     deploy_ready: bool = False
+    media_synced: Optional[bool] = None
+    media_synced_at: Optional[str] = None
     download_attempts: int = 0
     parse_attempts: int = 0
     decision: Optional[str] = None
@@ -304,11 +306,27 @@ def estimated_download_runs_to_clear(ledger: PipelineLedger, *, cap: int) -> int
     return int(math.ceil(pending / cap))
 
 
-def pull_ledger(*, local_path: Path | None = None, timeout_sec: int = 300) -> bool:
+def pull_ledger(
+    *,
+    local_path: Path | None = None,
+    timeout_sec: int = 300,
+    require: bool = False,
+) -> bool:
+    """Pull remote pipeline_ledger.json via rsync.
+
+    Returns True on success. Returns False when remote sync is unavailable
+    (no Hostinger config / no rsync) and ``require`` is False.
+
+    When ``require`` is True, any failure raises RuntimeError with a
+    ``ledger pull failed`` message (including rsync non-zero exits).
+    """
     local = Path(local_path or DEFAULT_LEDGER_PATH)
     local.parent.mkdir(parents=True, exist_ok=True)
     cfg = _hostinger_ssh_config()
     if cfg is None or shutil.which("rsync") is None:
+        msg = "ledger pull failed: Hostinger SSH/rsync not configured"
+        if require:
+            raise RuntimeError(msg)
         return False
     remote_root = remote_pipeline_root(cfg["remote_dir"])
     target = f"{cfg['username']}@{cfg['host']}"
@@ -325,6 +343,10 @@ def pull_ledger(*, local_path: Path | None = None, timeout_sec: int = 300) -> bo
         subprocess.run(cmd, check=True, timeout=timeout_sec, capture_output=True, text=True)
         return True
     except Exception as exc:
+        msg = f"ledger pull failed: {exc}"
+        if require:
+            logger.error(msg)
+            raise RuntimeError(msg) from exc
         logger.info("ledger pull skipped/failed: %s", exc)
         return False
 

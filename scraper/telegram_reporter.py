@@ -224,6 +224,12 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
             note = f"Removed {n} aged-out auction" + ("s" if n != 1 else "")
         if note:
             lines.append(note)
+        media = payload.get("media_push") or {}
+        if isinstance(media, dict) and media.get("attempted"):
+            if media.get("ok"):
+                lines.append("Uploaded photos/PDFs to the server")
+            else:
+                lines.append("Photo upload failed — will retry next drain")
         lines.append(_queue_line(payload.get("ledger")))
         return _finish(lines, payload)
     if event == "parse_failed":
@@ -286,10 +292,13 @@ def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
             payload,
         )
     if event == "drain_stopped":
+        line2 = str(payload.get("message") or "").strip()
+        if line2 != "ledger pull failed":
+            line2 = err or "See full log for details"
         return _finish(
             [
                 _title("🛑", "Catch-up stopped"),
-                err or "See full log for details",
+                line2,
                 _queue_line(payload.get("ledger")),
             ],
             payload,
