@@ -51,6 +51,7 @@ from scraper.raw_store import (
     has_raw_html,
     pull_raw_store,
     push_public_media,
+    push_public_pdf_files,
     push_raw_store,
     raw_html_rel_path,
 )
@@ -61,6 +62,20 @@ from scraper.telegram_reporter import send_telegram_report
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_download")
+
+# Mid-run Hostinger PDF flush cadence. Cap (max_download) stays independent.
+DEFAULT_PDF_PUSH_EVERY = 25
+
+
+def _pdf_push_every() -> int:
+    import os
+
+    raw = (os.environ.get("PDF_PUSH_EVERY") or str(DEFAULT_PDF_PUSH_EVERY)).strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        return DEFAULT_PDF_PUSH_EVERY
+    return max(1, n)
 
 
 def _phase(msg: str) -> None:
@@ -116,10 +131,12 @@ def run_pipeline_download(
     skip_pdf: bool = False,
     force_min_closing_date: str | None = None,
     break_stale_lock: bool = True,
+    pdf_push_every: int | None = None,
 ) -> dict[str, Any]:
     import os
 
     sources = sources or ["mstc", "gem_forward", "eauction"]
+    flush_every = max(1, int(pdf_push_every if pdf_push_every is not None else _pdf_push_every()))
     run_id = f"download_{make_run_id()}"
     run_dir = repo_root / "work" / "runs" / run_id
     _setup_logging(run_dir)
@@ -149,6 +166,7 @@ def run_pipeline_download(
         "started_at": started,
         "min_closing_date": min_closing,
         "max_download": max_download,
+        "pdf_push_every": flush_every,
         "sources": sources,
         "site_base_url": SITE_BASE_URL,
         "github_run_url": _github_run_url(),
@@ -218,6 +236,8 @@ def run_pipeline_download(
             "pdf_cache_hits": 0,
             "pdf_failures": 0,
             "pdf_failed_ids": [],
+            "pdf_hostinger_flushed": 0,
+            "pdf_hostinger_flush_batches": 0,
             "documents": {},
         }
         docs_remaining = max_docs_per_run
@@ -225,8 +245,35 @@ def run_pipeline_download(
         ok_count = 0
         fail_count = 0
         last_ledger_push_ok = 0
+        pending_pdf_push: list[str] = []
         loop_started = time.monotonic()
         total_selected = len(selected)
+
+        def _flush_pending_pdfs(*, force: bool = False) -> None:
+            """Rsync queued catalogue PDFs to Hostinger so remote count rises mid-run."""
+            if skip_pdf or not pending_pdf_push:
+                return
+            if not force and len(pending_pdf_push) < flush_every:
+                return
+            batch = list(pending_pdf_push)
+            pending_pdf_push.clear()
+            _phase(f"media: mid-run PDF flush ({len(batch)} file(s)) -> Hostinger")
+            result = push_public_pdf_files(public_dir=public_dir, filenames=batch)
+            stats["pdf_hostinger_flush_batches"] = int(stats.get("pdf_hostinger_flush_batches") or 0) + 1
+            if result.ok:
+                stats["pdf_hostinger_flushed"] = int(stats.get("pdf_hostinger_flushed") or 0) + len(batch)
+                warnings.append(f"mid-run PDF flush ok (+{len(batch)}; total={stats['pdf_hostinger_flushed']})")
+                _phase(
+                    f"Hostinger PDF flush ok +{len(batch)} "
+                    f"(flushed_total={stats['pdf_hostinger_flushed']})"
+                )
+            else:
+                warnings.append(f"mid-run PDF flush failed: {result.message}")
+                if media_push_required():
+                    raise RuntimeError(
+                        f"mid-run PDF push to Hostinger failed: {result.message}"
+                    )
+                # Soft mode: leave files on disk for the final full media push.
 
         for idx, item in enumerate(selected, start=1):
             # Non-MSTC: mark download done if we at least capture listing; deep assets via full enrich later in parse.
@@ -301,6 +348,9 @@ def run_pipeline_download(
                     )
                     if ok:
                         ok_count += 1
+                        if has_pdf:
+                            pending_pdf_push.append(f"{item.source_auction_id}.pdf")
+                            _flush_pending_pdfs(force=False)
                     else:
                         fail_count += 1
                 except Exception as exc:
@@ -313,6 +363,8 @@ def run_pipeline_download(
                 rate = ok_count / (elapsed / 60.0)
                 _phase(
                     f"progress {idx}/{total_selected} ok={ok_count} failed={fail_count} "
+                    f"pdf_flushed={stats.get('pdf_hostinger_flushed', 0)} "
+                    f"pending_flush={len(pending_pdf_push)} "
                     f"elapsed_min={elapsed/60:.1f} ok_per_min={rate:.1f}"
                 )
             if ok_count >= last_ledger_push_ok + 50:
@@ -321,9 +373,12 @@ def run_pipeline_download(
                 last_ledger_push_ok = ok_count
                 _phase(f"mid-run ledger push at ok={ok_count}")
 
+        # Drain any remainder before the full media safety-net push.
+        _flush_pending_pdfs(force=True)
+
         write_ledger(ledger, ledger_path)
         push_raw_store(raw_dir=raw_dir)
-        _phase("media: pushing pdfs/docs/thumbs to Hostinger")
+        _phase("media: final pdfs/docs/thumbs push to Hostinger")
         media_result = push_public_media(public_dir=public_dir)
         payload["media_push"] = media_result.to_dict()
         if media_result.ok:
@@ -392,6 +447,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sources", default="mstc,gem_forward,eauction")
     parser.add_argument("--skip-docs", action="store_true")
     parser.add_argument("--skip-pdf", action="store_true")
+    parser.add_argument(
+        "--pdf-push-every",
+        type=int,
+        default=None,
+        help="Flush catalogue PDFs to Hostinger every N successes (default env PDF_PUSH_EVERY or 25)",
+    )
     parser.add_argument("--min-closing-date", default=None)
     parser.add_argument("--break-stale-lock", action="store_true", default=True)
     args = parser.parse_args(argv)
@@ -404,6 +465,7 @@ def main(argv: list[str] | None = None) -> int:
         skip_pdf=args.skip_pdf,
         force_min_closing_date=args.min_closing_date,
         break_stale_lock=args.break_stale_lock,
+        pdf_push_every=args.pdf_push_every,
     )
     return 0
 

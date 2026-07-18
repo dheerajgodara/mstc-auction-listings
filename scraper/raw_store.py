@@ -303,3 +303,71 @@ def push_public_media(*, public_dir: Path, timeout_sec: int = 900) -> RawSyncRes
     if warnings:
         return RawSyncResult(True, False, "media push partial failure", warnings)
     return RawSyncResult(True, True, "media pushed")
+
+
+def push_public_pdf_files(
+    *,
+    public_dir: Path,
+    filenames: list[str],
+    timeout_sec: int = 300,
+) -> RawSyncResult:
+    """Push specific catalogue PDF basenames to Hostinger ``pdfs/`` (no --delete).
+
+    Used for mid-run flushes so Hostinger ``pdfs/`` count rises during a download
+    job while the per-run auction cap stays unchanged.
+    """
+    names = sorted({Path(n).name for n in filenames if str(n).strip()})
+    if not names:
+        return RawSyncResult(False, True, "no PDF filenames to push")
+
+    cfg = _hostinger_ssh_config()
+    if cfg is None:
+        return RawSyncResult(False, False, "Hostinger SSH incomplete; skip PDF push", ["pdf push skipped"])
+    if shutil.which("rsync") is None:
+        return RawSyncResult(False, False, "rsync unavailable", ["pdf push skipped"])
+
+    local_pdfs = Path(public_dir) / "pdfs"
+    existing = [n for n in names if (local_pdfs / n).is_file()]
+    missing = [n for n in names if n not in existing]
+    if not existing:
+        return RawSyncResult(
+            True,
+            False,
+            "PDF push failed: none of the requested files exist locally",
+            [f"missing: {', '.join(missing[:10])}"],
+        )
+
+    target = f"{cfg['username']}@{cfg['host']}"
+    remote = f"{target}:{cfg['remote_dir']}/pdfs/"
+    # Relative paths from pdfs/ so rsync places files directly in remote pdfs/.
+    files_from = "\n".join(existing) + "\n"
+    cmd = [
+        "rsync",
+        "-az",
+        "-e",
+        _ssh_cmd(cfg),
+        "--files-from=-",
+        f"{local_pdfs}/",
+        remote,
+    ]
+    logger.info("Pushing %d PDF file(s) -> %s", len(existing), remote)
+    try:
+        subprocess.run(
+            cmd,
+            input=files_from,
+            check=True,
+            timeout=timeout_sec,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        msg = (exc.stderr or exc.stdout or str(exc)).strip()
+        return RawSyncResult(True, False, f"PDF push failed: {msg[:300]}", [msg[:300]])
+    except subprocess.TimeoutExpired:
+        return RawSyncResult(True, False, "PDF push timed out", ["PDF push timed out"])
+
+    warnings = [f"missing local: {n}" for n in missing[:20]] if missing else []
+    msg = f"pushed {len(existing)} PDF file(s)"
+    if missing:
+        msg += f" ({len(missing)} missing locally)"
+    return RawSyncResult(True, True, msg, warnings)
