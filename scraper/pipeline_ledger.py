@@ -631,7 +631,10 @@ def pull_ledger(
     local_path: Path | None = None,
     timeout_sec: int = 300,
     require: bool = False,
+    attempts: int = 4,
 ) -> bool:
+    import time
+
     local = Path(local_path or DEFAULT_LEDGER_PATH)
     local.parent.mkdir(parents=True, exist_ok=True)
     cfg = _hostinger_ssh_config()
@@ -644,16 +647,25 @@ def pull_ledger(
     target = f"{cfg['username']}@{cfg['host']}"
     remote = f"{target}:{remote_root}/pipeline_ledger.json"
     cmd = ["rsync", "-az", "-e", _ssh_cmd(cfg), remote, str(local)]
-    try:
-        subprocess.run(cmd, check=True, timeout=timeout_sec, capture_output=True, text=True)
-        return True
-    except Exception as exc:
-        msg = f"ledger pull failed: {exc}"
-        if require:
-            logger.error(msg)
-            raise RuntimeError(msg) from exc
-        logger.info("ledger pull skipped/failed: %s", exc)
-        return False
+    last_exc: Exception | None = None
+    tries = max(1, int(attempts))
+    for attempt in range(1, tries + 1):
+        try:
+            subprocess.run(cmd, check=True, timeout=timeout_sec, capture_output=True, text=True)
+            if attempt > 1:
+                logger.info("ledger pull succeeded on attempt %s/%s", attempt, tries)
+            return True
+        except Exception as exc:
+            last_exc = exc
+            logger.info("ledger pull attempt %s/%s failed: %s", attempt, tries, exc)
+            if attempt < tries:
+                time.sleep(min(30, 5 * attempt))
+    msg = f"ledger pull failed after {tries} attempts: {last_exc}"
+    if require:
+        logger.error(msg)
+        raise RuntimeError(msg) from last_exc
+    logger.info("ledger pull skipped/failed: %s", last_exc)
+    return False
 
 
 def push_ledger(*, local_path: Path | None = None, timeout_sec: int = 120) -> bool:
