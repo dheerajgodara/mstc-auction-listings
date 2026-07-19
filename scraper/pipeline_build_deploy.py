@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from scraper.config import DEFAULT_JSON_OUT, DEFAULT_PARSED_DIR, DEFAULT_PIPELINE_LEDGER, REPO_ROOT, SITE_BASE_URL
 from scraper.export_guard import write_auctions_json
+from scraper.export_hygiene import repair_absolute_asset_paths, strip_aged_out_auctions
 from scraper.filters import make_run_id, tomorrow_min_closing_date
 from scraper.import_tracking import stable_auction_key
 from scraper.parse_cache import iter_local_parsed, load_parse_artifact, pull_parsed_tree
@@ -121,9 +122,18 @@ def materialize_publishable_only(
 
         merged["source"] = item.source
         merged["source_auction_id"] = item.source_auction_id
-        merged["pdf_url"] = host_path
+        host_path_rel = str(host_path).lstrip("/")
+        merged["pdf_url"] = host_path_rel
         merged["hostinger_doc_url"] = host_url
+        merged["hostinger_doc_path"] = host_path_rel
         merged["source_pdf_url"] = item.portal_doc_url or merged.get("source_pdf_url")
+        # Drop stale absolute asset paths from parse cache before QA.
+        for key in ("document_urls",):
+            docs = merged.get(key)
+            if isinstance(docs, list):
+                merged[key] = [
+                    (d.lstrip("/") if isinstance(d, str) else d) for d in docs
+                ]
         merged["status"] = "complete"
         merged["enrichment_status"] = "parsed"
         meta = art.get("meta") or {}
@@ -200,7 +210,16 @@ def run_build_deploy(
             cleaned.append(a)
         export["auctions"] = cleaned
         export["count"] = len(cleaned)
-        _phase(f"export_ready={export['count']}")
+        min_closing = tomorrow_min_closing_date()
+        strip = strip_aged_out_auctions(export, min_closing_date=min_closing)
+        export = strip.export
+        repair = repair_absolute_asset_paths(export)
+        export = repair.export
+        export["count"] = len(export.get("auctions") or [])
+        _phase(
+            f"export_ready={export['count']} "
+            f"(stripped_aged={len(strip.dropped)} repaired_paths={len(repair.repaired)})"
+        )
 
         candidate = run_dir / "candidate_auctions.json"
         write_auctions_json(candidate, export, allow_small_output=True)
@@ -219,7 +238,7 @@ def run_build_deploy(
             candidate=candidate,
             target=production_json,
             min_count=min_count,
-            min_closing_date=tomorrow_min_closing_date(),
+            min_closing_date=min_closing,
             backup_dir=backup_dir,
             require_sources=req_sources,
             warn_missing_sources=["gem_forward"],
