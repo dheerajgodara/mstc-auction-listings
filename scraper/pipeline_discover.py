@@ -26,10 +26,10 @@ from scraper.discovery import run_discovery
 from scraper.filters import make_run_id, tomorrow_min_closing_date
 from scraper.incremental import load_export
 from scraper.incremental_plan import build_work_plan
+from scraper.import_tracking import stable_auction_key
 from scraper.pipeline_ledger import (
     classify_download_queue_item,
     estimated_download_runs_to_clear,
-    grandfather_media_synced_legacy,
     load_ledger,
     pull_ledger,
     push_ledger,
@@ -145,8 +145,9 @@ def run_pipeline_discover(
         pull_ledger(local_path=ledger_path)
 
         previous_export = load_export(production_json)
-        if not previous_export or int(previous_export.get("count") or 0) <= 0:
-            raise RuntimeError("discover job requires bootstrapped previous production export")
+        if not previous_export:
+            previous_export = {"auctions": [], "count": 0, "generated_at": datetime.now(IST).isoformat()}
+            _phase("discover: empty previous export (v3 cutover / first run)")
 
         discovery_path = run_dir / "discovery_latest.json"
         discovery_export = run_discovery(
@@ -185,18 +186,34 @@ def run_pipeline_discover(
         push_discovery_snapshot(snap_path, snap_name)
         plan = build_work_plan(discovery_data, previous_export)
         deep_items = [i for i in plan.items if i.action == "deep_parse"]
+        discovery_by_key = {
+            stable_auction_key(a): a
+            for a in (discovery_data.get("auctions") or [])
+            if isinstance(a, dict)
+        }
         ledger = load_ledger(ledger_path)
         ledger = upsert_from_work_plan(
             ledger,
             deep_items=deep_items,
             previous_export=previous_export,
             public_dir=public_dir,
+            discovery_by_key=discovery_by_key,
         )
-        grandfathered = grandfather_media_synced_legacy(ledger)
-        if grandfathered:
-            _phase(f"ledger: grandfathered media_synced=True for {grandfathered} legacy row(s)")
+        missing_docs = sum(1 for i in ledger.items if i.discover == "failed")
+        if missing_docs:
+            _phase(f"ledger: {missing_docs} row(s) failed discover (missing portal_doc_url)")
         # Preview who would be selected for download (cap = queue_cap).
-        queued = select_for_download(ledger, limit=queue_cap, pdf_dir=pdf_dir)
+        src_filter = next(iter(src_set)) if len(src_set) == 1 else "mstc"
+        queued = select_for_download(
+            ledger, limit=queue_cap, pdf_dir=pdf_dir, source=src_filter
+        )
+        if len(src_set) == 1 and src_filter == "gem_forward":
+            pass
+        elif len(src_set) > 1:
+            queued = select_for_download(ledger, limit=queue_cap, pdf_dir=pdf_dir, source="mstc")
+            queued += select_for_download(
+                ledger, limit=max(1, queue_cap - len(queued)), pdf_dir=pdf_dir, source="gem_forward"
+            )
         write_ledger(ledger, ledger_path)
 
         # Selective Hostinger PDF pull for queued MSTC IDs only (cache warm for Process 1).
@@ -230,7 +247,7 @@ def run_pipeline_discover(
                 "queued_new": queued_new,
                 "queued_sync": queued_sync,
                 "queued_repair": queued_repair,
-                "media_synced_grandfathered": grandfathered,
+                "discover_missing_portal_doc": missing_docs,
                 "estimated_download_batches": est_batches,
                 "estimated_runs_to_clear": estimated_download_runs_to_clear(
                     ledger, cap=batch_size, pdf_dir=pdf_dir

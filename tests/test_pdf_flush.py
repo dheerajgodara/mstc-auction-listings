@@ -50,6 +50,7 @@ def test_push_public_pdf_files_rsync_files_from(tmp_path: Path, monkeypatch):
 
 def test_flush_queue_marks_synced_and_flushes_every_n(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MEDIA_PUSH_REQUIRED", "1")
+    monkeypatch.setenv("SITE_BASE_URL", "https://example.test/auctions")
     public = tmp_path / "public"
     (public / "pdfs").mkdir(parents=True)
     ledger = empty_ledger()
@@ -60,10 +61,10 @@ def test_flush_queue_marks_synced_and_flushes_every_n(tmp_path: Path, monkeypatc
                 stable_key=f"mstc:{aid}",
                 source="mstc",
                 source_auction_id=aid,
-                download="done",
+                portal_doc_url="https://mstc.example/pdf",
+                download="pending",
                 parse="pending",
-                pdf_path=f"pdfs/{aid}.pdf",
-                first_queued_at=now,
+                first_seen_at=now,
                 updated_at=now,
             )
         )
@@ -84,14 +85,16 @@ def test_flush_queue_marks_synced_and_flushes_every_n(tmp_path: Path, monkeypatc
         return_value=RawSyncResult(True, True, "ok", files=["1.pdf", "2.pdf"]),
     ) as push:
         queue.enqueue("1")
-        assert ledger.by_key()["mstc:1"].media_synced is False
+        assert not (ledger.by_key()["mstc:1"].hostinger_doc_url or "")
         assert queue.maybe_flush() is None  # need 2
         queue.enqueue("2")
         result = queue.maybe_flush()
         assert result is not None and result.ok
         push.assert_called_once()
-        assert ledger.by_key()["mstc:1"].media_synced is True
-        assert ledger.by_key()["mstc:2"].media_synced is True
+        assert ledger.by_key()["mstc:1"].download == "done"
+        assert ledger.by_key()["mstc:1"].hostinger_doc_path == "pdfs/1.pdf"
+        assert "pdfs/1.pdf" in (ledger.by_key()["mstc:1"].hostinger_doc_url or "")
+        assert ledger.by_key()["mstc:2"].download == "done"
         assert stats["pdf_hostinger_flushed"] == 2
 
 
@@ -106,10 +109,10 @@ def test_flush_queue_hard_fail_requeues(tmp_path: Path, monkeypatch):
             stable_key="mstc:9",
             source="mstc",
             source_auction_id="9",
-            download="done",
+            portal_doc_url="https://mstc.example/pdf",
+            download="pending",
             parse="pending",
-            pdf_path="pdfs/9.pdf",
-            first_queued_at=now,
+            first_seen_at=now,
             updated_at=now,
         )
     )
@@ -134,10 +137,14 @@ def test_flush_queue_hard_fail_requeues(tmp_path: Path, monkeypatch):
             assert "boom" in str(exc)
     assert raised
     assert queue.pending_count == 1
-    assert ledger.by_key()["mstc:9"].media_synced is False
+    assert not (ledger.by_key()["mstc:9"].hostinger_doc_url or "")
 
 
-def test_mark_pdfs_hostinger_synced():
+def test_mark_pdfs_hostinger_synced(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SITE_BASE_URL", "https://example.test/auctions")
+    public = tmp_path / "public"
+    (public / "pdfs").mkdir(parents=True)
+    (public / "pdfs" / "5.pdf").write_bytes(b"%PDF-1.4\n" + b"z" * 2000)
     ledger = empty_ledger()
     now = "2026-07-18T00:00:00+05:30"
     ledger.items.append(
@@ -145,13 +152,16 @@ def test_mark_pdfs_hostinger_synced():
             stable_key="mstc:5",
             source="mstc",
             source_auction_id="5",
-            download="done",
+            portal_doc_url="https://mstc.example/pdf",
+            download="pending",
             parse="pending",
-            media_synced=False,
-            first_queued_at=now,
+            first_seen_at=now,
             updated_at=now,
         )
     )
-    n = mark_pdfs_hostinger_synced(ledger, ["5.pdf"], synced=True)
+    n = mark_pdfs_hostinger_synced(ledger, ["5.pdf"], synced=True, public_dir=public)
     assert n == 1
-    assert ledger.by_key()["mstc:5"].media_synced is True
+    item = ledger.by_key()["mstc:5"]
+    assert item.download == "done"
+    assert item.hostinger_doc_path == "pdfs/5.pdf"
+    assert item.hostinger_doc_url

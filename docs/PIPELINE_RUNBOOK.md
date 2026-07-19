@@ -1,46 +1,40 @@
-# 4-stage pipeline runbook
+# Pipeline runbook (v3 — mandatory PDF/doc)
 
-> **2026-07 update:** Primary production path is **six independent GHA lanes**
-> (Discover-MSTC, Discover-GeM, Download-MSTC, Download-GeM, Parse Assets, Build Deploy).
-> See [`PIPELINE_DATA_MODEL.md`](PIPELINE_DATA_MODEL.md). Legacy Discover/Download/Drain
-> workflows are **manual emergency only**. AI enricher is **held**.
+> **Law:** No MSTC/GeM listing goes live without Hostinger PDF/doc **and** parse with lots.
+> Six GHA lanes: Discover-MSTC/GeM, Download-MSTC/GeM, Parse, Build-Deploy.
+> Schema: [`PIPELINE_DATA_MODEL.md`](PIPELINE_DATA_MODEL.md). AI enricher **held**.
 
-## Production flow (independent lanes)
+## Production flow
 
-1. **Discover-MSTC** / **Discover-GeM** — every ~6h, each own concurrency group. Cap 2000. Writes Hostinger snapshots only (no site publish).
-2. **Download-MSTC** / **Download-GeM** — every ~6h + self-resume. 5s pause after each success. Item-level ledger checkpoints.
-3. **Parse Assets** — every ~2h + self-resume. One auction at a time → `parsed/{source}/{id}.json`.
-4. **Build Deploy** — every ~2h. Merge discovery + parse cache → one site deploy. Material search needs lots.
+1. **Discover** — require `portal_doc_url`; snapshot only
+2. **Download** — Hostinger `hostinger_doc_url` required before parse
+3. **Parse** — Hostinger copy only; `lots_count > 0` for publishable
+4. **Build-Deploy** — export **only** publishable rows (no listing shells)
 
-Lanes do **not** wait for each other. Telegram: `SAI · {Lane}` short reports.
+### Cutover (unpublish shells + ledger v3)
 
-### Migrate ledger
+```bash
+gh workflow run pipeline-build-deploy.yml \
+  -f migrate_ledger_v3=true \
+  -f allow_small_export=true
+```
+
+Then drain with Download → Parse → Build (cron or manual caps).
+
+### Migrate ledger only
 
 ```bash
 PYTHONPATH=. python -m scraper.pipeline_schema_migrate --pull --push
 ```
 
-### Cap-2 smoke (critical path)
-
-Optional `workflow_dispatch` inputs (`max_download` / `max_parse` / `auction_ids`) default empty = production uncapped. Smoke does **not** change cron.
+### Cap-2 smoke
 
 ```bash
-# 1) MSTC download ×2 (+ ledger migrate once)
-gh workflow run pipeline-download-mstc.yml -f max_download=2 -f migrate_ledger=true
-# From run logs: attempted_ids=ID1,ID2
-
-# 2) GeM download ×2
+gh workflow run pipeline-download-mstc.yml -f max_download=2
 gh workflow run pipeline-download-gem.yml -f max_download=2
-# From run logs: attempted_ids=ID3,ID4
-
-# 3) Parse only those IDs
-gh workflow run pipeline-parse-assets.yml -f max_parse=4 -f auction_ids=ID1,ID2,ID3,ID4
-
-# 4) Full site build/deploy (no per-auction cap)
-gh workflow run pipeline-build-deploy.yml
+gh workflow run pipeline-parse-assets.yml -f max_parse=4
+gh workflow run pipeline-build-deploy.yml -f allow_small_export=true
 ```
-
-After smoke: omit caps on future dispatches; scheduled lanes stay uncapped.
 
 ## Legacy emergency
 

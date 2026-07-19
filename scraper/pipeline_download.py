@@ -123,12 +123,10 @@ def _download_one_mstc(
     stats: dict[str, Any],
     ledger: Any,
 ) -> tuple[bool, int]:
-    """Download one MSTC row. Returns (ok, docs_remaining)."""
+    """Fetch MSTC HTML+PDF locally. Hostinger durability is marked on flush."""
     base, _ = resolve_auction_listing(item.source_auction_id)
     base.source = "mstc"
     try:
-        html_before = int(stats.get("html_downloaded") or 0)
-        pdf_before = int(stats.get("pdf_downloaded") or 0)
         downloaded = enrich_auction(
             base,
             pdf_dir=pdf_dir,
@@ -149,34 +147,22 @@ def _download_one_mstc(
             )
         has_html = has_raw_html("mstc", item.source_auction_id, raw_dir=raw_dir)
         has_pdf = validate_pdf_file(pdf_dir / f"{item.source_auction_id}.pdf")
-        if skip_pdf:
-            ok = has_html
-        else:
-            ok = has_html and has_pdf
-        err = None
+        ok = has_html if skip_pdf else (has_html and has_pdf)
         if not ok:
             parts = list(downloaded.errors or [])
             if not has_html:
                 parts.append("missing raw HTML")
             if not skip_pdf and not has_pdf:
                 parts.append("missing or invalid catalogue PDF")
-            err = "; ".join(parts) if parts else "download incomplete"
-        html_new = int(stats.get("html_downloaded") or 0) > html_before
-        pdf_new = int(stats.get("pdf_downloaded") or 0) > pdf_before
-        content_changed = html_new or pdf_new
-        # New PDF bytes or Hostinger sync still owed → keep media_synced False until flush.
-        require_media_resync = pdf_new or (getattr(item, "media_synced", None) is not True)
-        mark_download(
-            ledger,
-            item.stable_key,
-            ok=ok,
-            raw_html_path=raw_html_rel_path("mstc", item.source_auction_id) if has_html else None,
-            pdf_path=f"pdfs/{item.source_auction_id}.pdf" if has_pdf else None,
-            error=err,
-            content_changed=content_changed,
-            require_media_resync=require_media_resync,
-        )
-        return ok, docs_remaining
+            mark_download(
+                ledger,
+                item.stable_key,
+                ok=False,
+                error="; ".join(parts) if parts else "download incomplete",
+            )
+            return False, docs_remaining
+        item.raw_html_path = raw_html_rel_path("mstc", item.source_auction_id)
+        return True, docs_remaining
     except Exception as exc:
         logger.exception("download failed for %s", item.stable_key)
         mark_download(ledger, item.stable_key, ok=False, error=str(exc))
@@ -188,43 +174,70 @@ def _download_one_gem(
     item: Any,
     raw_dir: Path,
     ledger: Any,
+    public_dir: Path,
 ) -> bool:
-    """Fetch GeM notice HTML into durable raw store. Returns ok."""
+    """Download GeM portal doc to Hostinger docs/gem/{id}.* (mandatory)."""
+    import hashlib
+
+    from scraper.pipeline_ledger import public_doc_url
+
     aid = str(item.source_auction_id or "").strip()
+    portal = (getattr(item, "portal_doc_url", None) or "").strip()
+    if not portal:
+        mark_download(ledger, item.stable_key, ok=False, error="missing portal_doc_url")
+        return False
     try:
         from scraper.gem_forward_client import GemForwardClient
 
         client = GemForwardClient()
-        # Prefer listing detail path from ledger reasons/metadata if present.
-        notice_path = f"/eprocure/view-auction-notice/{aid}/1/"
-        # Try common detail_url patterns via search of raw discovery later; fallback probe.
-        html = None
         detail = getattr(item, "detail_url", None) or ""
         if "/eprocure/" in str(detail):
             notice_path = "/eprocure/" + str(detail).split("/eprocure/", 1)[-1]
-        try:
-            html = client.get_html(notice_path)
-        except Exception:
-            # Soft success: mark done with warning so Parse can live-enrich.
+            try:
+                html = client.get_html(notice_path)
+                save_raw_html("gem_forward", aid, html, raw_dir=raw_dir)
+            except Exception:
+                pass
+
+        sess = requests.Session()
+        resp = sess.get(
+            portal,
+            timeout=60,
+            headers={"User-Agent": "MSTCAuctionListings/0.1", "Accept": "*/*"},
+            allow_redirects=True,
+        )
+        resp.raise_for_status()
+        body = resp.content
+        if len(body) < 500:
+            mark_download(
+                ledger, item.stable_key, ok=False, error=f"gem doc too small ({len(body)} bytes)"
+            )
+            return False
+        ext = "pdf" if body[:4] == b"%PDF" else "bin"
+        rel_dir = public_dir / "docs" / "gem"
+        rel_dir.mkdir(parents=True, exist_ok=True)
+        (rel_dir / f"{aid}.{ext}").write_bytes(body)
+        push = push_public_media(public_dir=public_dir, timeout_sec=300)
+        if not push.ok and media_push_required():
             mark_download(
                 ledger,
                 item.stable_key,
-                ok=True,
-                raw_html_path=None,
-                error=f"gem notice probe failed for {notice_path}",
-                content_changed=False,
-                require_media_resync=False,
+                ok=False,
+                error=f"Hostinger docs push failed: {push.message}",
             )
-            return True
-        save_raw_html("gem_forward", aid, html, raw_dir=raw_dir)
+            return False
+        rel = f"docs/gem/{aid}.{ext}"
         mark_download(
             ledger,
             item.stable_key,
             ok=True,
-            raw_html_path=raw_html_rel_path("gem_forward", aid),
-            error=None,
+            hostinger_doc_path=rel,
+            hostinger_doc_url=public_doc_url(rel),
+            doc_sha256=hashlib.sha256(body).hexdigest(),
+            raw_html_path=raw_html_rel_path("gem_forward", aid)
+            if has_raw_html("gem_forward", aid, raw_dir=raw_dir)
+            else None,
             content_changed=True,
-            require_media_resync=False,
         )
         return True
     except Exception as exc:
@@ -388,8 +401,8 @@ def run_pipeline_download(
                     # Already durable?
                     if (
                         item.download == "done"
-                        and item.media_synced is True
-                        and (item.pdf_path or "").strip()
+                        and (item.hostinger_doc_url or "").strip()
+                        and (item.hostinger_doc_path or "").strip()
                     ):
                         skipped_existing += 1
                         continue
@@ -425,7 +438,7 @@ def run_pipeline_download(
                 else:
                     if item.source != "gem_forward":
                         continue
-                    ok = _download_one_gem(item=item, raw_dir=raw_dir, ledger=ledger)
+                    ok = _download_one_gem(item=item, raw_dir=raw_dir, ledger=ledger, public_dir=public_dir)
                     attempted_ids.append(str(item.source_auction_id))
                     _phase(
                         f"download_item source=gem_forward id={item.source_auction_id} ok={ok}"
@@ -496,7 +509,7 @@ def run_pipeline_download(
                 "ledger": ledger.status_counts(),
                 "warnings": warnings,
                 "estimated_runs_to_clear": estimated_download_runs_to_clear(
-                    ledger, cap=batch_size, pdf_dir=pdf_dir
+                    ledger, cap=batch_size, pdf_dir=pdf_dir, source=source
                 ),
             }
         )

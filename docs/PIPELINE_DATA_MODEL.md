@@ -1,46 +1,49 @@
-# Pipeline data model (six independent lanes)
+# Pipeline data model v3 — mandatory PDF/doc
 
-Hostinger file “DB” + live export. **Never delete** ledger rows, PDFs, raw HTML, parse JSON, or unknown legacy keys.
+**Law:** Every MSTC/GeM portal listing has a PDF/doc. Nothing is live without a Hostinger copy **and** successful parse (`lots_count > 0`).
 
-## Stores
+## Flow
 
-| Store | Path | Owner |
-|-------|------|--------|
-| Ledger | `auction_pipeline/pipeline_ledger.json` | All lanes (merge-safe patches) |
-| Discover MSTC | `auction_pipeline/discovery_mstc_latest.json` | Discover-MSTC |
-| Discover GeM | `auction_pipeline/discovery_gem_latest.json` | Discover-GeM |
-| Raw HTML | `auction_pipeline/raw/{source}/{id}.html` | Download-* |
-| MSTC PDFs | `{auctions}/pdfs/{id}.pdf` | Download-MSTC |
-| Parse cache | `auction_pipeline/parsed/{source}/{id}.json` | Parse |
-| Live export | `{auctions}/data/auctions.json` | Build-Deploy |
+1. **Discover** — record listing + `portal_doc_url` (required)
+2. **Download** — fetch → Hostinger → set `hostinger_doc_url` / `hostinger_doc_path` / `doc_sha256`
+3. **Parse** — use Hostinger copy only → `parsed/{source}/{id}.json` with lots
+4. **Build-Deploy** — publish **only** `publishable` rows
 
-## Lanes (independent clocks)
+Six independent GHA lanes (unchanged clocks): Discover-MSTC, Discover-GeM, Download-MSTC, Download-GeM, Parse, Build-Deploy.
 
-1. **Discover-MSTC** / **Discover-GeM** — listing APIs → ledger upsert + snapshot. No site publish.
-2. **Download-MSTC** / **Download-GeM** — durable assets to Hostinger; 5s pause after each success; item-level checkpoint.
-3. **Parse** — one-by-one; write parse JSON; skip if sha256 fresh.
-4. **Build-Deploy** — merge discoveries + parse cache → one deploy.
+## Ledger v3 (`auction_pipeline/pipeline_ledger.json`)
 
-No lane waits on another. Progress survives mid-batch failures (commit after each item).
+| Field | Required for |
+|-------|----------------|
+| `schema_version` = 3 | always |
+| `portal_doc_url` | discover done → download queue |
+| `hostinger_doc_path` + `hostinger_doc_url` | download done → parse |
+| `parse=done` + `lots_count>0` | `publishable` |
+| `publishable` (computed) | build/deploy inclusion |
 
-## Ledger v2 fields (additive)
+Stages: `discover` / `download` / `parse` / `deploy` ∈ `{pending,done,failed,blocked}`.
 
-Identity: `stable_key`, `source`, `source_auction_id`, `closing`, `priority_score`, `first_queued_at`, `discover_seen_at`, `removed_from_source`, `listing_fingerprint`
+**Removed from active paths:** `listing_only`, `deep_enrichment_pending`, `media_synced`, `deploy_ready`, `enrichment_status` as publish gates.
 
-Stages: `discover`, `download`, `parse`, `build` (+ attempts / `*_last_error`)
+## Publish gate
 
-Assets: `pdf_path`, `raw_html_path`, `media_synced`, `parsed_path`, `parsed_at`, `pdf_sha256`, `parser_version`
+```
+publishable =
+  download==done
+  AND hostinger_doc_url
+  AND hostinger_doc_path
+  AND parse==done
+  AND lots_count > 0
+  AND not removed_from_source
+  AND source in {mstc, gem_forward}
+```
 
-Deploy: `deploy_ready` (legacy), `deployed_at`, `deployed_export_hash`
+## Migrate / cutover
 
-Migrate: `PYTHONPATH=. python -m scraper.pipeline_schema_migrate --pull --push`
+```bash
+PYTHONPATH=. python -m scraper.pipeline_schema_migrate --pull --push
+# Then unpublish shells:
+gh workflow run pipeline-build-deploy.yml -f allow_small_export=true -f migrate_ledger_v3=true
+```
 
-## Export Active vs Legacy
-
-**Active:** identity, assets, `lots[]`, deterministic display, `enrichment_status`, `pipeline{}`
-
-**Legacy inert:** all `ai_*` (preserved; not generated; Build prefers non-AI)
-
-## Telegram
-
-Each lane: `SAI · {Lane}` short finish/fail messages via `send_lane_report`.
+Legacy v2 rows are mapped once; unfinished work is re-queued (download/parse pending). Shells leave the live site until publishable.

@@ -117,7 +117,7 @@ def run_parse_assets(
 
         mstc_items = [i for i in queue if i.source == "mstc"]
         if mstc_items:
-            _phase(f"bootstrap: pull raw+pdf for {len(mstc_items)} MSTC id(s)")
+            _phase(f"bootstrap: pull Hostinger PDF for {len(mstc_items)} MSTC id(s)")
             pull_raw_files(
                 [(i.source, i.source_auction_id) for i in mstc_items],
                 raw_dir=raw_dir,
@@ -126,7 +126,10 @@ def run_parse_assets(
             pdf_dir.mkdir(parents=True, exist_ok=True)
             pull_public_pdf_files(
                 public_dir=public_dir,
-                filenames=[f"{i.source_auction_id}.pdf" for i in mstc_items],
+                filenames=[
+                    Path(i.hostinger_doc_path or f"pdfs/{i.source_auction_id}.pdf").name
+                    for i in mstc_items
+                ],
             )
 
         for item in queue:
@@ -138,34 +141,60 @@ def run_parse_assets(
             aid = item.source_auction_id
             src = item.source
             attempted_ids.append(str(aid))
+            if not (item.hostinger_doc_url or "").strip() or not (
+                item.hostinger_doc_path or ""
+            ).strip():
+                mark_parse(
+                    ledger,
+                    item.stable_key,
+                    ok=False,
+                    error="missing hostinger_doc_url — download required",
+                )
+                write_ledger(ledger, ledger_path)
+                push_ledger(local_path=ledger_path)
+                failed += 1
+                continue
+
             out_path = local_parsed_path(src, aid, root=parsed_root)
-            pdf_path = pdf_dir / f"{aid}.pdf"
-            pdf_hash = file_sha256(pdf_path) if pdf_path.is_file() else None
+            # Local file = Hostinger copy pulled under public/
+            host_rel = item.hostinger_doc_path or f"pdfs/{aid}.pdf"
+            local_doc = public_dir / host_rel
+            if src == "mstc" and not local_doc.is_file():
+                local_doc = pdf_dir / f"{aid}.pdf"
+            pdf_hash = (
+                file_sha256(local_doc)
+                if local_doc.is_file()
+                else (item.doc_sha256 or None)
+            )
             existing = load_parse_artifact(out_path)
             if is_fresh_parse(
                 existing, pdf_sha256=pdf_hash, parser_version=PARSER_CACHE_VERSION
             ):
-                skipped += 1
-                if item.parse != "done":
+                lots = (existing or {}).get("record", {}).get("lots") or []
+                n_lots = len(lots) if isinstance(lots, list) else 0
+                if n_lots > 0:
+                    skipped += 1
                     mark_parse(
                         ledger,
                         item.stable_key,
                         ok=True,
-                        error=None,
+                        lots_count=n_lots,
+                        parsed_path=f"parsed/{src}/{aid}.json",
+                        parser_version=PARSER_CACHE_VERSION,
                     )
-                    # enrich mark_parse may not set parsed_path — patch below
                     it = ledger.by_key().get(item.stable_key)
-                    if it:
-                        it.parsed_path = f"parsed/{src}/{aid}.json"
-                        it.parsed_at = datetime.now(IST).isoformat()
-                        it.pdf_sha256 = pdf_hash
-                        it.parser_version = PARSER_CACHE_VERSION
-                        it.parse = "done"
-                write_ledger(ledger, ledger_path)
-                continue
+                    if it and pdf_hash:
+                        it.doc_sha256 = pdf_hash
+                    write_ledger(ledger, ledger_path)
+                    continue
+                # Stale "fresh" with no lots — reparse
 
             try:
                 if src == "mstc":
+                    if not local_doc.is_file():
+                        raise FileNotFoundError(
+                            f"Hostinger PDF missing locally for parse: {host_rel}"
+                        )
                     base, _meta = resolve_auction_listing(aid)
                     record = enrich_auction(
                         base,
@@ -190,7 +219,12 @@ def run_parse_assets(
                     )
 
                 lots = rec.get("lots") or []
-                ok = isinstance(lots, list) and len(lots) > 0
+                n_lots = len(lots) if isinstance(lots, list) else 0
+                ok = n_lots > 0
+                # Stamp Hostinger doc onto record for export gate
+                rec["pdf_url"] = item.hostinger_doc_path
+                rec["hostinger_doc_url"] = item.hostinger_doc_url
+                rec["source_pdf_url"] = item.portal_doc_url
                 artifact = build_parse_artifact(
                     record=rec,
                     stable_key=item.stable_key,
@@ -199,19 +233,21 @@ def run_parse_assets(
                 )
                 write_parse_artifact(out_path, artifact)
                 push_parsed_file(out_path, source=src, source_auction_id=aid)
-                mark_parse(ledger, item.stable_key, ok=ok, deploy_ready=ok, error=None if ok else "no lots")
+                mark_parse(
+                    ledger,
+                    item.stable_key,
+                    ok=ok,
+                    lots_count=n_lots,
+                    parsed_path=f"parsed/{src}/{aid}.json",
+                    error=None if ok else "no lots",
+                    parser_version=PARSER_CACHE_VERSION,
+                )
                 it = ledger.by_key().get(item.stable_key)
-                if it:
-                    it.parsed_path = f"parsed/{src}/{aid}.json"
-                    it.parsed_at = datetime.now(IST).isoformat()
-                    it.pdf_sha256 = pdf_hash
-                    it.parser_version = PARSER_CACHE_VERSION
-                    it.parse_last_error = None if ok else "no lots"
-                    if ok:
-                        it.build = "pending"
+                if it and pdf_hash:
+                    it.doc_sha256 = pdf_hash
                 write_ledger(ledger, ledger_path)
                 push_ledger(local_path=ledger_path)
-                _phase(f"parse_item source={src} id={aid} ok={ok} lots={len(lots) if ok else 0}")
+                _phase(f"parse_item source={src} id={aid} ok={ok} lots={n_lots}")
                 if ok:
                     parsed_n += 1
                 else:
@@ -219,9 +255,6 @@ def run_parse_assets(
             except Exception as exc:
                 logger.exception("parse failed %s", item.stable_key)
                 mark_parse(ledger, item.stable_key, ok=False, error=str(exc))
-                it = ledger.by_key().get(item.stable_key)
-                if it:
-                    it.parse_last_error = str(exc)
                 write_ledger(ledger, ledger_path)
                 push_ledger(local_path=ledger_path)
                 failed += 1

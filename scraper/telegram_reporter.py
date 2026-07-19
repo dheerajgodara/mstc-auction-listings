@@ -114,6 +114,8 @@ def _queue_line(ledger: dict[str, Any] | None) -> str:
         else:
             parts.append(f"processed {done} · nothing waiting")
     ready = ledger.get("deploy_ready")
+    if ready is None:
+        ready = ledger.get("publishable")
     if ready not in (None, ""):
         parts.append(f"ready for site {ready}")
     if not parts:

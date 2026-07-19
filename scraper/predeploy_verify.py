@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -10,6 +11,12 @@ from zoneinfo import ZoneInfo
 from scraper.filters import parse_min_closing_date
 from scraper.qa_summary import _parse_closing
 from scraper.safety_gates import is_capped_mstc_only_export
+
+
+def _predeploy_docs_mode() -> str:
+    """warn (default) or fail — set PREDEPLOY_DOCS_MODE=fail after media backfill."""
+    raw = (os.environ.get("PREDEPLOY_DOCS_MODE") or "warn").strip().lower()
+    return "fail" if raw == "fail" else "warn"
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -71,15 +78,21 @@ def verify_predeploy_build(
     count = 0
     by_source: dict[str, int] = {}
     earliest: datetime | None = None
+    allow_small = (os.environ.get("PIPELINE_ALLOW_SMALL_EXPORT") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     if json_path.is_file():
         data = json.loads(json_path.read_text(encoding="utf-8"))
         auctions = data.get("auctions", [])
         count = int(data.get("count", len(auctions)))
         if count != len(auctions):
             errors.append(f"count mismatch in build output: header={count} actual={len(auctions)}")
-        if count < min_count:
-            errors.append(f"build count {count} below min-count {min_count}")
-        if count <= 1:
+        effective_min = 0 if allow_small else min_count
+        if count < effective_min:
+            errors.append(f"build count {count} below min-count {effective_min}")
+        if count <= 1 and not allow_small:
             errors.append("accidental one-record build export")
 
         by_source = dict(Counter(a.get("source", "missing") for a in auctions))
@@ -97,13 +110,13 @@ def verify_predeploy_build(
                 )
 
         for source in require_sources:
-            if by_source.get(source, 0) <= 0:
+            if by_source.get(source, 0) <= 0 and not allow_small:
                 errors.append(f"required source missing in build: {source}")
         for source in warn_only_sources or []:
             if by_source.get(source, 0) <= 0:
                 warnings.append(f"optional source missing in build: {source}")
 
-        if is_capped_mstc_only_export(by_source, count):
+        if not allow_small and is_capped_mstc_only_export(by_source, count):
             errors.append(
                 "Refusing to deploy capped MSTC-only export. "
                 f"count={count}, by_source={by_source}. "
@@ -111,14 +124,79 @@ def verify_predeploy_build(
             )
 
         missing_pdfs: list[str] = []
+        missing_hostinger: list[str] = []
+        missing_lots: list[str] = []
         for auction in auctions:
+            aid = auction.get("id") or auction.get("source_auction_id")
+            lots = auction.get("lots") or []
+            if not isinstance(lots, list) or not lots:
+                missing_lots.append(str(aid))
+            host = auction.get("hostinger_doc_url") or auction.get("pdf_url")
+            if not host:
+                missing_hostinger.append(str(aid))
             pdf_url = auction.get("pdf_url")
-            if pdf_url and str(pdf_url).startswith("pdfs/") and not _relative_asset_exists(out_dir, str(pdf_url)):
-                missing_pdfs.append(f"{auction.get('id')}:{pdf_url}")
+            if pdf_url and str(pdf_url).startswith("pdfs/") and not _relative_asset_exists(
+                out_dir, str(pdf_url)
+            ):
+                missing_pdfs.append(f"{aid}:{pdf_url}")
+            if pdf_url and str(pdf_url).startswith("docs/") and not _relative_asset_exists(
+                out_dir, str(pdf_url)
+            ):
+                missing_pdfs.append(f"{aid}:{pdf_url}")
+        if missing_lots:
+            sample = ", ".join(missing_lots[:10])
+            errors.append(f"v3 gate: auctions without lots (not publishable): {sample}")
+        if missing_hostinger:
+            sample = ", ".join(missing_hostinger[:10])
+            errors.append(
+                f"v3 gate: auctions without Hostinger doc URL (not publishable): {sample}"
+            )
         if missing_pdfs:
             sample = ", ".join(missing_pdfs[:10])
             extra = "" if len(missing_pdfs) <= 10 else f" (+{len(missing_pdfs) - 10} more)"
             errors.append(f"build has auction PDF links without files: {sample}{extra}")
+
+        missing_lot_docs: list[str] = []
+        for auction in auctions:
+            for lot in auction.get("lots") or []:
+                if not isinstance(lot, dict):
+                    continue
+                for doc in lot.get("documents") or []:
+                    if not isinstance(doc, dict):
+                        continue
+                    status = doc.get("status")
+                    if status not in {"downloaded", "thumbnail_ready"}:
+                        continue
+                    for field_name in ("cached_url", "thumbnail_url"):
+                        url = doc.get(field_name)
+                        if not url:
+                            continue
+                        rel = str(url).lstrip("/")
+                        if not (
+                            rel.startswith("docs/")
+                            or rel.startswith("thumbs/")
+                            or rel.startswith("pdfs/")
+                        ):
+                            continue
+                        if not _relative_asset_exists(out_dir, rel):
+                            missing_lot_docs.append(
+                                f"{auction.get('id')}:{field_name}:{rel}"
+                            )
+        if missing_lot_docs:
+            sample = ", ".join(missing_lot_docs[:10])
+            extra = (
+                ""
+                if len(missing_lot_docs) <= 10
+                else f" (+{len(missing_lot_docs) - 10} more)"
+            )
+            msg = (
+                f"build has lot.documents links without files "
+                f"({len(missing_lot_docs)}): {sample}{extra}"
+            )
+            if _predeploy_docs_mode() == "fail":
+                errors.append(msg)
+            else:
+                warnings.append(msg)
 
     pdf_count = _count_files(pdfs_dir)
     docs_count = _count_files(docs_dir)

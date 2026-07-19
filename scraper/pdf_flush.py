@@ -1,32 +1,32 @@
-"""Mid-run catalogue PDF flush queue → Hostinger ``pdfs/``.
-
-Keeps the download auction cap independent of flush cadence. A download is only
-considered durable on Hostinger when ``LedgerItem.media_synced is True``.
-"""
+"""Mid-run catalogue PDF flush queue → Hostinger ``pdfs/`` (ledger v3)."""
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
-from zoneinfo import ZoneInfo
 
 from scraper.media_sync import media_push_required
-from scraper.pipeline_ledger import PipelineLedger, _replace_item
+from scraper.pipeline_ledger import PipelineLedger, _replace_item, mark_download, public_doc_url
 from scraper.raw_store import RawSyncResult, push_public_pdf_files
 
-IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pdf_flush")
-
-
-def _now_iso() -> str:
-    return datetime.now(IST).isoformat()
 
 
 def auction_id_from_pdf_name(name: str) -> str:
     return Path(name).stem
+
+
+def _sha256_file(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def mark_pdfs_hostinger_synced(
@@ -34,24 +34,40 @@ def mark_pdfs_hostinger_synced(
     filenames: list[str],
     *,
     synced: bool,
+    public_dir: Path | None = None,
 ) -> int:
-    """Set ``media_synced`` for MSTC rows matching PDF basenames. Returns count updated."""
-    now = _now_iso()
+    """Confirm Hostinger durability for MSTC PDFs (sets hostinger_doc_*)."""
     updated = 0
-    by_key = ledger.by_key()
+    pdf_dir = (public_dir / "pdfs") if public_dir else None
     for name in filenames:
         aid = auction_id_from_pdf_name(name)
         if not aid:
             continue
-        item = by_key.get(f"mstc:{aid}")
+        key = f"mstc:{aid}"
+        item = ledger.by_key().get(key)
         if item is None:
             continue
-        item.media_synced = synced
-        item.media_synced_at = now if synced else None
-        if not synced and item.download == "done":
-            # Keep download=done (local assets OK) but force re-selection via media_synced=False.
-            item.last_error = item.last_error or "awaiting Hostinger PDF sync"
-        _replace_item(ledger, item)
+        rel = f"pdfs/{aid}.pdf"
+        if synced:
+            sha = _sha256_file(pdf_dir / f"{aid}.pdf") if pdf_dir else None
+            mark_download(
+                ledger,
+                key,
+                ok=True,
+                hostinger_doc_path=rel,
+                hostinger_doc_url=public_doc_url(rel),
+                doc_sha256=sha,
+                raw_html_path=item.raw_html_path,
+                content_changed=True,
+            )
+        else:
+            # Keep attempts stable: direct field patch, not another mark_download fail
+            item.hostinger_doc_path = None
+            item.hostinger_doc_url = None
+            if item.download == "done":
+                item.download = "pending"
+            item.download_error = "awaiting Hostinger PDF sync"
+            _replace_item(ledger, item)
         updated += 1
     return updated
 
@@ -86,8 +102,6 @@ class CataloguePdfFlushQueue:
             return
         self._pending.append(name)
         self._pending_set.add(name)
-        # Local durable, Hostinger not yet confirmed.
-        mark_pdfs_hostinger_synced(self.ledger, [name], synced=False)
 
     def maybe_flush(self) -> RawSyncResult | None:
         if self.skip or self.pending_count < self.flush_every:
@@ -110,39 +124,39 @@ class CataloguePdfFlushQueue:
 
         pushed = list(result.files) if result.ok else []
         if result.ok and pushed:
-            mark_pdfs_hostinger_synced(self.ledger, pushed, synced=True)
-            self.stats["pdf_hostinger_flushed"] = int(self.stats["pdf_hostinger_flushed"]) + len(pushed)
-            msg = (
-                f"mid-run PDF flush ok (+{len(pushed)}; "
-                f"total={self.stats['pdf_hostinger_flushed']})"
+            mark_pdfs_hostinger_synced(
+                self.ledger, pushed, synced=True, public_dir=self.public_dir
             )
-            self.warnings.append(msg)
+            self.stats["pdf_hostinger_flushed"] = int(self.stats["pdf_hostinger_flushed"]) + len(
+                pushed
+            )
             self.phase(
                 f"Hostinger PDF flush ok +{len(pushed)} "
                 f"(flushed_total={self.stats['pdf_hostinger_flushed']})"
             )
-            # Any requested but not pushed stay unsynced and re-queued.
             leftover = [n for n in batch if n not in set(pushed)]
             for name in leftover:
                 self._pending.append(name)
                 self._pending_set.add(name)
             return result
 
-        self.stats["pdf_hostinger_flush_failures"] = int(self.stats["pdf_hostinger_flush_failures"]) + 1
+        self.stats["pdf_hostinger_flush_failures"] = (
+            int(self.stats["pdf_hostinger_flush_failures"]) + 1
+        )
         self.warnings.append(f"mid-run PDF flush failed: {result.message}")
-        # Re-queue so a later force flush / emergency flush can retry.
         for name in batch:
             if name not in self._pending_set:
                 self._pending.append(name)
                 self._pending_set.add(name)
-        mark_pdfs_hostinger_synced(self.ledger, batch, synced=False)
+        mark_pdfs_hostinger_synced(
+            self.ledger, batch, synced=False, public_dir=self.public_dir
+        )
 
         if media_push_required():
             raise RuntimeError(f"mid-run PDF push to Hostinger failed: {result.message}")
         return result
 
     def emergency_flush(self) -> None:
-        """Best-effort flush on job failure — never raises."""
         if self.skip or not self._pending:
             return
         try:

@@ -239,9 +239,15 @@ def run_pipeline_deploy(
 
         predeploy = verify_predeploy_build(
             out_dir=out_dir,
-            min_count=1000,
+            min_count=0
+            if (os.environ.get("PIPELINE_ALLOW_SMALL_EXPORT") or "").strip().lower()
+            in {"1", "true", "yes"}
+            else 1000,
             min_closing_date=tomorrow_min_closing_date(),
-            require_sources=["mstc"],
+            require_sources=[]
+            if (os.environ.get("PIPELINE_ALLOW_SMALL_EXPORT") or "").strip().lower()
+            in {"1", "true", "yes"}
+            else ["mstc"],
             warn_only_sources=["gem_forward", "eauction"],
         )
         payload["predeploy"] = {

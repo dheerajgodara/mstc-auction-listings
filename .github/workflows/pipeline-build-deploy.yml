@@ -10,6 +10,22 @@ on:
         required: false
         default: "false"
         type: boolean
+      allow_small_export:
+        description: "Cutover: allow small/empty publishable-only export"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      migrate_ledger_v3:
+        description: "Pull Hostinger ledger, rewrite to v3, push (re-queue)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   build-deploy:
@@ -40,6 +56,17 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
+      - name: Migrate ledger to v3 (optional)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.migrate_ledger_v3 == 'true' }}
+        env:
+          PYTHONUNBUFFERED: "1"
+          HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
+          HOSTINGER_PORT: ${{ secrets.HOSTINGER_PORT }}
+          HOSTINGER_USERNAME: ${{ secrets.HOSTINGER_USERNAME }}
+          HOSTINGER_SSH_KEY: ~/.ssh/hostinger_key
+          HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
+          SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
+        run: PYTHONPATH=. python -m scraper.pipeline_schema_migrate --pull --push
       - name: Build and deploy
         env:
           PYTHONUNBUFFERED: "1"
@@ -56,6 +83,10 @@ jobs:
         run: |
           EXTRA=""
           if [ "${{ github.event.inputs.no_deploy }}" = "true" ]; then
-            EXTRA="--no-deploy"
+            EXTRA="$EXTRA --no-deploy"
+          fi
+          if [ "${{ github.event.inputs.allow_small_export }}" = "true" ]; then
+            EXTRA="$EXTRA --allow-small-export"
+            export PIPELINE_ALLOW_SMALL_EXPORT=1
           fi
           PYTHONPATH=. python -m scraper.pipeline_build_deploy --break-stale-lock $EXTRA
