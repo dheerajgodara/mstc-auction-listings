@@ -144,10 +144,25 @@ def run_pipeline_discover(
         pull_raw_store(raw_dir=raw_dir)
         pull_ledger(local_path=ledger_path)
 
-        previous_export = load_export(production_json)
+        previous_export: dict[str, Any] | None = None
+        if production_json.is_file():
+            try:
+                previous_export = load_export(production_json)
+            except (OSError, json.JSONDecodeError) as exc:
+                warnings.append(f"discover: could not read previous export: {exc}")
+                previous_export = None
         if not previous_export:
-            previous_export = {"auctions": [], "count": 0, "generated_at": datetime.now(IST).isoformat()}
+            previous_export = {
+                "auctions": [],
+                "count": 0,
+                "generated_at": datetime.now(IST).isoformat(),
+            }
             _phase("discover: empty previous export (v3 cutover / first run)")
+            production_json.parent.mkdir(parents=True, exist_ok=True)
+            if not production_json.is_file():
+                production_json.write_text(
+                    json.dumps(previous_export, indent=2) + "\n", encoding="utf-8"
+                )
 
         discovery_path = run_dir / "discovery_latest.json"
         discovery_export = run_discovery(
