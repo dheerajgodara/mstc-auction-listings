@@ -88,3 +88,15 @@ def test_parse_listing_dates_without_blink_wrapper() -> None:
     assert listings[0].closing is not None
     assert listings[0].closing.day == 31
 
+
+def test_merge_auction(listing_html: str, detail_html: str, rules_html: str) -> None:
+    listing = parse_listing_page(listing_html)[0]
+    detail = parse_detail_page(detail_html)
+    items = parse_rules_page(rules_html)
+    auction = merge_auction(listing, detail, items)
+    assert auction.source == "gem_forward"
+    assert auction.category == "Metallic"
+    assert auction.min_opening_price_inr == 45721.0
+    assert auction.detail_url is not None
+    assert auction.document_url is not None
+
