@@ -104,9 +104,13 @@ def run_parse_assets(
     attempted_ids: list[str] = []
 
     try:
-        pull_ledger(local_path=ledger_path)
+        pulled = pull_ledger(local_path=ledger_path)
         pull_parsed_tree(local_root=parsed_root)
         ledger = load_ledger(ledger_path)
+        if not pulled and not ledger.items:
+            raise RuntimeError(
+                "ledger pull failed and local ledger is empty — refusing parse"
+            )
         queue = select_for_parse(ledger, limit=None)
         if id_filter is not None:
             queue = [i for i in queue if str(i.source_auction_id) in id_filter]
