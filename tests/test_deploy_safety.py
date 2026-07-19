@@ -58,10 +58,20 @@ def test_validate_deploy_export_accepts_full_multi_source(tmp_path: Path):
 
 def test_validate_deploy_export_rejects_capped_mstc_only(tmp_path: Path):
     out_dir = tmp_path / "out"
-    _write_out_export(out_dir, [_record_dict(f"m{i}", source="mstc") for i in range(300)])
+    # Tiny MSTC-only looks like a truncated scrape (below growing-cutover floor).
+    _write_out_export(out_dir, [_record_dict(f"m{i}", source="mstc") for i in range(50)])
 
     with pytest.raises(DeployValidationError, match="Refusing to deploy capped MSTC-only export"):
         validate_deploy_export(out_dir)
+
+
+def test_validate_deploy_export_allows_growing_mstc_only_cutover(tmp_path: Path):
+    out_dir = tmp_path / "out"
+    _write_out_export(out_dir, [_record_dict(f"m{i}", source="mstc") for i in range(150)])
+
+    count, by_source = validate_deploy_export(out_dir)
+    assert count == 150
+    assert by_source == {"mstc": 150}
 
 
 def test_validate_deploy_export_rejects_one_record(tmp_path: Path):

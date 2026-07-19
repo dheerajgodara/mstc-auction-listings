@@ -204,7 +204,7 @@ def test_safety_gate_rejects_capped_mstc_only_export(tmp_path: Path):
     production = tmp_path / "production.json"
     _write_export(
         candidate,
-        [_record_dict(f"mstc-{i}", source="mstc") for i in range(300)],
+        [_record_dict(f"mstc-{i}", source="mstc") for i in range(50)],
     )
     prod_records = [_record_dict(f"m{i}", source="mstc") for i in range(1681)]
     prod_records.extend(_record_dict(f"ea-{i}", source="eauction") for i in range(61))
@@ -214,9 +214,10 @@ def test_safety_gate_rejects_capped_mstc_only_export(tmp_path: Path):
     result = run_safety_gates(
         candidate,
         config=SafetyGateConfig(
-            min_count=100,
+            min_count=10,
             min_closing_date="2026-07-04",
             production_json=production,
+            allow_large_drop=True,
         ),
     )
     assert result.passed is False
@@ -324,12 +325,12 @@ def test_predeploy_verify_rejects_capped_mstc_only_build(tmp_path: Path):
     (out_dir / "index.html").write_text("<html></html>", encoding="utf-8")
     (pdfs_dir / "sample.pdf").write_bytes(b"%PDF")
 
-    records = [_record_dict(f"mstc-{i}", source="mstc") for i in range(300)]
+    records = [_record_dict(f"mstc-{i}", source="mstc") for i in range(50)]
     _write_export(data_dir / "auctions.json", records)
 
     result = verify_predeploy_build(
         out_dir=out_dir,
-        min_count=100,
+        min_count=10,
         min_closing_date="2026-07-04",
         require_sources=["mstc", "eauction"],
         warn_only_sources=["gem_forward"],
