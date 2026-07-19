@@ -209,7 +209,7 @@ function evaluateDataGates(exportData, routesData) {
       missingRegression.length === 0 ? "pass" : "warn",
       missingRegression.length
         ? `missing: ${missingRegression.join(", ")}`
-        : regressionIds.join(", "),
+        : preferredRegressionIds.join(", "),
     ),
     gate(
       "detail_route_count",
