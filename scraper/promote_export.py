@@ -11,6 +11,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from scraper.export_guard import ExportGuardError, is_protected_export_path, validate_export_write
+from scraper.export_hygiene import rewrite_unsafe_thumb_urls
+from scraper.finalize_public_export import remove_missing_local_asset_links
 from scraper.import_tracking import finalize_export_payload
 from scraper.qa_summary import run_strict_qa
 
@@ -61,6 +63,25 @@ def promote_export(
         run_id=run_id,
         history_path=resolved_history,
     )
+    # Scrub orphan local asset refs (incl. lot.documents) before writing production JSON.
+    public_dir = target.parent.parent
+    removed = remove_missing_local_asset_links(data, public_dir=public_dir)
+    if any(removed.values()):
+        logger.info(
+            "scrubbed missing local assets before promote: pdfs=%d docs=%d thumbs=%d",
+            removed["pdfs"],
+            removed["docs"],
+            removed["thumbs"],
+        )
+        stats = dict(data.get("stats") or {})
+        stats["missing_local_asset_links_removed"] = sum(removed.values())
+        data["stats"] = stats
+    url_stats = rewrite_unsafe_thumb_urls(data)
+    if url_stats.get("rewritten"):
+        logger.info("rewrote %d unsafe thumb URL(s) before promote", url_stats["rewritten"])
+        stats = dict(data.get("stats") or {})
+        stats["thumb_url_rewrite"] = url_stats
+        data["stats"] = stats
     count = data.get("count", len(data.get("auctions", [])))
 
     if not is_protected_export_path(target):

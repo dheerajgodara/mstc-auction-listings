@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from scraper.config import DEFAULT_DOCS_DIR, GEM_FORWARD_REQUEST_DELAY_SEC
+from scraper.document_cache import safe_lot_dirname
 from scraper.gem_forward_client import GemForwardClient
 from scraper.gem_scrap_samples_fetch import (
     _download_binary,
@@ -106,11 +107,14 @@ def attach_gem_documents(
             cached_url = f"docs/{aid}/{safe}"
             thumb_url = None
             if thumbs_dir is not None and mime == "application/pdf":
-                lot_thumb_dir = Path(thumbs_dir) / aid / "1"
+                lot_key = safe_lot_dirname(
+                    (record.lots[0].lot_id if record.lots else None) or "1"
+                )
+                lot_thumb_dir = Path(thumbs_dir) / aid / lot_key
                 lot_thumb_dir.mkdir(parents=True, exist_ok=True)
                 thumb_path = lot_thumb_dir / f"{Path(safe).stem}.webp"
                 if generate_thumbnail(dest, thumb_path):
-                    thumb_url = f"thumbs/{aid}/1/{thumb_path.name}"
+                    thumb_url = f"thumbs/{aid}/{lot_key}/{thumb_path.name}"
                     preview.append(thumb_url)
             attached.append(
                 LotDocument(

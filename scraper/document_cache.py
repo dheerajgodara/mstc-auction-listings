@@ -35,6 +35,83 @@ def safe_lot_dirname(lot_id: str) -> str:
     return (safe or "lot")[:80]
 
 
+def migrate_unsafe_thumb_dirs(thumbs_dir: Path) -> dict[str, int]:
+    """Rename unsafe lot folders under thumbs/{auction}/{lot}/ to safe_lot_dirname.
+
+    Returns counts: scanned, renamed, merged, skipped.
+    Conflict policy: if target exists, move files into it then remove source.
+    """
+    root = Path(thumbs_dir)
+    stats = {"scanned": 0, "renamed": 0, "merged": 0, "skipped": 0}
+    if not root.is_dir():
+        return stats
+
+    for auction_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        for lot_dir in sorted(p for p in auction_dir.iterdir() if p.is_dir()):
+            stats["scanned"] += 1
+            safe = safe_lot_dirname(lot_dir.name)
+            if safe == lot_dir.name:
+                stats["skipped"] += 1
+                continue
+            dest = auction_dir / safe
+            if dest.resolve() == lot_dir.resolve():
+                stats["skipped"] += 1
+                continue
+            if not dest.exists():
+                lot_dir.rename(dest)
+                stats["renamed"] += 1
+                logger.info("Migrated thumb dir %s -> %s", lot_dir, dest)
+                continue
+            # Merge files into existing safe dir, then drop unsafe source.
+            moved = 0
+            for src_file in lot_dir.rglob("*"):
+                if not src_file.is_file():
+                    continue
+                rel = src_file.relative_to(lot_dir)
+                target = dest / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    src_file.unlink(missing_ok=True)
+                    continue
+                src_file.rename(target)
+                moved += 1
+            # Remove emptied source tree
+            for path in sorted(lot_dir.rglob("*"), reverse=True):
+                if path.is_file():
+                    path.unlink(missing_ok=True)
+                elif path.is_dir():
+                    try:
+                        path.rmdir()
+                    except OSError:
+                        pass
+            try:
+                lot_dir.rmdir()
+            except OSError:
+                pass
+            stats["merged"] += 1
+            logger.info("Merged unsafe thumb dir %s into %s (%d file(s))", lot_dir, dest, moved)
+    return stats
+
+
+def rewrite_thumb_lot_segment(rel_path: str) -> str:
+    """Rewrite thumbs/{aid}/{lot}/… so {lot} uses safe_lot_dirname."""
+    text = (rel_path or "").strip()
+    if not text:
+        return text
+    # Strip leading slash for parsing; restore relative form.
+    leading = text.startswith("/")
+    body = text[1:] if leading else text
+    if not body.startswith("thumbs/"):
+        return text
+    parts = body.split("/")
+    # thumbs / auction / lot / file...
+    if len(parts) < 3:
+        return text
+    parts[2] = safe_lot_dirname(parts[2])
+    out = "/".join(parts)
+    return f"/{out}" if leading else out
+
+
 def detect_mime_type(content: bytes, filename: str, header: str | None) -> str | None:
     if header:
         return header.split(";")[0].strip().lower() or None

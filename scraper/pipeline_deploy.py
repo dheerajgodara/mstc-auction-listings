@@ -19,12 +19,14 @@ from scraper.ai_enrichment.cache_sync import pull_remote_ai_cache
 from scraper.ai_enrichment.hydrate import hydrate_json_file
 from scraper.config import AI_ENRICHMENT_CACHE_DIR, DEFAULT_JSON_OUT, REPO_ROOT, SITE_BASE_URL
 from scraper.deploy import deploy as deploy_to_hostinger
-from scraper.export_hygiene import repair_absolute_asset_paths
+from scraper.document_cache import migrate_unsafe_thumb_dirs
+from scraper.export_hygiene import repair_absolute_asset_paths, rewrite_unsafe_thumb_urls
 from scraper.filters import make_run_id, tomorrow_min_closing_date
 from scraper.http_verify import verify_live_site
 from scraper.pipeline_ledger import DEFAULT_LEDGER_PATH, load_ledger, pull_ledger
 from scraper.pipeline_markers import LAST_DEPLOY_MARKER, pull_pipeline_json, push_pipeline_json
 from scraper.predeploy_verify import verify_predeploy_build
+from scraper.raw_store import push_public_media
 from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
 from scraper.telegram_reporter import send_telegram_report
@@ -178,6 +180,22 @@ def run_pipeline_deploy(
 
         asset_boot = bootstrap_production_assets(public_dir=public_dir)
         payload["asset_bootstrap"] = asset_boot.to_dict()
+        # Migrate unsafe lot thumb dirs before media push / build.
+        migrate_stats = migrate_unsafe_thumb_dirs(public_dir / "thumbs")
+        if migrate_stats.get("renamed") or migrate_stats.get("merged"):
+            warnings.append(
+                "thumb lot migrate: "
+                f"renamed={migrate_stats.get('renamed', 0)} "
+                f"merged={migrate_stats.get('merged', 0)}"
+            )
+            payload["thumb_lot_migrate"] = migrate_stats
+        # Safety-net: push any local docs/thumbs/pdfs parse may have left unsynced.
+        media_push = push_public_media(public_dir=public_dir)
+        payload["media_push"] = media_push.to_dict()
+        if media_push.attempted and not media_push.ok:
+            warnings.append(f"deploy media push partial/failed: {media_push.message}")
+        elif media_push.ok:
+            warnings.append("deploy media push ok")
         pull_ledger(local_path=DEFAULT_LEDGER_PATH)
         ledger = load_ledger(DEFAULT_LEDGER_PATH)
         payload["ledger"] = ledger.status_counts()
@@ -186,15 +204,22 @@ def run_pipeline_deploy(
             try:
                 raw = json.loads(production_json.read_text(encoding="utf-8"))
                 repaired = repair_absolute_asset_paths(raw)
-                if repaired.repaired:
+                url_stats = rewrite_unsafe_thumb_urls(repaired.export)
+                if repaired.repaired or url_stats.get("rewritten"):
                     production_json.write_text(
                         json.dumps(repaired.export, indent=2, ensure_ascii=False) + "\n",
                         encoding="utf-8",
                     )
-                    warnings.append(
-                        f"repaired {len(repaired.repaired)} absolute asset path(s) before build"
-                    )
-                    payload["repaired_absolute_paths"] = len(repaired.repaired)
+                    if repaired.repaired:
+                        warnings.append(
+                            f"repaired {len(repaired.repaired)} absolute asset path(s) before build"
+                        )
+                        payload["repaired_absolute_paths"] = len(repaired.repaired)
+                    if url_stats.get("rewritten"):
+                        warnings.append(
+                            f"rewrote {url_stats['rewritten']} unsafe thumb URL(s) before build"
+                        )
+                        payload["thumb_url_rewrite"] = url_stats
             except (OSError, json.JSONDecodeError) as exc:
                 warnings.append(f"pre-build asset repair skipped: {exc}")
 

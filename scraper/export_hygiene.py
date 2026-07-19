@@ -400,3 +400,50 @@ def format_quarantine_telegram_note(keys: list[str], *, error_class: str = "pois
     if n <= 3:
         return f"quarantined {n} · {error_class} ({', '.join(keys)})"
     return f"quarantined {n} · {error_class}"
+
+
+def rewrite_unsafe_thumb_urls(export: dict[str, Any]) -> dict[str, int]:
+    """Rewrite thumbnail_url / preview_images lot segments to safe_lot_dirname form."""
+    from scraper.document_cache import rewrite_thumb_lot_segment
+
+    rewritten = 0
+    for auction in export.get("auctions") or []:
+        for lot in auction.get("lots") or []:
+            if not isinstance(lot, dict):
+                continue
+            previews = lot.get("preview_images")
+            if isinstance(previews, list):
+                new_previews: list[Any] = []
+                changed = False
+                for item in previews:
+                    if isinstance(item, str):
+                        fixed = rewrite_thumb_lot_segment(item)
+                        if fixed != item:
+                            changed = True
+                            rewritten += 1
+                        new_previews.append(fixed)
+                    elif isinstance(item, dict):
+                        row = dict(item)
+                        for key in ("url", "thumbnail_url", "src"):
+                            val = row.get(key)
+                            if isinstance(val, str):
+                                fixed = rewrite_thumb_lot_segment(val)
+                                if fixed != val:
+                                    row[key] = fixed
+                                    changed = True
+                                    rewritten += 1
+                        new_previews.append(row)
+                    else:
+                        new_previews.append(item)
+                if changed:
+                    lot["preview_images"] = new_previews
+            for doc in lot.get("documents") or []:
+                if not isinstance(doc, dict):
+                    continue
+                thumb = doc.get("thumbnail_url")
+                if isinstance(thumb, str):
+                    fixed = rewrite_thumb_lot_segment(thumb)
+                    if fixed != thumb:
+                        doc["thumbnail_url"] = fixed
+                        rewritten += 1
+    return {"rewritten": rewritten}

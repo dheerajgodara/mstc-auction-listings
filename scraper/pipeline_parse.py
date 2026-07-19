@@ -36,7 +36,7 @@ from scraper.config import (
     SITE_BASE_URL,
 )
 from scraper.discovery import run_discovery
-from scraper.document_cache import process_auction_documents
+from scraper.document_cache import migrate_unsafe_thumb_dirs, process_auction_documents
 from scraper.export_guard import write_auctions_json
 from scraper.export_hygiene import (
     apply_quarantine_skips,
@@ -47,6 +47,7 @@ from scraper.export_hygiene import (
     format_repair_telegram_note,
     is_record_recoverable,
     repair_absolute_asset_paths,
+    rewrite_unsafe_thumb_urls,
     strip_aged_out_auctions,
 )
 from scraper.filters import make_run_id, tomorrow_min_closing_date
@@ -610,6 +611,29 @@ def run_pipeline_parse(
             warnings.append(
                 f"scrubbed missing local assets: pdfs={removed['pdfs']} "
                 f"docs={removed['docs']} thumbs={removed['thumbs']}"
+            )
+
+        # Migrate legacy unsafe lot thumb dirs (4.0 → 4_0) and rewrite JSON URLs
+        # before Hostinger media push — prevents rsync code 23 freezes.
+        thumbs_dir = public_dir / "thumbs"
+        migrate_stats = migrate_unsafe_thumb_dirs(thumbs_dir)
+        url_stats = rewrite_unsafe_thumb_urls(candidate)
+        if migrate_stats.get("renamed") or migrate_stats.get("merged") or url_stats.get("rewritten"):
+            cand_stats = dict(candidate.get("stats") or {})
+            cand_stats["thumb_lot_migrate"] = migrate_stats
+            cand_stats["thumb_url_rewrite"] = url_stats
+            candidate["stats"] = cand_stats
+            write_auctions_json(candidate_path, candidate)
+            warnings.append(
+                "thumb lot migrate: "
+                f"renamed={migrate_stats.get('renamed', 0)} "
+                f"merged={migrate_stats.get('merged', 0)} "
+                f"urls_rewritten={url_stats.get('rewritten', 0)}"
+            )
+            _phase(
+                f"thumbs migrate renamed={migrate_stats.get('renamed', 0)} "
+                f"merged={migrate_stats.get('merged', 0)} "
+                f"urls={url_stats.get('rewritten', 0)}"
             )
 
         doc_stats = (stats.get("documents") or {}) if isinstance(stats, dict) else {}

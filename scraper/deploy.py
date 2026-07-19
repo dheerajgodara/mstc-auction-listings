@@ -282,6 +282,24 @@ def deploy(build_dir: Path | None = None) -> None:
 
     _ensure_remote_dir(key_path, port, username, host, remote_dir)
 
+    # Pre-create nested media dirs under the remote auctions root (rsync code-23 guard).
+    # Site build may include sparse thumbs/docs/pdfs that still need parents on Hostinger.
+    try:
+        from scraper.raw_store import _hostinger_ssh_config, _precreate_remote_nested_dirs
+
+        cfg = _hostinger_ssh_config()
+        if cfg is not None:
+            for name in ("thumbs", "docs", "pdfs"):
+                local_media = source / name
+                if local_media.is_dir():
+                    err = _precreate_remote_nested_dirs(
+                        cfg, f"{remote_dir.rstrip('/')}/{name}", local_media
+                    )
+                    if err:
+                        _log(f"WARN: precreate {name}: {err}")
+    except Exception as exc:
+        _log(f"WARN: media precreate skipped: {exc}")
+
     if _rsync_available():
         _deploy_rsync(key_path, port, username, host, remote_dir, source)
     else:
