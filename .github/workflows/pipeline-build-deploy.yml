@@ -86,7 +86,8 @@ jobs:
           if [ "${{ github.event.inputs.no_deploy }}" = "true" ]; then
             EXTRA="$EXTRA --no-deploy"
           fi
-          if [ "${{ github.event.inputs.allow_small_export }}" = "true" ]; then
+          # Temporary cutover: schedule + manual allow_small until GeM is regularly in export
+          if [ "${{ github.event.inputs.allow_small_export }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; then
             EXTRA="$EXTRA --allow-small-export"
             export PIPELINE_ALLOW_SMALL_EXPORT=1
           fi

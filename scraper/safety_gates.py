@@ -91,8 +91,16 @@ def _active_sources(by_source: dict[str, int]) -> set[str]:
 
 
 def is_capped_mstc_only_export(by_source: dict[str, int], count: int) -> bool:
-    """True when export looks like a legacy capped MSTC-only scrape (<=500, mstc only)."""
+    """True when export looks like a legacy capped MSTC-only scrape.
+
+    Historically a partial scrape capped near 500 MSTC rows with no GeM. During
+    v3 cutover a healthy growing MSTC-only catalog is normal until GeM publishable
+    catches up — do not block those.
+    """
     if count <= 0 or count > 500:
+        return False
+    # Growing production / cutover catalogs: allow MSTC-only once past tiny exports.
+    if count >= 100:
         return False
     active = _active_sources(by_source)
     return active == {"mstc"} and by_source.get("mstc", 0) == count
