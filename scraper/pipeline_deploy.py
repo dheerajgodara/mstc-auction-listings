@@ -119,13 +119,37 @@ def run_pipeline_deploy(
 
     warnings: list[str] = []
     try:
-        _bootstrap_previous_production_from_live(
-            production_json=production_json,
-            base_url=SITE_BASE_URL or None,
-            warnings=warnings,
-        )
+        allow_small = (os.environ.get("PIPELINE_ALLOW_SMALL_EXPORT") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if allow_small:
+            warnings.append("skipped live bootstrap (PIPELINE_ALLOW_SMALL_EXPORT cutover)")
+        else:
+            _bootstrap_previous_production_from_live(
+                production_json=production_json,
+                base_url=SITE_BASE_URL or None,
+                warnings=warnings,
+            )
         if not production_json.is_file() or production_json.stat().st_size < 10:
-            raise RuntimeError("no auctions.json available for deploy")
+            if allow_small:
+                production_json.parent.mkdir(parents=True, exist_ok=True)
+                production_json.write_text(
+                    json.dumps(
+                        {
+                            "generated_at": datetime.now(IST).isoformat(),
+                            "count": 0,
+                            "auctions": [],
+                            "schema_version": 3,
+                        },
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            else:
+                raise RuntimeError("no auctions.json available for deploy")
 
         ai_held = (os.environ.get("AI_ENRICHMENT_DISABLE") or "").strip().lower() in {
             "1",
