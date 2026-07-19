@@ -238,12 +238,18 @@ def _replace_item(ledger: PipelineLedger, item: LedgerItem) -> None:
 def download_eligible(item: LedgerItem, *, source: str | None = None) -> bool:
     if item.removed_from_source:
         return False
-    src = (source or item.source or "").strip().lower()
-    if item.source != src:
+    item_src = (item.source or "").strip().lower()
+    src = (source or item_src).strip().lower()
+    if item_src != src:
         return False
     if src not in ACTIVE_SOURCES:
         return False
-    if not (item.portal_doc_url or "").strip():
+    portal = (item.portal_doc_url or "").strip()
+    if not portal and src == "mstc":
+        # Catalogue endpoint is deterministic; heal empty portal from older rows.
+        item.portal_doc_url = mstc_portal_doc_url()
+        portal = item.portal_doc_url
+    if not portal:
         return False
     if item.download in ("pending", "failed") and item.download_attempts < MAX_STAGE_ATTEMPTS:
         return True

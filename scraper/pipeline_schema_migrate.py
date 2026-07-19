@@ -108,7 +108,8 @@ def migrate_raw_item(raw: dict) -> LedgerItem | None:
         parse=parse_status,
         deploy="pending",  # force re-publish only after publishable gate
         discover_error=discover_error,
-        download_attempts=int(raw.get("download_attempts") or 0),
+        # Reset attempts for unfinished stages so cutover re-queue is actionable.
+        download_attempts=0 if not has_hostinger else int(raw.get("download_attempts") or 0),
         parse_attempts=0 if not parse_done else int(raw.get("parse_attempts") or 0),
         closing=raw.get("closing"),
         opening=raw.get("opening"),
