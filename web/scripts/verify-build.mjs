@@ -335,10 +335,12 @@ ok(
   deployCheck.status === 0 ? "" : (deployCheck.stderr || deployCheck.stdout || "").trim().slice(0, 200),
 );
 
+const pyTestEnv = { ...process.env };
+delete pyTestEnv.PIPELINE_ALLOW_SMALL_EXPORT;
 const pyTests = spawnSync(
   "python3",
   ["-m", "pytest", "tests/test_deploy_safety.py", "tests/test_display_enrichment.py", "tests/test_import_tracking.py", "tests/test_ai_enrichment.py", "-q"],
-  { cwd: repoRoot, encoding: "utf8" },
+  { cwd: repoRoot, encoding: "utf8", env: pyTestEnv },
 );
 ok(
   "display/deploy python tests",

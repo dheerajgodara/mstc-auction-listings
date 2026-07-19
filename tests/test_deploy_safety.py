@@ -12,6 +12,12 @@ from scraper.deploy import DeployValidationError, validate_deploy_export
 IST = ZoneInfo("Asia/Kolkata")
 
 
+@pytest.fixture(autouse=True)
+def _clear_small_export_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit tests assert production gates; cutover env must not leak into them."""
+    monkeypatch.delenv("PIPELINE_ALLOW_SMALL_EXPORT", raising=False)
+
+
 def _record_dict(rid: str, *, source: str = "mstc") -> dict:
     return {
         "id": rid,
@@ -64,6 +70,18 @@ def test_validate_deploy_export_rejects_one_record(tmp_path: Path):
 
     with pytest.raises(DeployValidationError, match="count is 1"):
         validate_deploy_export(out_dir)
+
+
+def test_validate_deploy_export_allows_empty_under_cutover_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("PIPELINE_ALLOW_SMALL_EXPORT", "1")
+    out_dir = tmp_path / "out"
+    _write_out_export(out_dir, [])
+
+    count, by_source = validate_deploy_export(out_dir)
+    assert count == 0
+    assert by_source == {}
 
 
 def test_validate_deploy_export_rejects_missing_data(tmp_path: Path):
