@@ -321,13 +321,18 @@ if (fs.existsSync(statusIndex)) {
 }
 
 const repoRoot = path.resolve(webRoot, "..");
+// Inherit + force-cutover flag into the Python child (pnpm can drop env otherwise).
+const deployCheckEnv = { ...process.env };
+if (allowEmptyExport) {
+  deployCheckEnv.PIPELINE_ALLOW_SMALL_EXPORT = "1";
+}
 const deployCheck = spawnSync(
   "python3",
   [
     "-c",
-    `import sys; sys.path.insert(0, ${JSON.stringify(repoRoot)}); from scraper.deploy import validate_deploy_export; from pathlib import Path; validate_deploy_export(Path(${JSON.stringify(outDir)})); print('deploy-export-ok')`,
+    `import os, sys; sys.path.insert(0, ${JSON.stringify(repoRoot)}); from scraper.deploy import validate_deploy_export; from pathlib import Path; validate_deploy_export(Path(${JSON.stringify(outDir)})); print('deploy-export-ok')`,
   ],
-  { cwd: repoRoot, encoding: "utf8" },
+  { cwd: repoRoot, encoding: "utf8", env: deployCheckEnv },
 );
 ok(
   "deploy export safety on web/out",
