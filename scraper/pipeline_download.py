@@ -322,8 +322,13 @@ def run_pipeline_download(
         pdf_dir.mkdir(parents=True, exist_ok=True)
         raw_dir.mkdir(parents=True, exist_ok=True)
 
-        pull_ledger(local_path=ledger_path)
+        pulled = pull_ledger(local_path=ledger_path)
         ledger = load_ledger(ledger_path)
+        if not pulled and not ledger.items:
+            raise RuntimeError(
+                "ledger pull failed and local ledger is empty — refusing to continue "
+                "(would risk wiping Hostinger ledger on push)"
+            )
         eligible_n = len(select_for_download(ledger, limit=10**9, pdf_dir=pdf_dir, source=source))
         _phase(
             f"ledger items={len(ledger.items)} counts={ledger.status_counts()} "
