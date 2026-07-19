@@ -207,10 +207,13 @@ def run_build_deploy(
         backup_dir = repo_root / "work" / "export_backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
 
-        # Cutover: allow tiny publishable sets; otherwise keep a soft floor of 1
-        min_count = 1 if allow_small_export else max(1, min(50, export["count"] or 1))
+        # Cutover: allow tiny/empty publishable sets
         if allow_small_export:
-            min_count = 0 if export["count"] == 0 else 1
+            min_count = 0
+            req_sources: list[str] = []
+        else:
+            min_count = max(1, min(50, export["count"] or 1))
+            req_sources = ["mstc"] if export["count"] >= 10 else []
 
         promote_export(
             candidate=candidate,
@@ -218,7 +221,7 @@ def run_build_deploy(
             min_count=min_count,
             min_closing_date=tomorrow_min_closing_date(),
             backup_dir=backup_dir,
-            require_sources=["mstc"] if export["count"] >= 10 else [],
+            require_sources=req_sources,
             warn_missing_sources=["gem_forward"],
             allow_small_output=True,
         )

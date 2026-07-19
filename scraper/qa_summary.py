@@ -152,8 +152,11 @@ def run_strict_qa(
         errors.append(f"count mismatch: header={count} actual={len(auctions)}")
     if count < min_count:
         errors.append(f"count {count} below min-count {min_count}")
-    if count <= 1:
+    # Cutover / empty publishable set: min_count=0 allows empty export.
+    if count == 1 and min_count > 0:
         errors.append("accidental one-record export detected")
+    elif count == 0 and min_count > 0:
+        errors.append(f"count {count} below min-count {min_count}")
 
     by_source = Counter(a.get("source", "missing") for a in auctions)
     if require_sources:

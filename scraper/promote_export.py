@@ -41,7 +41,7 @@ def promote_export(
         candidate,
         min_count=min_count,
         min_closing_date=min_closing_date,
-        require_sources=require_sources or ["mstc", "eauction"],
+        require_sources=["mstc", "eauction"] if require_sources is None else require_sources,
         warn_missing_sources=warn_missing_sources if warn_missing_sources is not None else ["gem_forward"],
     )
     if not qa["passed"]:
