@@ -91,11 +91,16 @@ def validate_deploy_export(build_dir: Path) -> tuple[int, dict[str, int]]:
             f"deploy data count mismatch: header={count} actual={len(auctions)}"
         )
 
-    if count <= 1:
+    allow_small = (os.environ.get("PIPELINE_ALLOW_SMALL_EXPORT") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if count <= 1 and not allow_small:
         raise DeployValidationError(f"refusing deploy: auction count is {count}")
 
     by_source = dict(Counter(a.get("source", "missing") for a in auctions))
-    if is_capped_mstc_only_export(by_source, count):
+    if not allow_small and is_capped_mstc_only_export(by_source, count):
         raise DeployValidationError(
             "Refusing to deploy capped MSTC-only export. "
             f"count={count}, by_source={by_source}. "
