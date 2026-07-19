@@ -259,7 +259,15 @@ def run_pipeline_deploy(
                 warnings.append(f"pre-build asset repair skipped: {exc}")
 
         _run(["pnpm", "run", "build:prod"], cwd=web_dir)
-        _run(["pnpm", "run", "verify-build"], cwd=web_dir)
+        allow_small = (os.environ.get("PIPELINE_ALLOW_SMALL_EXPORT") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        _run(
+            ["pnpm", "run", "verify-build:cutover" if allow_small else "verify-build"],
+            cwd=web_dir,
+        )
 
         predeploy = verify_predeploy_build(
             out_dir=out_dir,

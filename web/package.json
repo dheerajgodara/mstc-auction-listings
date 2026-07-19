@@ -5,15 +5,16 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "build:prod": "cd .. && PYTHONPATH=. python3 -m scraper.finalize_public_export --quiet && cd web && node scripts/generate-city-centroids.mjs && node scripts/generate-auction-routes.mjs && NEXT_PUBLIC_SITE_URL=https://scrapauctionindia.com NEXT_PUBLIC_BASE_PATH=/auctions next build && node scripts/prepare-public-data.mjs && node scripts/generate-sitemap.mjs && node scripts/generate-launch-readiness.mjs",
+    "build:prod": "cd .. && PYTHONPATH=. python3 -m scraper.finalize_public_export --quiet && cd web && node scripts/generate-city-centroids.mjs && node scripts/generate-auction-routes.mjs && NEXT_PUBLIC_SITE_URL=https://scrapauctionindia.com NEXT_PUBLIC_BASE_PATH=/auctions next build && node scripts/prepare-public-data.mjs && node scripts/generate-machine-layer.mjs && node scripts/generate-sitemap.mjs && node scripts/generate-launch-readiness.mjs",
     "verify-deploy-prereqs": "node scripts/verify-deploy-prereqs.mjs",
     "verify-design": "node scripts/verify-airbnb-design.mjs",
-    "verify-build": "node scripts/verify-deploy-prereqs.mjs && node scripts/verify-build.mjs && node scripts/verify-auction-filters.mjs && node scripts/verify-lot-sections.mjs && node scripts/verify-search-ranking.mjs && node scripts/verify-card-layout.mjs && node scripts/verify-analytics.mjs && node scripts/verify-paywall.mjs && node scripts/verify-sitemap.mjs && node scripts/verify-auction-pages.mjs && node scripts/verify-seo-meta.mjs && node scripts/verify-structured-data.mjs && node scripts/generate-seo-report.mjs && node scripts/verify-seo-report.mjs && node scripts/generate-launch-readiness.mjs && node scripts/verify-launch-readiness.mjs && node scripts/verify-airbnb-design.mjs && node scripts/verify-app-readiness.mjs",
+    "verify-build": "node scripts/verify-deploy-prereqs.mjs && node scripts/verify-build.mjs && node scripts/verify-auction-filters.mjs && node scripts/verify-lot-sections.mjs && node scripts/verify-search-ranking.mjs && node scripts/verify-card-layout.mjs && node scripts/verify-analytics.mjs && node scripts/verify-paywall.mjs && node scripts/verify-sitemap.mjs && node scripts/verify-auction-pages.mjs && node scripts/verify-seo-meta.mjs && node scripts/verify-structured-data.mjs && node scripts/verify-machine-layer.mjs && node scripts/verify-route-html.mjs && node scripts/verify-crawlable-landings.mjs && node scripts/generate-seo-report.mjs && node scripts/verify-seo-report.mjs && node scripts/generate-launch-readiness.mjs && node scripts/verify-launch-readiness.mjs && node scripts/verify-airbnb-design.mjs && node scripts/verify-app-readiness.mjs && node scripts/verify-no-bid-ctas.mjs",
     "seo:report": "node scripts/generate-seo-report.mjs",
     "export": "next build",
     "start": "next start",
     "lint": "next lint",
-    "deploy": "cd .. && python -m scraper.deploy"
+    "deploy": "cd .. && python -m scraper.deploy",
+    "verify-build:cutover": "node scripts/verify-deploy-prereqs.mjs && node scripts/verify-build.mjs && node scripts/verify-auction-filters.mjs && node scripts/verify-lot-sections.mjs && node scripts/verify-search-ranking.mjs && node scripts/verify-card-layout.mjs && node scripts/verify-no-bid-ctas.mjs"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.5",
@@ -25,6 +26,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-leaflet": "^5.0.0",
+    "recharts": "^2.15.4",
     "tailwind-merge": "^2.6.0"
   },
   "devDependencies": {

@@ -48,10 +48,14 @@ export const INDEXABLE_LANDING_SLUGS = [
   "scrap",
   "metal-scrap",
   "aluminium-scrap",
+  "copper-scrap",
   "vehicle-auctions",
   "timber-auctions",
   "coal-auctions",
+  "large-scrap-lots",
+  "closing-soon",
   "accessibility",
+  "developers",
 ];
 
 /** Preferred detail IDs for SEO/paywall regression — may age out of the export. */
@@ -81,6 +85,7 @@ export function listBuiltDetailPages(limit = 100) {
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const id = entry.name;
+      if (id.startsWith("_")) continue;
       if (!fs.existsSync(path.join(dir, id, "index.html"))) continue;
       pages.push({ source, id });
       if (pages.length >= limit) return pages;
@@ -295,6 +300,36 @@ export function sitemapUrlsFromXml(xml) {
     urls.push(m[1].trim());
   }
   return urls;
+}
+
+/** True when XML is a sitemap index (children point at other sitemaps). */
+export function isSitemapIndex(xml) {
+  return /<sitemapindex[\s>]/i.test(xml);
+}
+
+/**
+ * Collect all HTML page URLs from out/sitemap.xml.
+ * Supports a single urlset or a sitemap index of HTML child sitemaps.
+ * Does not read machine-sitemap.xml.
+ */
+export function collectHtmlSitemapUrls() {
+  const sitemapPath = path.join(outDir, "sitemap.xml");
+  if (!fs.existsSync(sitemapPath)) return [];
+  const xml = fs.readFileSync(sitemapPath, "utf8");
+  const locs = sitemapUrlsFromXml(xml);
+  if (!isSitemapIndex(xml)) return locs;
+
+  const pages = [];
+  for (const loc of locs) {
+    const prefix = `${SITE_ROOT}${BASE_PATH}/`;
+    if (!loc.startsWith(prefix)) continue;
+    const rel = loc.slice(prefix.length).replace(/^\//, "");
+    const childPath = path.join(outDir, rel);
+    if (!fs.existsSync(childPath)) continue;
+    const childXml = fs.readFileSync(childPath, "utf8");
+    pages.push(...sitemapUrlsFromXml(childXml));
+  }
+  return pages;
 }
 
 export function htmlPathForSitemapUrl(loc) {
