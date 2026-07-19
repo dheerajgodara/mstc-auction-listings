@@ -97,10 +97,15 @@ export function getAllRoutes(): AuctionRouteEntry[] {
   return loadRoutesExport().routes ?? [];
 } /** Params for Next.js `generateStaticParams` on `[source]/[id]` pages. */
 export function loadRoutesForStaticParams(): StaticRouteParam[] {
-  return getAllRoutes().map((route) => ({
+  const params = getAllRoutes().map((route) => ({
     source: route.source_slug,
     id: route.route_id,
   }));
+  // Next.js `output: export` rejects empty generateStaticParams for dynamic routes.
+  if (params.length === 0) {
+    return [{ source: "mstc", id: "_empty" }];
+  }
+  return params;
 } /** Resolve an auction by URL `{source_slug, route_id}` at build time. */
 export function getAuctionByRoute(
   sourceSlug: string,
