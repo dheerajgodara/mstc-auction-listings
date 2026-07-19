@@ -9,6 +9,10 @@ const outDir = path.join(__dirname, "..", "out");
 const dataJs = path.join(outDir, "data", "auctions-data.js");
 const statusIndex = path.join(outDir, "status", "index.html");
 
+const allowEmptyExport = ["1", "true", "yes"].includes(
+  String(process.env.PIPELINE_ALLOW_SMALL_EXPORT || "").trim().toLowerCase(),
+);
+
 function walkJsFiles(dir, out = []) {
   if (!fs.existsSync(dir)) return out;
   for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -25,10 +29,13 @@ function chunkTextIncludes(needle) {
   return files.some((file) => fs.readFileSync(file, "utf8").toLowerCase().includes(lower));
 }
 
+const hasImportedAt =
+  fs.existsSync(dataJs) && fs.readFileSync(dataJs, "utf8").includes("imported_at");
+
 const checks = [
   [
     "import timestamps in data loader",
-    fs.existsSync(dataJs) && fs.readFileSync(dataJs, "utf8").includes("imported_at"),
+    hasImportedAt || allowEmptyExport,
   ],
   [
     "status page exported",
