@@ -45,6 +45,7 @@ from scraper.pipeline_ledger import (
     select_for_parse,
     write_ledger,
 )
+from scraper.raw_store import pull_public_pdf_files, pull_raw_files
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
 from scraper.telegram_reporter import send_lane_report
 from scraper.models import AuctionRecord
@@ -52,9 +53,17 @@ from scraper.models import AuctionRecord
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_parse_assets")
 
+
 def _phase(msg: str) -> None:
     print(f"[parse_assets] {msg}", flush=True)
     logger.info(msg)
+
+
+def _parse_id_set(raw: str | None) -> set[str] | None:
+    if not raw or not str(raw).strip():
+        return None
+    ids = {p.strip() for p in str(raw).split(",") if p.strip()}
+    return ids or None
 
 
 def run_parse_assets(
@@ -62,6 +71,8 @@ def run_parse_assets(
     repo_root: Path = REPO_ROOT,
     timebox_min: int = PIPELINE_JOB_TIMEBOX_MIN,
     break_stale_lock: bool = True,
+    max_parse: int | None = None,
+    auction_ids: str | None = None,
 ) -> dict[str, Any]:
     run_id = f"parse_assets_{make_run_id()}"
     run_dir = repo_root / "work" / "runs" / run_id
@@ -85,15 +96,38 @@ def run_parse_assets(
     pdf_dir = Path(DEFAULT_PDF_DIR)
     raw_dir = Path(DEFAULT_RAW_DIR)
     parsed_root = Path(DEFAULT_PARSED_DIR)
+    public_dir = repo_root / "web" / "public"
     t0 = time.monotonic()
     parsed_n = skipped = failed = 0
+    capped_run = max_parse is not None and int(max_parse) > 0
+    id_filter = _parse_id_set(auction_ids)
+    attempted_ids: list[str] = []
 
     try:
         pull_ledger(local_path=ledger_path)
         pull_parsed_tree(local_root=parsed_root)
         ledger = load_ledger(ledger_path)
         queue = select_for_parse(ledger, limit=None)
-        _phase(f"queue={len(queue)}")
+        if id_filter is not None:
+            queue = [i for i in queue if str(i.source_auction_id) in id_filter]
+            _phase(f"auction_ids filter={sorted(id_filter)} matched={len(queue)}")
+        if capped_run:
+            queue = queue[: int(max_parse)]
+        _phase(f"queue={len(queue)} max_parse={max_parse}")
+
+        mstc_items = [i for i in queue if i.source == "mstc"]
+        if mstc_items:
+            _phase(f"bootstrap: pull raw+pdf for {len(mstc_items)} MSTC id(s)")
+            pull_raw_files(
+                [(i.source, i.source_auction_id) for i in mstc_items],
+                raw_dir=raw_dir,
+                timeout_sec=300,
+            )
+            pdf_dir.mkdir(parents=True, exist_ok=True)
+            pull_public_pdf_files(
+                public_dir=public_dir,
+                filenames=[f"{i.source_auction_id}.pdf" for i in mstc_items],
+            )
 
         for item in queue:
             elapsed_min = (time.monotonic() - t0) / 60.0
@@ -103,6 +137,7 @@ def run_parse_assets(
 
             aid = item.source_auction_id
             src = item.source
+            attempted_ids.append(str(aid))
             out_path = local_parsed_path(src, aid, root=parsed_root)
             pdf_path = pdf_dir / f"{aid}.pdf"
             pdf_hash = file_sha256(pdf_path) if pdf_path.is_file() else None
@@ -176,6 +211,7 @@ def run_parse_assets(
                         it.build = "pending"
                 write_ledger(ledger, ledger_path)
                 push_ledger(local_path=ledger_path)
+                _phase(f"parse_item source={src} id={aid} ok={ok} lots={len(lots) if ok else 0}")
                 if ok:
                     parsed_n += 1
                 else:
@@ -189,6 +225,7 @@ def run_parse_assets(
                 write_ledger(ledger, ledger_path)
                 push_ledger(local_path=ledger_path)
                 failed += 1
+                _phase(f"parse_item source={src} id={aid} ok=False error={exc}")
 
         backlog = len(select_for_parse(load_ledger(ledger_path), limit=None))
         attempted = parsed_n + failed
@@ -199,17 +236,20 @@ def run_parse_assets(
             absolute=PARSE_FAIL_BUDGET_ABS,
         )
         elapsed_min = (time.monotonic() - t0) / 60.0
-        resume, reason = should_self_resume(
-            backlog_left=backlog,
-            failed=failed,
-            attempted=attempted,
-            fail_budget_ok=budget_ok,
-            elapsed_min=elapsed_min,
-            timebox_min=timebox_min,
-        )
-        if resume:
-            record_resume("parse", {"reason": reason, "backlog_left": backlog})
-            dispatch_workflow("pipeline-parse-assets.yml")
+        resume = False
+        reason = "capped_or_filtered" if (capped_run or id_filter is not None) else ""
+        if not capped_run and id_filter is None:
+            resume, reason = should_self_resume(
+                backlog_left=backlog,
+                failed=failed,
+                attempted=attempted,
+                fail_budget_ok=budget_ok,
+                elapsed_min=elapsed_min,
+                timebox_min=timebox_min,
+            )
+            if resume:
+                record_resume("parse", {"reason": reason, "backlog_left": backlog})
+                dispatch_workflow("pipeline-parse-assets.yml")
 
         status = "Complete" if backlog == 0 else "Paused · timebox"
         send_lane_report(
@@ -230,9 +270,15 @@ def run_parse_assets(
             "parsed": parsed_n,
             "skipped": skipped,
             "failed": failed,
+            "attempted_ids": attempted_ids,
+            "max_parse": max_parse,
+            "auction_ids": sorted(id_filter) if id_filter else None,
             "backlog_left": backlog,
             "resume": resume,
+            "resume_reason": reason,
         }
+        if attempted_ids:
+            _phase(f"attempted_ids={','.join(attempted_ids)}")
         (run_dir / "parse_assets_report.json").write_text(
             json.dumps(payload, indent=2) + "\n", encoding="utf-8"
         )
@@ -247,9 +293,20 @@ def run_parse_assets(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Parse assets lane (one-by-one)")
     parser.add_argument("--timebox-min", type=int, default=PIPELINE_JOB_TIMEBOX_MIN)
+    parser.add_argument("--max-parse", type=int, default=None)
+    parser.add_argument(
+        "--auction-ids",
+        default=None,
+        help="Comma-separated source_auction_id filter (smoke / targeted parse)",
+    )
     parser.add_argument("--break-stale-lock", action="store_true", default=True)
     args = parser.parse_args(argv)
-    run_parse_assets(timebox_min=args.timebox_min, break_stale_lock=args.break_stale_lock)
+    run_parse_assets(
+        timebox_min=args.timebox_min,
+        break_stale_lock=args.break_stale_lock,
+        max_parse=args.max_parse,
+        auction_ids=args.auction_ids,
+    )
     return 0
 
 

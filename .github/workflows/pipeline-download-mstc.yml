@@ -4,6 +4,19 @@ on:
   schedule:
     - cron: "0 1,7,13,19 * * *"
   workflow_dispatch:
+    inputs:
+      max_download:
+        description: "Per-run download cap (empty = production uncapped)"
+        required: false
+        default: ""
+      migrate_ledger:
+        description: "Run ledger schema migrate before download"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   download-mstc:
@@ -23,6 +36,16 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
+      - name: Migrate ledger (optional)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.migrate_ledger == 'true' }}
+        env:
+          PYTHONUNBUFFERED: "1"
+          HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
+          HOSTINGER_PORT: ${{ secrets.HOSTINGER_PORT }}
+          HOSTINGER_USERNAME: ${{ secrets.HOSTINGER_USERNAME }}
+          HOSTINGER_SSH_KEY: ~/.ssh/hostinger_key
+          HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
+        run: PYTHONPATH=. python -m scraper.pipeline_schema_migrate --pull --push
       - name: Download MSTC PDFs
         env:
           PYTHONUNBUFFERED: "1"
@@ -37,8 +60,13 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DOWNLOAD_SUCCESS_PAUSE_SEC: "5"
         run: |
+          EXTRA=""
+          if [ -n "${{ github.event.inputs.max_download }}" ]; then
+            EXTRA="--max-download ${{ github.event.inputs.max_download }}"
+          fi
           PYTHONPATH=. python -m scraper.pipeline_download \
             --source mstc \
             --batch-size 25 \
             --max-batches 80 \
-            --break-stale-lock
+            --break-stale-lock \
+            $EXTRA

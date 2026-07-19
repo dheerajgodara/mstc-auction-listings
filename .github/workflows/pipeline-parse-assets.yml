@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: "0 */2 * * *"
   workflow_dispatch:
+    inputs:
+      max_parse:
+        description: "Per-run parse cap (empty = production unbounded / timebox)"
+        required: false
+        default: ""
+      auction_ids:
+        description: "Comma-separated source_auction_id filter (smoke)"
+        required: false
+        default: ""
 
 jobs:
   parse-assets:
@@ -37,4 +46,11 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           AI_ENRICHMENT_DISABLE: "1"
         run: |
-          PYTHONPATH=. python -m scraper.pipeline_parse_assets --break-stale-lock
+          EXTRA=""
+          if [ -n "${{ github.event.inputs.max_parse }}" ]; then
+            EXTRA="$EXTRA --max-parse ${{ github.event.inputs.max_parse }}"
+          fi
+          if [ -n "${{ github.event.inputs.auction_ids }}" ]; then
+            EXTRA="$EXTRA --auction-ids ${{ github.event.inputs.auction_ids }}"
+          fi
+          PYTHONPATH=. python -m scraper.pipeline_parse_assets --break-stale-lock $EXTRA

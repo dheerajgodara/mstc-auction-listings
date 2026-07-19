@@ -243,15 +243,21 @@ def run_pipeline_download(
     skip_pdf: bool = False,
     break_stale_lock: bool = True,
     pdf_push_every: int | None = None,
-    # Legacy alias: max_download maps to a single-batch cap when set without drain.
+    # When set: true per-run item cap (single batch); skips self-resume.
     max_download: int | None = None,
     source: str = "mstc",
 ) -> dict[str, Any]:
     source = (source or "mstc").strip().lower()
     lane_id = "download_mstc" if source == "mstc" else "download_gem"
     flush_every = max(1, int(pdf_push_every if pdf_push_every is not None else _pdf_push_every()))
-    batch_size = max(1, int(batch_size if max_download is None else min(batch_size, max_download)))
-    max_batches = max(1, int(max_batches))
+    capped_run = max_download is not None and int(max_download) > 0
+    if capped_run:
+        batch_size = max(1, min(int(batch_size), int(max_download)))
+        max_batches = 1
+    else:
+        batch_size = max(1, int(batch_size))
+        max_batches = max(1, int(max_batches))
+    run_item_cap = int(max_download) if capped_run else None
 
     run_id = f"download_{source}_{make_run_id()}"
     run_dir = repo_root / "work" / "runs" / run_id
@@ -323,6 +329,7 @@ def run_pipeline_download(
         session = requests.Session()
         ok_count = 0
         fail_count = 0
+        attempted_ids: list[str] = []
         batch_reports: list[dict[str, Any]] = []
 
         flush_queue = CataloguePdfFlushQueue(
@@ -340,9 +347,18 @@ def run_pipeline_download(
             if elapsed_min >= PIPELINE_JOB_TIMEBOX_MIN:
                 _phase(f"timebox reached ({elapsed_min:.0f}m); stopping batch loop")
                 break
+            if run_item_cap is not None and (ok_count + fail_count) >= run_item_cap:
+                _phase(f"max-download cap reached ({run_item_cap})")
+                break
 
+            remaining = (
+                run_item_cap - (ok_count + fail_count)
+                if run_item_cap is not None
+                else batch_size
+            )
+            select_n = min(batch_size, remaining)
             selected = select_for_download(
-                ledger, limit=batch_size, pdf_dir=pdf_dir, source=source
+                ledger, limit=select_n, pdf_dir=pdf_dir, source=source
             )
             if not selected:
                 _phase(f"download backlog clear after {batch_num - 1} batch(es)")
@@ -359,6 +375,8 @@ def run_pipeline_download(
             _phase(f"batch {batch_num}/{max_batches}: selected={len(selected)} source={source}")
 
             for item in selected:
+                if run_item_cap is not None and (ok_count + fail_count) >= run_item_cap:
+                    break
                 if source == "mstc":
                     if item.source != "mstc":
                         continue
@@ -383,6 +401,10 @@ def run_pipeline_download(
                         stats=stats,
                         ledger=ledger,
                     )
+                    attempted_ids.append(str(item.source_auction_id))
+                    _phase(
+                        f"download_item source=mstc id={item.source_auction_id} ok={ok}"
+                    )
                     if ok:
                         ok_count += 1
                         batch_ok += 1
@@ -399,6 +421,10 @@ def run_pipeline_download(
                     if item.source != "gem_forward":
                         continue
                     ok = _download_one_gem(item=item, raw_dir=raw_dir, ledger=ledger)
+                    attempted_ids.append(str(item.source_auction_id))
+                    _phase(
+                        f"download_item source=gem_forward id={item.source_auction_id} ok={ok}"
+                    )
                     if ok:
                         ok_count += 1
                         batch_ok += 1
@@ -426,22 +452,25 @@ def run_pipeline_download(
             absolute=DOWNLOAD_FAIL_BUDGET_ABS,
         )
         elapsed_min = (time.monotonic() - loop_t0) / 60.0
-        resume, resume_reason = should_self_resume(
-            backlog_left=backlog_left,
-            failed=fail_count,
-            attempted=attempted,
-            fail_budget_ok=budget_ok,
-            elapsed_min=elapsed_min,
-            timebox_min=PIPELINE_JOB_TIMEBOX_MIN,
-        )
-        if resume:
-            wf = (
-                "pipeline-download-mstc.yml"
-                if source == "mstc"
-                else "pipeline-download-gem.yml"
+        resume = False
+        resume_reason = "capped_run" if capped_run else ""
+        if not capped_run:
+            resume, resume_reason = should_self_resume(
+                backlog_left=backlog_left,
+                failed=fail_count,
+                attempted=attempted,
+                fail_budget_ok=budget_ok,
+                elapsed_min=elapsed_min,
+                timebox_min=PIPELINE_JOB_TIMEBOX_MIN,
             )
-            record_resume(lane_id, {"reason": resume_reason, "backlog_left": backlog_left})
-            dispatch_workflow(wf)
+            if resume:
+                wf = (
+                    "pipeline-download-mstc.yml"
+                    if source == "mstc"
+                    else "pipeline-download-gem.yml"
+                )
+                record_resume(lane_id, {"reason": resume_reason, "backlog_left": backlog_left})
+                dispatch_workflow(wf)
 
         finished = datetime.now(IST).isoformat()
         payload.update(
@@ -451,9 +480,12 @@ def run_pipeline_download(
                 "ok_count": ok_count,
                 "fail_count": fail_count,
                 "skipped_existing": skipped_existing,
+                "attempted_ids": attempted_ids,
+                "max_download": run_item_cap,
                 "backlog_left": backlog_left,
                 "fail_budget_ok": budget_ok,
                 "resume_next": resume,
+                "resume_reason": resume_reason,
                 "stats": stats,
                 "batch_reports": batch_reports,
                 "ledger": ledger.status_counts(),
@@ -483,6 +515,8 @@ def run_pipeline_download(
             noop=attempted == 0 and backlog_left == 0,
         )
         _phase(f"done ok={ok_count} fail={fail_count} backlog={backlog_left}")
+        if attempted_ids:
+            _phase(f"attempted_ids={','.join(attempted_ids)}")
         return payload
     except Exception as exc:
         logger.exception("pipeline download failed")

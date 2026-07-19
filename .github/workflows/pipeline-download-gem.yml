@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "15 1,7,13,19 * * *"
   workflow_dispatch:
+    inputs:
+      max_download:
+        description: "Per-run download cap (empty = production uncapped)"
+        required: false
+        default: ""
 
 jobs:
   download-gem:
@@ -37,9 +42,14 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DOWNLOAD_SUCCESS_PAUSE_SEC: "5"
         run: |
+          EXTRA=""
+          if [ -n "${{ github.event.inputs.max_download }}" ]; then
+            EXTRA="--max-download ${{ github.event.inputs.max_download }}"
+          fi
           PYTHONPATH=. python -m scraper.pipeline_download \
             --source gem_forward \
             --batch-size 25 \
             --max-batches 80 \
             --skip-pdf \
-            --break-stale-lock
+            --break-stale-lock \
+            $EXTRA

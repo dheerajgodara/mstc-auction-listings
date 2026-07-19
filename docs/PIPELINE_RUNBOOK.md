@@ -20,6 +20,28 @@ Lanes do **not** wait for each other. Telegram: `SAI · {Lane}` short reports.
 PYTHONPATH=. python -m scraper.pipeline_schema_migrate --pull --push
 ```
 
+### Cap-2 smoke (critical path)
+
+Optional `workflow_dispatch` inputs (`max_download` / `max_parse` / `auction_ids`) default empty = production uncapped. Smoke does **not** change cron.
+
+```bash
+# 1) MSTC download ×2 (+ ledger migrate once)
+gh workflow run pipeline-download-mstc.yml -f max_download=2 -f migrate_ledger=true
+# From run logs: attempted_ids=ID1,ID2
+
+# 2) GeM download ×2
+gh workflow run pipeline-download-gem.yml -f max_download=2
+# From run logs: attempted_ids=ID3,ID4
+
+# 3) Parse only those IDs
+gh workflow run pipeline-parse-assets.yml -f max_parse=4 -f auction_ids=ID1,ID2,ID3,ID4
+
+# 4) Full site build/deploy (no per-auction cap)
+gh workflow run pipeline-build-deploy.yml
+```
+
+After smoke: omit caps on future dispatches; scheduled lanes stay uncapped.
+
 ## Legacy emergency
 
 ```bash
