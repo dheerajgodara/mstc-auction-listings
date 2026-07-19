@@ -436,35 +436,63 @@ def enrich_auction(
 
 
 def _download_binary(client: GemForwardClient, path: str) -> bytes:
-    """Download file bytes via client's transport."""
-    if client._active_transport == "ssh" or client._transport_mode == "ssh":
-        import os
-        import shlex
-        import subprocess
+    """Download file bytes via client's transport (SSH fallback after direct fail)."""
+    import os
+    import shlex
+    import subprocess
 
-        from scraper.config import HOSTINGER_HOST, HOSTINGER_PORT, HOSTINGER_SSH_KEY, HOSTINGER_USERNAME, REQUEST_TIMEOUT
+    import requests
 
+    from scraper.config import (
+        HOSTINGER_HOST,
+        HOSTINGER_PORT,
+        HOSTINGER_SSH_KEY,
+        HOSTINGER_USERNAME,
+        REQUEST_TIMEOUT,
+        USER_AGENT,
+    )
+
+    def _via_ssh() -> bytes:
         url = client._absolute_url(path)
-        ssh_key = os.path.expanduser(HOSTINGER_SSH_KEY)
+        ssh_key = os.path.expanduser(os.getenv("HOSTINGER_SSH_KEY", HOSTINGER_SSH_KEY).strip())
+        host = os.getenv("HOSTINGER_HOST", HOSTINGER_HOST).strip()
+        port = os.getenv("HOSTINGER_PORT", str(HOSTINGER_PORT)).strip()
+        user = os.getenv("HOSTINGER_USERNAME", HOSTINGER_USERNAME).strip()
         cookie = "/tmp/gem_forward_cookies.txt"
         script = (
-            f"curl -sL -m {REQUEST_TIMEOUT} -b {shlex.quote(cookie)} "
-            f"-A 'Mozilla/5.0' {shlex.quote(url)}"
+            f"curl -sL -m {REQUEST_TIMEOUT} -b {shlex.quote(cookie)} -c {shlex.quote(cookie)} "
+            f"-A {shlex.quote(USER_AGENT)} {shlex.quote(url)}"
         )
         cmd = [
-            "ssh", "-i", ssh_key, "-p", str(HOSTINGER_PORT),
-            "-o", "BatchMode=yes", f"{HOSTINGER_USERNAME}@{HOSTINGER_HOST}", script,
+            "ssh",
+            "-i",
+            ssh_key,
+            "-p",
+            str(port),
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            f"{user}@{host}",
+            script,
         ]
         result = subprocess.run(cmd, capture_output=True, timeout=90)
         if result.returncode != 0:
             raise RuntimeError(result.stderr.decode("utf-8", errors="replace"))
         return result.stdout
 
-    import requests
+    if client._active_transport == "ssh" or client._transport_mode == "ssh":
+        return _via_ssh()
+
     url = client._absolute_url(path)
-    resp = client._ensure_direct().get(url, timeout=60)
-    resp.raise_for_status()
-    return resp.content
+    try:
+        resp = client._ensure_direct().get(url, timeout=60)
+        resp.raise_for_status()
+        client._active_transport = "direct"
+        return resp.content
+    except (requests.RequestException, OSError):
+        client._active_transport = "ssh"
+        return _via_ssh()
 
 
 def fetch_pure_scrap_samples(

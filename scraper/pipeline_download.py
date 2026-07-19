@@ -179,6 +179,8 @@ def _download_one_gem(
     """Download GeM portal doc to Hostinger docs/gem/{id}.* (mandatory)."""
     import hashlib
 
+    from scraper.gem_forward_client import GemForwardClient
+    from scraper.gem_scrap_samples_fetch import _download_binary
     from scraper.pipeline_ledger import public_doc_url
 
     aid = str(item.source_auction_id or "").strip()
@@ -187,9 +189,8 @@ def _download_one_gem(
         mark_download(ledger, item.stable_key, ok=False, error="missing portal_doc_url")
         return False
     try:
-        from scraper.gem_forward_client import GemForwardClient
-
         client = GemForwardClient()
+        client.init_session()
         detail = getattr(item, "detail_url", None) or ""
         if "/eprocure/" in str(detail):
             notice_path = "/eprocure/" + str(detail).split("/eprocure/", 1)[-1]
@@ -199,15 +200,8 @@ def _download_one_gem(
             except Exception:
                 pass
 
-        sess = requests.Session()
-        resp = sess.get(
-            portal,
-            timeout=60,
-            headers={"User-Agent": "MSTCAuctionListings/0.1", "Accept": "*/*"},
-            allow_redirects=True,
-        )
-        resp.raise_for_status()
-        body = resp.content
+        # Use same SSH-capable binary path as archive digesters (GHA cannot hit GeM).
+        body = _download_binary(client, portal)
         if len(body) < 500:
             mark_download(
                 ledger, item.stable_key, ok=False, error=f"gem doc too small ({len(body)} bytes)"
