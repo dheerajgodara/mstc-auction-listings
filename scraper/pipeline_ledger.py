@@ -161,10 +161,13 @@ def refresh_publishable(item: LedgerItem) -> LedgerItem:
 
 
 def public_doc_url(relative_path: str, *, site_base: str | None = None) -> str:
-    base = (site_base if site_base is not None else SITE_BASE_URL or "").rstrip("/")
-    rel = relative_path.lstrip("/")
+    base = (site_base if site_base is not None else SITE_BASE_URL or "").strip().rstrip("/")
+    rel = str(relative_path or "").strip().lstrip("/")
+    if not rel:
+        return base
     if not base:
         return rel
+    # Never allow the known broken join: .../auctions + pdfs → .../auctionspdfs
     return f"{base}/{rel}"
 
 

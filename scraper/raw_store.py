@@ -585,3 +585,102 @@ def pull_public_pdf_files(
         f"pulled {len(present)}/{len(needed)} PDF file(s)",
         files=present,
     )
+
+
+def pull_public_relative_files(
+    *,
+    public_dir: Path,
+    relative_paths: list[str],
+    timeout_sec: int = 600,
+    attempts: int = 3,
+) -> RawSyncResult:
+    """Selectively pull relative public assets (pdfs/..., docs/...) from Hostinger."""
+    rels = sorted(
+        {
+            str(p).lstrip("/")
+            for p in relative_paths
+            if str(p).strip()
+            and (
+                str(p).lstrip("/").startswith("pdfs/")
+                or str(p).lstrip("/").startswith("docs/")
+            )
+        }
+    )
+    if not rels:
+        return RawSyncResult(False, True, "no relative asset paths to pull")
+
+    pdfs = [Path(r).name for r in rels if r.startswith("pdfs/")]
+    docs = [r[len("docs/") :] for r in rels if r.startswith("docs/")]
+    warnings: list[str] = []
+    files: list[str] = []
+    ok = True
+    attempted = False
+    messages: list[str] = []
+
+    if pdfs:
+        attempted = True
+        res = pull_public_pdf_files(
+            public_dir=public_dir,
+            filenames=pdfs,
+            timeout_sec=timeout_sec,
+            attempts=attempts,
+        )
+        ok = ok and res.ok
+        messages.append(res.message)
+        warnings.extend(res.warnings)
+        files.extend(res.files)
+
+    if docs:
+        cfg = _hostinger_ssh_config()
+        if cfg is None or shutil.which("rsync") is None:
+            return RawSyncResult(
+                attempted,
+                False,
+                "; ".join(messages + ["docs pull skipped (no SSH/rsync)"]),
+                warnings + ["docs pull skipped"],
+                files=files,
+            )
+        local_docs = Path(public_dir) / "docs"
+        local_docs.mkdir(parents=True, exist_ok=True)
+        needed = [n for n in docs if not (local_docs / n).is_file()]
+        if not needed:
+            messages.append(f"all {len(docs)} docs already local")
+            files.extend([f"docs/{d}" for d in docs])
+        else:
+            attempted = True
+            target = f"{cfg['username']}@{cfg['host']}"
+            remote = f"{target}:{cfg['remote_dir']}/docs/"
+            cmd = [
+                "rsync",
+                "-az",
+                "--ignore-missing-args",
+                "-e",
+                _ssh_cmd(cfg),
+                "--files-from=-",
+                remote,
+                f"{local_docs}/",
+            ]
+            try:
+                _run_rsync_with_retries(
+                    cmd,
+                    timeout_sec=timeout_sec,
+                    label="docs-pull",
+                    attempts=attempts,
+                    input_text="\n".join(needed) + "\n",
+                )
+                present = [n for n in needed if (local_docs / n).is_file()]
+                messages.append(f"pulled {len(present)}/{len(needed)} doc file(s)")
+                files.extend([f"docs/{n}" for n in present])
+            except Exception as exc:
+                ok = False
+                messages.append(f"docs pull failed: {exc}")
+                warnings.append(str(exc)[:300])
+
+    return RawSyncResult(
+        attempted,
+        ok,
+        "; ".join(messages) if messages else "asset pull done",
+        warnings,
+        files=files,
+    )
+

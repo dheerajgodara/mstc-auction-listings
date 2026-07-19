@@ -1,14 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { ExternalLink } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { SiteFooter } from "@/components/site-footer";
 import { AuctionDetailAnalytics } from "@/components/auction-detail-analytics";
 import { AuctionDetailLots } from "@/components/auction-detail-lots";
-import { LotPreviewStrip } from "@/components/lot-documents";
 import { SiteDisclaimer } from "@/components/site-disclaimer";
 import { countAuctionDocuments } from "@/lib/auction-documents";
+import { listingPdfHref } from "@/lib/listing-pdf";
 import {
   aiTagLabel,
   enrichAuctionDisplay,
@@ -20,6 +19,10 @@ import {
 import {
   buildAuctionBreadcrumbJsonLd,
   buildAuctionEventJsonLd,
+  buildAuctionLotsItemListJsonLd,
+  buildAuctionWebPageJsonLd,
+  buildPublisherOrganizationJsonLd,
+  officialPortalLabel,
 } from "@/lib/seo/json-ld";
 import { isActiveOrUpcomingClosing } from "@/lib/seo/index-policy";
 import { sourceLabel } from "@/lib/discovery-constants";
@@ -56,14 +59,30 @@ export function AuctionDetailPageApp({
         auction.display_location_state ??
         null);
   const docCounts = countAuctionDocuments(auction);
-  const pdfHref = auction.pdf_url ? resolvePublicUrl(auction.pdf_url) : null;
-  const detailHref = auction.detail_url?.startsWith("http")
-    ? auction.detail_url
-    : auction.detail_url
-      ? resolvePublicUrl(auction.detail_url)
-      : null;
-  const bidHref = detailHref ?? pdfHref;
+  const pdfHref = listingPdfHref(auction);
   const source = sourceLabel(auction.source);
+  const portal = officialPortalLabel(auction.source);
+  const locationAnswer =
+    cityState ??
+    auction.display_location_raw ??
+    auction.location ??
+    "Location not stated in the public listing — confirm on the official portal.";
+  const quantityAnswer =
+    auction.display_quantity_summary ??
+    (auction.display_total_quantity_mt != null
+      ? `About ${auction.display_total_quantity_mt} MT (estimated from listing data).`
+      : "Quantity is not summarized here — check lot lines and the official catalogue.");
+  const priceAnswer = [
+    auction.price_summary ? `Price: ${auction.price_summary}.` : null,
+    auction.emd_summary ? `EMD: ${auction.emd_summary}.` : null,
+    auction.tax_summary ? `Tax notes: ${auction.tax_summary}.` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const docsAnswer =
+    docCounts.documents > 0 || docCounts.photos > 0
+      ? `This page lists ${docCounts.documents} cached document(s) and ${docCounts.photos} photo(s) when available locally. Always verify the full set on ${portal}.`
+      : `No locally cached documents or photos are attached on this page. Check the official ${portal} listing for catalogues and images.`;
 
   return (
     <AppShell>
@@ -73,6 +92,9 @@ export function AuctionDetailPageApp({
       />
       <JsonLd data={buildAuctionEventJsonLd(auction)} />
       <JsonLd data={buildAuctionBreadcrumbJsonLd(auction)} />
+      <JsonLd data={buildAuctionWebPageJsonLd(auction)} />
+      <JsonLd data={buildAuctionLotsItemListJsonLd(auction)} />
+      <JsonLd data={buildPublisherOrganizationJsonLd()} />
 
       <nav
         aria-label="Auction sections"
@@ -85,9 +107,9 @@ export function AuctionDetailPageApp({
           <a href="#lots" className="shrink-0 text-muted-foreground hover:text-foreground">
             Lots
           </a>
-          {bidHref && active && (
-            <a href={bidHref} className="ml-auto shrink-0 font-medium link-action">
-              Bid on {source}
+          {pdfHref && (
+            <a href={pdfHref} className="ml-auto shrink-0 font-medium link-action">
+              View listing PDF
             </a>
           )}
         </div>
@@ -95,7 +117,7 @@ export function AuctionDetailPageApp({
 
       <main
         id="overview"
-        className="container-marketplace space-y-6 py-8 pb-28"
+        className="container-marketplace space-y-6 py-8"
       >
         <nav aria-label="Breadcrumb" className="text-body-sm text-muted-foreground">
           <ol className="flex flex-wrap items-center gap-2">
@@ -195,35 +217,14 @@ export function AuctionDetailPageApp({
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            {bidHref && active && (
-              <a
-                href={bidHref}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="btn-primary"
-              >
-                <ExternalLink className="h-4 w-4" />
-                Bid on {source}
-              </a>
-            )}
             {pdfHref && (
               <a
                 href={pdfHref}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="btn-secondary"
+                className="btn-primary"
               >
                 View listing PDF
-              </a>
-            )}
-            {detailHref && detailHref !== pdfHref && (
-              <a
-                href={detailHref}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="btn-secondary"
-              >
-                View on {source}
               </a>
             )}
           </div>
@@ -234,7 +235,6 @@ export function AuctionDetailPageApp({
                 Evidence · {docCounts.documents} docs · {docCounts.photos}{" "}
                 photos
               </p>
-              <LotPreviewStrip lots={auction.lots} max={6} />
             </section>
           )}
         </header>
@@ -286,30 +286,81 @@ export function AuctionDetailPageApp({
           </div>
         </section>
 
+        <section
+          aria-labelledby="auction-answers-heading"
+          className="surface-elevated space-y-4 p-4"
+        >
+          <h2 id="auction-answers-heading" className="text-heading text-foreground">
+            Quick answers
+          </h2>
+          <dl className="space-y-4 text-body text-muted-foreground">
+            <div data-machine-faq="what" id="faq-what">
+              <dt className="font-medium text-foreground">
+                What is being auctioned?
+              </dt>
+              <dd className="mt-1">
+                {title}
+                {auction.item_summary && auction.item_summary !== title
+                  ? ` ${auction.item_summary}`
+                  : ""}
+                {auction.lots.length > 0
+                  ? ` This listing includes ${auction.lots.length} lot${auction.lots.length === 1 ? "" : "s"}.`
+                  : ""}
+              </dd>
+            </div>
+            <div data-machine-faq="where" id="faq-where">
+              <dt className="font-medium text-foreground">Where is it located?</dt>
+              <dd className="mt-1">{locationAnswer}</dd>
+            </div>
+            <div data-machine-faq="quantity" id="faq-quantity">
+              <dt className="font-medium text-foreground">How much quantity?</dt>
+              <dd className="mt-1">{quantityAnswer}</dd>
+            </div>
+            <div data-machine-faq="closing" id="faq-closing">
+              <dt className="font-medium text-foreground">
+                What is the closing date?
+              </dt>
+              <dd className="mt-1 tabular-nums">
+                {formatDateTime(auction.closing)}
+                {auction.opening
+                  ? ` Opens ${formatDateTime(auction.opening)}.`
+                  : ""}{" "}
+                Confirm live closing (including anti-sniping extensions) on{" "}
+                {portal}.
+              </dd>
+            </div>
+            <div data-machine-faq="price" id="faq-price">
+              <dt className="font-medium text-foreground">
+                What are price / EMD / GST / TCS?
+              </dt>
+              <dd className="mt-1">
+                {priceAnswer ||
+                  "Price, EMD, and tax details are not fully summarized here — verify floor price, EMD, GST, and TCS on the official portal."}
+              </dd>
+            </div>
+            <div data-machine-faq="documents" id="faq-documents">
+              <dt className="font-medium text-foreground">
+                What documents/photos are available?
+              </dt>
+              <dd className="mt-1">{docsAnswer}</dd>
+            </div>
+            <div data-machine-faq="bid" id="faq-bid">
+              <dt className="font-medium text-foreground">
+                Where to bid officially?
+              </dt>
+              <dd className="mt-1">
+                Bid only on the official {portal} portal. Scrap Auction India is
+                a discovery site and does not accept bids or payments.
+              </dd>
+            </div>
+          </dl>
+        </section>
+
         <div id="lots">
           <AuctionDetailLots lots={auction.lots} />
         </div>
         <SiteDisclaimer />
       </main>
-
-      {bidHref && active && (
-        <div className="fixed inset-x-0 bottom-0 z-sticky border-t border-border bg-card/95 px-4 py-3 shadow-subtle backdrop-blur-sm">
-          <div className="container-marketplace flex items-center justify-between gap-3">
-            <p className="hidden text-body-sm text-muted-foreground sm:block">
-              Verify on the official portal before bidding.
-            </p>
-            <a
-              href={bidHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn-primary ml-auto w-full sm:w-auto"
-            >
-              <ExternalLink className="h-4 w-4" />
-              Bid on {source}
-            </a>
-          </div>
-        </div>
-      )}
 
       <SiteFooter />
     </AppShell>

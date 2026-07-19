@@ -3,6 +3,7 @@ export type EmdParseStatus =
 
 export type LotDocumentStatus =
   | "pending"
+  | "pending_cache"
   | "downloaded"
   | "thumbnail_ready"
   | "thumbnail_failed"
@@ -104,6 +105,9 @@ export interface AuctionRecord {
   id: string;
   auction_number: string;
   source?: AuctionSource;
+  /** Path-safe id stamped by generate-auction-routes (collision-safe). */
+  route_id?: string | null;
+  source_slug?: string | null;
   source_auction_id?: string | null;
   region: string;
   office: string;
@@ -129,6 +133,10 @@ export interface AuctionRecord {
   contact?: ContactInfo | null;
   seller_contact?: ContactInfo | null;
   pdf_url?: string | null;
+  /** Durable Hostinger relative path (e.g. pdfs/123.pdf or docs/gem/1.pdf). */
+  hostinger_doc_path?: string | null;
+  /** Absolute Hostinger public URL for the durable doc (must include /auctions/). */
+  hostinger_doc_url?: string | null;
   source_pdf_url?: string | null;
   mstc_html_url?: string | null;
   lots: LotRecord[];

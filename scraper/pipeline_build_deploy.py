@@ -23,6 +23,7 @@ from scraper.pipeline_ledger import (
     compute_publishable,
     load_ledger,
     mark_deploy,
+    public_doc_url,
     pull_ledger,
     push_ledger,
     select_publishable,
@@ -30,6 +31,7 @@ from scraper.pipeline_ledger import (
 )
 from scraper.pipeline_markers import pull_pipeline_json
 from scraper.promote_export import promote_export
+from scraper.raw_store import pull_public_relative_files
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
 from scraper.telegram_reporter import send_lane_report
 
@@ -123,9 +125,10 @@ def materialize_publishable_only(
         merged["source"] = item.source
         merged["source_auction_id"] = item.source_auction_id
         host_path_rel = str(host_path).lstrip("/")
+        # Always publish relative pdf_url + canonical Hostinger absolute URL.
         merged["pdf_url"] = host_path_rel
-        merged["hostinger_doc_url"] = host_url
         merged["hostinger_doc_path"] = host_path_rel
+        merged["hostinger_doc_url"] = public_doc_url(host_path_rel)
         merged["source_pdf_url"] = item.portal_doc_url or merged.get("source_pdf_url")
         # Drop stale absolute asset paths from parse cache before QA.
         for key in ("document_urls",):
@@ -224,6 +227,18 @@ def run_build_deploy(
             f"export_ready={export['count']} "
             f"(stripped_aged={len(strip.dropped)} repaired_paths={len(repair.repaired)})"
         )
+
+        # Pull durable Hostinger docs for this export so promote scrub keeps pdf_url.
+        public_dir = production_json.parent.parent
+        asset_rels = []
+        for a in export.get("auctions") or []:
+            for key in ("pdf_url", "hostinger_doc_path"):
+                val = str(a.get(key) or "").lstrip("/")
+                if val.startswith("pdfs/") or val.startswith("docs/"):
+                    asset_rels.append(val)
+        if asset_rels:
+            pull = pull_public_relative_files(public_dir=public_dir, relative_paths=asset_rels)
+            _phase(pull.message)
 
         candidate = run_dir / "candidate_auctions.json"
         write_auctions_json(candidate, export, allow_small_output=True)

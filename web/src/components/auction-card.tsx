@@ -5,7 +5,6 @@ import {
   Calendar,
   CalendarPlus,
   Clock,
-  ExternalLink,
   FileText,
   IndianRupee,
   MapPin,
@@ -22,6 +21,7 @@ import { LotDetails } from "@/components/lot-details";
 import { LotPreviewStrip } from "@/components/lot-documents";
 import { getClosingUrgency } from "@/lib/auction-filters";
 import { commodityBorderClass } from "@/lib/commodity-styles";
+import { listingPdfHref } from "@/lib/listing-pdf";
 import {
   confidenceChipClass,
   emdStatusChipClass,
@@ -45,6 +45,7 @@ import {
   resolveDisplayTitle,
 } from "@/lib/display-enrichment";
 import { countAuctionDocuments } from "@/lib/auction-documents";
+import { resolveListingHero } from "@/lib/listing-media";
 import { trackEvent } from "@/lib/analytics";
 import { valuationBadgeLabel } from "@/lib/valuation";
 import { deriveRouteId } from "@/lib/seo/route-id";
@@ -111,29 +112,6 @@ function hasInspection(auction: AuctionRecord): boolean {
   return Boolean(text && text !== "—" && text !== "Not specified");
 }
 
-function detailLinkLabel(source?: AuctionSource | null): string {
-  if (source === "eauction") return "Open details";
-  return `View on ${sourceBadgeLabel(source)}`;
-}
-
-/** First marketplace photo for listing-card hero (audit §5). */
-function resolveListingHero(auction: AuctionRecord): {
-  src: string;
-  alt: string;
-} | null {
-  for (const lot of auction.lots ?? []) {
-    for (const doc of lot.documents ?? []) {
-      if (doc.thumbnail_url && doc.status === "thumbnail_ready") {
-        return {
-          src: resolvePublicUrl(doc.thumbnail_url),
-          alt: doc.filename || "Auction photo",
-        };
-      }
-    }
-  }
-  return null;
-}
-
 function ListingCardMedia({
   auction,
   href,
@@ -142,18 +120,20 @@ function ListingCardMedia({
   href: string;
 }) {
   const hero = resolveListingHero(auction);
+  const [broken, setBroken] = useState(false);
   return (
     <a
       href={href}
       className="relative block aspect-[20/19] overflow-hidden rounded-t-[var(--radius-xl)] bg-marketplace-gray-100 dark:bg-muted"
       aria-label="View listing photos"
     >
-      {hero ? (
+      {hero && !broken ? (
         <img
           src={hero.src}
           alt={hero.alt}
           loading="lazy"
           className="h-full w-full object-cover transition-transform duration-hover ease-marketplace group-hover:scale-[1.02]"
+          onError={() => setBroken(true)}
         />
       ) : (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-gradient-to-br from-marketplace-gray-100 to-marketplace-gray-200 px-6 text-center dark:from-muted dark:to-card">
@@ -269,13 +249,10 @@ export function AuctionCard({
   const materialLabel = materialCategoryLabel(
     auction.display_material_category,
   );
-  const pdfHref = resolvePublicUrl(auction.pdf_url);
+  const pdfHref = listingPdfHref(auction);
   const localDetailHref = resolvePublicUrl(
     `${sourceToSlug(auction.source)}/${deriveRouteId(auction)}/`,
   );
-  const detailHref = auction.detail_url?.startsWith("http")
-    ? auction.detail_url
-    : resolvePublicUrl(auction.detail_url ?? undefined);
   const urgency = getClosingUrgency(auction.closing);
   const categoryLabel = formatCategory(auction.asset_category);
   const valuationLabel = valuationBadgeLabel(auction);
@@ -529,24 +506,6 @@ export function AuctionCard({
             >
               <FileText className="h-4 w-4" />
               Open PDF
-            </a>
-          )}
-
-          {detailHref && detailHref !== pdfHref && (
-            <a
-              href={detailHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn-secondary inline-flex items-center gap-2"
-              onClick={() =>
-                trackEvent("source_open", {
-                  auction_id: auction.id,
-                  source: auction.source ?? "mstc",
-                })
-              }
-            >
-              <ExternalLink className="h-4 w-4" />
-              {detailLinkLabel(auction.source)}
             </a>
           )}
         </div>
