@@ -110,6 +110,21 @@ def run_parse_assets(
         queue = select_for_parse(ledger, limit=None)
         if id_filter is not None:
             queue = [i for i in queue if str(i.source_auction_id) in id_filter]
+            if not queue:
+                # Explicit smoke IDs: allow re-parse when download is durable even if not pending.
+                queue = [
+                    i
+                    for i in ledger.items
+                    if str(i.source_auction_id) in id_filter
+                    and i.download == "done"
+                    and (i.hostinger_doc_url or "").strip()
+                    and (i.hostinger_doc_path or "").strip()
+                    and not i.removed_from_source
+                ]
+                for item in queue:
+                    if item.parse == "done":
+                        item.parse = "pending"
+                        item.parse_error = None
             _phase(f"auction_ids filter={sorted(id_filter)} matched={len(queue)}")
         if capped_run:
             queue = queue[: int(max_parse)]
