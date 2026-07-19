@@ -41,6 +41,8 @@ def test_push_public_pdf_files_rsync_files_from(tmp_path: Path, monkeypatch):
     assert result.attempted is True
     assert set(result.files) == {"111.pdf", "222.pdf"}
     assert run.called
+    cmd = run.call_args.args[0] if run.call_args.args else run.call_args[0][0]
+    assert "--chmod=F644" in cmd
     kwargs = run.call_args.kwargs
     assert "111.pdf" in (kwargs.get("input_text") or "")
     assert "222.pdf" in (kwargs.get("input_text") or "")

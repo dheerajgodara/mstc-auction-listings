@@ -294,6 +294,8 @@ def push_public_media(*, public_dir: Path, timeout_sec: int = 900) -> RawSyncRes
         cmd = [
             "rsync",
             "-az",
+            # CI umask often creates 600 files; web server needs world-readable.
+            "--chmod=F644",
             "-e",
             _ssh_cmd(cfg),
             f"{local}/",
@@ -413,6 +415,8 @@ def push_public_pdf_files(
     cmd = [
         "rsync",
         "-az",
+        # CI umask often creates 600 files; web server needs world-readable.
+        "--chmod=F644",
         "-e",
         _ssh_cmd(cfg),
         "--files-from=-",
