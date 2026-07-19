@@ -17,6 +17,11 @@ on:
         description: "Hard cap on parse→deploy cycles (default 25)"
         required: false
         default: "25"
+      skip_docs:
+        description: "Skip document downloads during parse (faster unfreeze)"
+        required: false
+        default: "false"
+        type: boolean
 
 jobs:
   pipeline-drain:
@@ -86,10 +91,16 @@ jobs:
         run: |
           MAX_PARSE="${{ github.event.inputs.max_parse || '100' }}"
           MAX_CYCLES="${{ github.event.inputs.max_cycles || '25' }}"
+          SKIP_DOCS="${{ github.event.inputs.skip_docs || 'false' }}"
+          EXTRA_ARGS=""
+          if [ "$SKIP_DOCS" = "true" ]; then
+            EXTRA_ARGS="--skip-docs"
+          fi
           PYTHONPATH=. python -m scraper.pipeline_drain \
             --max-parse "$MAX_PARSE" \
             --max-cycles "$MAX_CYCLES" \
-            --break-stale-lock
+            --break-stale-lock \
+            $EXTRA_ARGS
 
       - name: Upload drain reports
         if: always()

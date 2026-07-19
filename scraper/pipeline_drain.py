@@ -109,6 +109,8 @@ def run_pipeline_drain(
     break_stale_lock: bool = True,
     parse_fn: Callable[..., dict[str, Any]] | None = None,
     deploy_fn: Callable[..., dict[str, Any]] | None = None,
+    skip_docs: bool = False,
+    max_docs_per_run: int = 200,
 ) -> dict[str, Any]:
     parse_fn = parse_fn or run_pipeline_parse
     deploy_fn = deploy_fn or run_pipeline_deploy
@@ -127,6 +129,8 @@ def run_pipeline_drain(
         "pipeline": "drain",
         "started_at": started,
         "max_parse": max_parse,
+        "skip_docs": skip_docs,
+        "max_docs_per_run": max_docs_per_run,
         "site_base_url": SITE_BASE_URL,
         "github_run_url": _github_run_url(),
         "cycles": [],
@@ -181,6 +185,8 @@ def run_pipeline_drain(
                     max_parse=max_parse,
                     promote=True,
                     break_stale_lock=True,
+                    skip_docs=skip_docs,
+                    max_docs_per_run=max_docs_per_run,
                 ),
                 max_attempts=parse_retries,
             )
@@ -305,6 +311,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--parse-retries", type=int, default=PIPELINE_DRAIN_PARSE_RETRIES)
     parser.add_argument("--deploy-retries", type=int, default=PIPELINE_DRAIN_DEPLOY_RETRIES)
     parser.add_argument("--break-stale-lock", action="store_true", default=True)
+    parser.add_argument(
+        "--skip-docs",
+        action="store_true",
+        help="Skip MSTC/GeM document downloads during parse (faster unfreeze/deploy)",
+    )
+    parser.add_argument("--max-docs-per-run", type=int, default=200)
     args = parser.parse_args(argv)
     run_pipeline_drain(
         max_parse=args.max_parse,
@@ -312,6 +324,8 @@ def main(argv: list[str] | None = None) -> int:
         parse_retries=args.parse_retries,
         deploy_retries=args.deploy_retries,
         break_stale_lock=args.break_stale_lock,
+        skip_docs=args.skip_docs,
+        max_docs_per_run=args.max_docs_per_run,
     )
     return 0
 
