@@ -200,12 +200,32 @@ def run_pipeline_discover(
         snap_path.write_text(json.dumps(snap_payload, indent=2, default=str) + "\n", encoding="utf-8")
         push_discovery_snapshot(snap_path, snap_name)
         plan = build_work_plan(discovery_data, previous_export)
-        deep_items = [i for i in plan.items if i.action == "deep_parse"]
+        # Upsert every listing in this discovery snapshot so portal_doc_url heals even
+        # when the work-plan marks rows unchanged (critical for GeM after v3 migrate).
+        from types import SimpleNamespace
+
         discovery_by_key = {
             stable_auction_key(a): a
             for a in (discovery_data.get("auctions") or [])
             if isinstance(a, dict)
         }
+        deep_items = []
+        for key, auction in discovery_by_key.items():
+            aid = str(auction.get("source_auction_id") or auction.get("id") or "")
+            if ":" in aid and aid.split(":", 1)[0] in {"mstc", "gem_forward", "eauction"}:
+                aid = aid.split(":", 1)[-1]
+            deep_items.append(
+                SimpleNamespace(
+                    stable_key=key,
+                    source=str(auction.get("source") or "mstc").strip().lower(),
+                    source_auction_id=aid,
+                    decision="changed",
+                    action="deep_parse",
+                    metadata=auction,
+                )
+            )
+        if not deep_items:
+            deep_items = [i for i in plan.items if i.action == "deep_parse"]
         ledger = load_ledger(ledger_path)
         ledger = upsert_from_work_plan(
             ledger,
