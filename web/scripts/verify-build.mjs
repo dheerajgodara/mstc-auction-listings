@@ -112,6 +112,11 @@ ok(
   fs.existsSync(path.join(outDir, "data", "auctions.json")),
 );
 
+const allowEmptyExport =
+  ["1", "true", "yes"].includes(
+    String(process.env.PIPELINE_ALLOW_SMALL_EXPORT || "").trim().toLowerCase(),
+  );
+
 const dataJsPath = path.join(outDir, "data", "auctions-data.js");
 ok(
   "data/auctions-data.js exists (Hostinger-safe loader)",
@@ -126,11 +131,13 @@ if (fs.existsSync(dataJsPath)) {
   );
   ok(
     "auctions-data.js includes automation_ran_at",
-    jsBody.includes('"automation_ran_at"'),
+    jsBody.includes('"automation_ran_at"') || allowEmptyExport,
+    allowEmptyExport ? "skipped (empty cutover)" : "",
   );
   ok(
     "auctions-data.js includes imported_at",
-    jsBody.includes('"imported_at"'),
+    jsBody.includes('"imported_at"') || allowEmptyExport,
+    allowEmptyExport ? "skipped (empty cutover)" : "",
   );
 }
 
@@ -217,6 +224,28 @@ if (fs.existsSync(jsonPath)) {
         if (!rel.startsWith("thumbs/") && !rel.startsWith("docs/")) continue;
         if (!fs.existsSync(path.join(outDir, rel))) {
           missingThumbRefs.push(`${auction.id}:${rel}`);
+        }
+      }
+      for (const doc of lot.documents || []) {
+        if (doc?.status !== "thumbnail_ready" && doc?.status !== "downloaded") {
+          continue;
+        }
+        for (const field of ["cached_url", "thumbnail_url"]) {
+          const rel = String(doc?.[field] || "").replace(/^\//, "");
+          if (
+            !rel.startsWith("thumbs/") &&
+            !rel.startsWith("docs/") &&
+            !rel.startsWith("pdfs/")
+          ) {
+            continue;
+          }
+          if (!fs.existsSync(path.join(outDir, rel))) {
+            if (rel.startsWith("thumbs/")) {
+              missingThumbRefs.push(`${auction.id}:${field}:${rel}`);
+            } else {
+              missingDocRefs.push(`${auction.id}:${field}:${rel}`);
+            }
+          }
         }
       }
     }
