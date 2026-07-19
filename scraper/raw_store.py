@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -123,6 +124,66 @@ def _ssh_cmd(cfg: dict[str, str]) -> str:
         f"ssh -i {cfg['key_path']} -p {cfg['port']} "
         "-o StrictHostKeyChecking=accept-new -o BatchMode=yes"
     )
+
+
+_RSYNC_MKPATH: bool | None = None
+
+
+def rsync_mkpath_args() -> list[str]:
+    """Return ['--mkpath'] when supported (GNU rsync 3.2.3+). macOS openrsync lacks it."""
+    global _RSYNC_MKPATH
+    if _RSYNC_MKPATH is None:
+        try:
+            help_text = subprocess.run(
+                ["rsync", "--help"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            blob = f"{help_text.stdout}\n{help_text.stderr}"
+            _RSYNC_MKPATH = "--mkpath" in blob
+        except Exception:
+            _RSYNC_MKPATH = False
+    return ["--mkpath"] if _RSYNC_MKPATH else []
+
+
+def _precreate_remote_nested_dirs(cfg: dict[str, str], remote_root: str, local: Path) -> str | None:
+    """mkdir -p every parent dir needed for files under local (rsync code-23 guard)."""
+    parents: set[str] = {remote_root.rstrip("/")}
+    for path in local.rglob("*"):
+        if not path.is_file():
+            continue
+        rel_parent = path.relative_to(local).parent
+        if str(rel_parent) in (".", ""):
+            continue
+        parents.add(f"{remote_root.rstrip('/')}/{rel_parent.as_posix()}")
+    if len(parents) <= 1:
+        return _ensure_remote_dir(cfg, remote_root)
+    ordered = sorted(parents, key=lambda p: (p.count("/"), p))
+    target = f"{cfg['username']}@{cfg['host']}"
+    chunk_size = 80
+    for i in range(0, len(ordered), chunk_size):
+        chunk = ordered[i : i + chunk_size]
+        quoted = " ".join(shlex.quote(p) for p in chunk)
+        mkdir_cmd = [
+            "ssh",
+            "-i",
+            cfg["key_path"],
+            "-p",
+            cfg["port"],
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "BatchMode=yes",
+            target,
+            f"mkdir -p {quoted}",
+        ]
+        try:
+            subprocess.run(mkdir_cmd, check=True, timeout=120, capture_output=True, text=True)
+        except Exception as exc:
+            return f"mkdir nested failed: {exc}"
+    return None
 
 
 def pull_raw_store(*, raw_dir: Path | None = None, timeout_sec: int = 600) -> RawSyncResult:
@@ -286,14 +347,16 @@ def push_public_media(*, public_dir: Path, timeout_sec: int = 900) -> RawSyncRes
         local = public_dir / name
         if not local.is_dir():
             continue
-        mkdir_err = _ensure_remote_dir(cfg, f"{cfg['remote_dir']}/{name}")
+        remote_media = f"{cfg['remote_dir']}/{name}"
+        mkdir_err = _precreate_remote_nested_dirs(cfg, remote_media, local)
         if mkdir_err:
             warnings.append(f"{name}: {mkdir_err}")
             continue
-        remote = f"{target}:{cfg['remote_dir']}/{name}/"
+        remote = f"{target}:{remote_media}/"
         cmd = [
             "rsync",
             "-az",
+            *rsync_mkpath_args(),
             # CI umask often creates 600 files; web server needs world-readable.
             "--chmod=F644",
             "-e",

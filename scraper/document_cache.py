@@ -28,6 +28,13 @@ def safe_thumb_filename(filename: str) -> str:
     return (safe or "document")[:120]
 
 
+def safe_lot_dirname(lot_id: str) -> str:
+    """Filesystem-safe lot folder name (avoids Hostinger rsync failures on '4.0' etc.)."""
+    raw = (lot_id or "").strip() or "lot"
+    safe = re.sub(r"[^\w-]+", "_", raw).strip("._")
+    return (safe or "lot")[:80]
+
+
 def detect_mime_type(content: bytes, filename: str, header: str | None) -> str | None:
     if header:
         return header.split(";")[0].strip().lower() or None
@@ -123,7 +130,8 @@ def cache_lot_documents(
     sess = session or requests.Session()
     cached_docs: list[LotDocument] = []
     auction_docs_dir = output_docs_dir / auction_id
-    lot_thumbs_dir = output_thumbs_dir / auction_id / lot_id
+    lot_dir = safe_lot_dirname(lot_id)
+    lot_thumbs_dir = output_thumbs_dir / auction_id / lot_dir
 
     for doc in documents:
         updated = doc.model_copy()
@@ -159,7 +167,7 @@ def cache_lot_documents(
 
         thumb_name = f"{safe_thumb_filename(doc.filename)}.webp"
         thumb_path = lot_thumbs_dir / thumb_name
-        rel_thumb = f"thumbs/{auction_id}/{lot_id}/{thumb_name}"
+        rel_thumb = f"thumbs/{auction_id}/{lot_dir}/{thumb_name}"
 
         if thumb_path.is_file() and thumb_path.stat().st_size > 0:
             updated.thumbnail_url = rel_thumb

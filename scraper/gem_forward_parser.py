@@ -14,9 +14,17 @@ IST = ZoneInfo("Asia/Kolkata")
 
 _AUCTION_ID_RE = re.compile(r"Auction ID\s*:\s*(\d+)", re.I)
 _DATE_PAIR_RE = re.compile(
-    r"Start Date\s*:\s*(\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2}).*?"
-    r"End Date\s*:\s*(\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2})",
+    r"Start Date\s*:\s*(\d{2}/\d{2}/\d{4}(?:\s+\d{2}:\d{2}:\d{2})?).*?"
+    r"End Date\s*:\s*(\d{2}/\d{2}/\d{4}(?:\s+\d{2}:\d{2}:\d{2})?)",
     re.I | re.S,
+)
+_START_DATE_RE = re.compile(
+    r"Start Date\s*:\s*(\d{2}/\d{2}/\d{4}(?:\s+\d{2}:\d{2}:\d{2})?)",
+    re.I,
+)
+_END_DATE_RE = re.compile(
+    r"End Date\s*:\s*(\d{2}/\d{2}/\d{4}(?:\s+\d{2}:\d{2}:\d{2})?)",
+    re.I,
 )
 _RECORD_COUNT_RE = re.compile(r'id="recordCount"[^>]*value="(\d+)"', re.I)
 _NOTICE_PATH_RE = re.compile(r"/eprocure/view-auction-notice/(\d+)/\d+/([A-F0-9]+)", re.I)
@@ -69,12 +77,46 @@ def parse_gem_datetime(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
     value = re.sub(r"\s+", " ", value.strip())
-    for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M"):
+    for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y"):
         try:
             return datetime.strptime(value, fmt).replace(tzinfo=IST)
         except ValueError:
             continue
     return None
+
+
+def _parse_listing_dates(content) -> tuple[Optional[datetime], Optional[datetime]]:
+    """Extract Start/End from current GeM listing HTML (start-date/end-date or blink)."""
+    opening = closing = None
+    start_el = content.select_one("span.start-date")
+    end_el = content.select_one("span.end-date")
+    if start_el:
+        m = _START_DATE_RE.search(start_el.get_text(" ", strip=True))
+        if m:
+            opening = parse_gem_datetime(m.group(1))
+    if end_el:
+        m = _END_DATE_RE.search(end_el.get_text(" ", strip=True))
+        if m:
+            closing = parse_gem_datetime(m.group(1))
+    if opening and closing:
+        return opening, closing
+
+    # Legacy: both dates inside span.blink
+    date_text = content.select_one("div.listing-date-info span.blink")
+    if date_text:
+        pair = _DATE_PAIR_RE.search(date_text.get_text(" ", strip=True))
+        if pair:
+            opening = opening or parse_gem_datetime(pair.group(1))
+            closing = closing or parse_gem_datetime(pair.group(2))
+            return opening, closing
+
+    # Fallback: scan whole listing-content text
+    blob = content.get_text(" ", strip=True)
+    pair = _DATE_PAIR_RE.search(blob)
+    if pair:
+        opening = opening or parse_gem_datetime(pair.group(1))
+        closing = closing or parse_gem_datetime(pair.group(2))
+    return opening, closing
 
 
 def parse_inr_text(value: Optional[str]) -> Optional[float]:
@@ -136,13 +178,7 @@ def parse_listing_page(html: str, *, base_url: str = "https://forwardauction.gem
                 auction_id = auction_id or path_match.group(1)
                 notice_token = path_match.group(2)
 
-        date_text = content.select_one("div.listing-date-info span.blink")
-        opening = closing = None
-        if date_text:
-            pair = _DATE_PAIR_RE.search(date_text.get_text(" ", strip=True))
-            if pair:
-                opening = parse_gem_datetime(pair.group(1))
-                closing = parse_gem_datetime(pair.group(2))
+        opening, closing = _parse_listing_dates(content)
 
         location_wrapper = content.select_one("div.date-icon.wid-27")
         if location_wrapper and location_wrapper.parent:

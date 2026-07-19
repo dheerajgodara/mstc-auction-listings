@@ -168,9 +168,12 @@ def _deploy_rsync(
     )
     # Keep --delete for HTML/data/app files, but never wipe production media
     # when CI has a sparse/empty pdfs|docs|thumbs tree.
+    from scraper.raw_store import rsync_mkpath_args
+
     cmd = [
         "rsync",
         "-avz",
+        *rsync_mkpath_args(),
         "--delete",
         "--filter=P pdfs/",
         "--filter=P docs/",

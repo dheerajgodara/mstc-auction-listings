@@ -17,14 +17,14 @@ from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
 
-from scraper.config import GEM_FORWARD_PER_PAGE, GEM_FORWARD_REQUEST_DELAY_SEC, REPO_ROOT, REQUEST_TIMEOUT, USER_AGENT
+from scraper.config import GEM_FORWARD_PER_PAGE, GEM_FORWARD_REQUEST_DELAY_SEC, GEM_FORWARD_STATUS_CLOSED, REPO_ROOT, REQUEST_TIMEOUT, USER_AGENT
 from scraper.emd import parse_emd_amount
 from scraper.gem_forward_client import GemForwardClient, GemForwardTransportError
 from scraper.gem_forward_parser import parse_listing_record_count
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
-GEM_CLOSED_STATUS = "3"
+GEM_CLOSED_STATUS = GEM_FORWARD_STATUS_CLOSED
 TEN_LAKH = 1_000_000
 BATCH_MARKER = "===GEM_BATCH_ID:"
 
@@ -147,6 +147,7 @@ def scan_closed_results(
     delay: float = GEM_FORWARD_REQUEST_DELAY_SEC,
     category_id: str = "",
     max_pages: Optional[int] = None,
+    pages_per_run: Optional[int] = None,
     checkpoint_path: Optional[Path] = None,
     on_auction: Optional[Any] = None,
 ) -> dict[str, Any]:
@@ -172,6 +173,8 @@ def scan_closed_results(
             auctions_with_winners = ck.get("auctions_with_winners", [])
             lot_status_counter = Counter(ck.get("lot_status_counter", {}))
             stats.update(ck.get("stats", {}))
+            if not stats.get("last_page_completed") and stats.get("pages_scanned"):
+                stats["last_page_completed"] = stats["pages_scanned"]
             logger.info("Resumed checkpoint: %d processed, %d winners", len(processed_ids), len(auctions_with_winners))
         except Exception as exc:
             logger.warning("Checkpoint load failed: %s", exc)
@@ -182,8 +185,17 @@ def scan_closed_results(
     if max_pages:
         total_pages = min(total_pages, max_pages)
 
-    for page in range(1, total_pages + 1):
-        html = html0 if page == 1 else client.search_auctions_html(
+    start_page = int(stats.get("last_page_completed") or 0) + 1
+    if start_page > total_pages:
+        logger.info("Listing scan complete (%d pages)", total_pages)
+        return _build_report(auctions_with_winners, lot_status_counter, stats, total_records)
+
+    end_page = total_pages
+    if pages_per_run:
+        end_page = min(total_pages, start_page + pages_per_run - 1)
+
+    for page in range(start_page, end_page + 1):
+        html = client.search_auctions_html(
             page=page, per_page=GEM_FORWARD_PER_PAGE, status=GEM_CLOSED_STATUS, category_id=category_id
         )
         listings = parse_listing_result_paths(html)
@@ -244,6 +256,8 @@ def scan_closed_results(
                 "Page %d/%d | processed=%d winners=%d empty=%d",
                 page, total_pages, len(processed_ids), len(auctions_with_winners), stats["empty_result_tables"],
             )
+
+        stats["last_page_completed"] = page
 
     if checkpoint_path:
         _save_checkpoint(checkpoint_path, processed_ids, auctions_with_winners, lot_status_counter, stats)

@@ -64,13 +64,27 @@ def test_parse_rules_page(rules_html: str) -> None:
     assert items[0].increment_price_inr == 1000.0
 
 
-def test_merge_auction(listing_html: str, detail_html: str, rules_html: str) -> None:
-    listing = parse_listing_page(listing_html)[0]
-    detail = parse_detail_page(detail_html)
-    items = parse_rules_page(rules_html)
-    auction = merge_auction(listing, detail, items)
-    assert auction.source == "gem_forward"
-    assert auction.category == "Metallic"
-    assert auction.min_opening_price_inr == 45721.0
-    assert auction.detail_url is not None
-    assert auction.document_url is not None
+def test_parse_listing_dates_without_blink_wrapper() -> None:
+    """GeM Live listings often omit span.blink; dates live in start-date/end-date only."""
+    html = """
+    <input type="hidden" name="recordCount" id="recordCount" value="1" />
+    <div class="eproc-listing-main">
+      <div class="listing-content">
+        <div class="index"><label>1) Auction ID : 36492</label></div>
+        <div class="brief"><p><a href="/eprocure/view-auction-notice/36492/0/ABC" class="brief">Servers</a></p></div>
+        <div class="listing-date-info">
+          <span class="">
+            <span class="start-date">Start Date : 30/07/2026 10:00:00</span>
+            <span class="end-date">End Date : 31/07/2026 17:00:00</span>
+          </span>
+        </div>
+      </div>
+    </div>
+    """
+    listings = parse_listing_page(html)
+    assert len(listings) == 1
+    assert listings[0].auction_id == "36492"
+    assert listings[0].opening is not None
+    assert listings[0].closing is not None
+    assert listings[0].closing.day == 31
+

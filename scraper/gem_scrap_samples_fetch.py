@@ -18,8 +18,12 @@ from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 
 from scraper.category_map import normalize_gem_category
-from scraper.config import GEM_FORWARD_REQUEST_DELAY_SEC, REPO_ROOT
-from scraper.emd import parse_emd_amount
+from scraper.config import (
+    GEM_FORWARD_REQUEST_DELAY_SEC,
+    GEM_FORWARD_STATUS_CLOSED,
+    REPO_ROOT,
+)
+from scraper.emd import format_inr_amount, format_inr_or_dash, parse_emd_amount
 from scraper.gem_forward_client import GemForwardClient, GemForwardTransportError
 from scraper.gem_forward_parser import (
     merge_auction,
@@ -57,7 +61,7 @@ _INCLUDE_TITLE = re.compile(
 )
 
 GEM_SCRAP_CATEGORY_ID = "8"  # General Scrap parent category
-GEM_CLOSED_STATUS = "3"
+GEM_CLOSED_STATUS = GEM_FORWARD_STATUS_CLOSED
 
 
 def is_pure_scrap_title(title: str, category: Optional[str] = None) -> bool:
@@ -166,16 +170,60 @@ def parse_result_page(html: str) -> list[dict[str, Any]]:
 
 
 def find_file_list_url(notice_html: str, auction_id: str) -> Optional[str]:
+    # New GeM format: /ajax/file-list/0/44/0/{auction_id}/0/917/...
+    new_pat = re.compile(
+        rf"/eprocure/xcommon/ajax/file-list/[^\"']*?/{re.escape(auction_id)}/[^\"']+",
+        re.I,
+    )
+    m = new_pat.search(notice_html)
+    if m:
+        return m.group(0)
     for match in _FILE_LIST_RE.finditer(notice_html):
         if match.group(1) == auction_id:
             return f"/eprocure/xcommon/ajax/file-list/{match.group(1)}/{match.group(2)}"
     soup = BeautifulSoup(notice_html, "lxml")
     for script in soup.select("script"):
         text = script.string or ""
+        m = new_pat.search(text)
+        if m:
+            return m.group(0)
         match = _FILE_LIST_RE.search(text)
         if match and match.group(1) == auction_id:
             return f"/eprocure/xcommon/ajax/file-list/{match.group(1)}/{match.group(2)}"
     return None
+
+
+def repo_relative_path(path: Path) -> str:
+    """Return path relative to REPO_ROOT; works when path is relative or absolute."""
+    return str(path.resolve().relative_to(REPO_ROOT.resolve()))
+
+
+def _tender_doc_save_name(doc: dict[str, str], content: bytes) -> str:
+    raw = (doc.get("filename") or "").strip()
+    desc = (doc.get("description") or "Tender_document").strip()
+    if content[:4] == b"%PDF":
+        ext = ".pdf"
+    elif content[:2] == b"PK":
+        ext = ".docx"
+    else:
+        ext = Path(raw).suffix or ".bin"
+
+    if raw.lower() in ("download", "") or not Path(raw).suffix:
+        base = re.sub(r"[^\w.\-]+", "_", desc).strip("_") or "Tender_document"
+        if not base.lower().endswith(ext):
+            base = f"{Path(base).stem}{ext}"
+        return base
+    safe = re.sub(r"[^\w.\-]+", "_", raw).strip("_")
+    if ext == ".pdf" and not safe.lower().endswith(".pdf") and content[:4] == b"%PDF":
+        safe += ".pdf"
+    elif ext == ".docx" and not safe.lower().endswith((".docx", ".doc")) and content[:2] == b"PK":
+        safe = f"{Path(safe).stem}.docx"
+    return safe or f"Tender_document{ext}"
+
+
+def _pdf_save_name(doc: dict[str, str], pdf_bytes: bytes) -> str:
+    """Backward-compatible alias."""
+    return _tender_doc_save_name(doc, pdf_bytes)
 
 
 def parse_file_list_html(html: str) -> list[dict[str, str]]:
@@ -336,23 +384,27 @@ def enrich_auction(
                     with ThreadPoolExecutor(max_workers=1) as pool:
                         fut = pool.submit(_download_binary, client, dl_path)
                         pdf_bytes = fut.result(timeout=75)
-                    safe_name = re.sub(r"[^\w.\-]+", "_", doc.get("filename") or "document.pdf")
+                    safe_name = _tender_doc_save_name(doc, pdf_bytes)
                     local_path = auction_docs_dir / safe_name
                     local_path.write_bytes(pdf_bytes)
-                    text, ocr_used = extract_pdf_text(pdf_bytes)
-                    lot_lines = parse_lot_lines_from_text(text)
+                    if pdf_bytes[:4] == b"%PDF":
+                        text, ocr_used = extract_pdf_text(pdf_bytes)
+                        lot_lines = parse_lot_lines_from_text(text)
+                    else:
+                        text, ocr_used, lot_lines = "", False, []
                     record["lot_lines"].extend(lot_lines)
                     record["documents"].append(
                         {
                             **doc,
-                            "local_path": str(local_path.relative_to(REPO_ROOT)),
+                            "local_path": repo_relative_path(local_path),
                             "text_length": len(text),
                             "ocr_used": ocr_used,
                             "extracted_text_preview": text[:4000],
+                            "content_type": "pdf" if pdf_bytes[:4] == b"%PDF" else "office",
                             "lot_lines_found": len(lot_lines),
-                        }
+                    }
                     )
-                except FuturesTimeout:
+                except TimeoutError:
                     record["extraction_warnings"].append(f"doc_download_timeout:{doc.get('filename')}")
                 except Exception as exc:
                     record["extraction_warnings"].append(f"doc_download_failed:{doc.get('filename')}:{exc}")
@@ -526,10 +578,10 @@ def generate_markdown_report(samples: list[dict[str, Any]], *, meta: dict[str, A
     lines.append(f"| Auctions with PDF documents | {with_docs} |")
     lines.append(f"| Auctions with lot-line extraction | {with_lot_lines} |")
     if bids:
-        lines.append(f"| Winning bid range | ₹{min(bids):,.0f} – ₹{max(bids):,.0f} |")
-        lines.append(f"| Median winning bid | ₹{sorted(bids)[len(bids)//2]:,.0f} |")
+        lines.append(f"| Winning bid range | {format_inr_amount(min(bids))} – {format_inr_amount(max(bids))} |")
+        lines.append(f"| Median winning bid | {format_inr_amount(sorted(bids)[len(bids)//2])} |")
     if openings:
-        lines.append(f"| Opening price range | ₹{min(openings):,.0f} – ₹{max(openings):,.0f} |")
+        lines.append(f"| Opening price range | {format_inr_amount(min(openings))} – {format_inr_amount(max(openings))} |")
     lines.append("")
 
     # State distribution
@@ -578,7 +630,7 @@ def generate_markdown_report(samples: list[dict[str, Any]], *, meta: dict[str, A
         lines.append(f"| Auction window | {s.get('opening') or '—'} → {s.get('closing') or '—'} |")
         lines.append(f"| EMD required | {s.get('emd_required')} |")
         if s.get("emd_amount_inr"):
-            lines.append(f"| EMD amount | ₹{s['emd_amount_inr']:,.0f} |")
+            lines.append(f"| EMD amount | {format_inr_amount(s['emd_amount_inr'])} |")
         lines.append("")
 
         lines.append("#### Auction Brief & Detail")
@@ -595,11 +647,11 @@ def generate_markdown_report(samples: list[dict[str, Any]], *, meta: dict[str, A
         lines.append(f"| Metric | Value |")
         lines.append(f"|-------|-------|")
         if s.get("min_opening_inr"):
-            lines.append(f"| Minimum opening price (rules) | ₹{s['min_opening_inr']:,.0f} |")
+            lines.append(f"| Minimum opening price (rules) | {format_inr_amount(s['min_opening_inr'])} |")
         if s.get("total_weight_kg_estimated"):
             lines.append(f"| Estimated total weight (from PDF) | {s['total_weight_kg_estimated']:,.0f} kg |")
         if s.get("implied_inr_per_kg"):
-            lines.append(f"| Implied ₹/kg (bid ÷ est. weight) | ₹{s['implied_inr_per_kg']:,.2f}/kg |")
+            lines.append(f"| Implied ₹/kg (bid ÷ est. weight) | {format_inr_amount(s['implied_inr_per_kg'], decimals=2)}/kg |")
         lines.append("")
 
         if s.get("opening_items"):
@@ -612,7 +664,7 @@ def generate_markdown_report(samples: list[dict[str, Any]], *, meta: dict[str, A
                 inc = oi.get("increment_price_inr")
                 lines.append(
                     f"| {oi.get('sr_no')} | {oi.get('item_name', '')[:50]} | "
-                    f"{f'₹{op:,.0f}' if op else '—'} | {f'₹{inc:,.0f}' if inc else '—'} |"
+                    f"{format_inr_or_dash(op) if op else '—'} | {format_inr_or_dash(inc) if inc else '—'} |"
                 )
             lines.append("")
 
@@ -627,7 +679,7 @@ def generate_markdown_report(samples: list[dict[str, Any]], *, meta: dict[str, A
                 lines.append(
                     f"| {ri.get('sr_no')} | {(ri.get('item_name') or '')[:40]} | "
                     f"{ri.get('winning_bidder') or '—'} | "
-                    f"{f'₹{bid:,.2f}' if bid else ri.get('winning_bid_text', '—')} | "
+                    f"{format_inr_amount(bid, decimals=2) if bid else ri.get('winning_bid_text', '—')} | "
                     f"{ri.get('bid_datetime') or '—'} | {ri.get('acceptance_status') or '—'} | "
                     f"{f'{prem:.1f}%' if prem is not None else '—'} |"
                 )

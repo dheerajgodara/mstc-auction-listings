@@ -15,7 +15,8 @@ from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
 
-from scraper.config import GEM_FORWARD_REQUEST_DELAY_SEC, REPO_ROOT
+from scraper.config import GEM_FORWARD_REQUEST_DELAY_SEC, GEM_FORWARD_STATUS_CLOSED, REPO_ROOT
+from scraper.emd import format_inr_amount, format_inr_or_dash
 from scraper.gem_forward_client import GemForwardClient, GemForwardTransportError
 from scraper.gem_forward_parser import parse_detail_page, parse_rules_page
 from scraper.gem_results_stats import TEN_LAKH, summarize_auction
@@ -27,7 +28,7 @@ from scraper.gem_scrap_samples_fetch import (
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
-GEM_CLOSED = "3"
+GEM_CLOSED = GEM_FORWARD_STATUS_CLOSED
 
 
 def load_premium_from_checkpoint(path: Path) -> list[dict[str, Any]]:
@@ -175,7 +176,7 @@ def generate_report(records: list[dict[str, Any]], meta: dict[str, Any]) -> str:
         total = fs.get("total_bid_inr", 0)
         lines.append(
             f"| {i} | {r.get('auction_id')} | {(r.get('title') or '')[:45]} | "
-            f"₹{total:,.0f} | {fs.get('lot_count', len(r.get('result_items') or []))} | "
+            f"{format_inr_amount(total)} | {fs.get('lot_count', len(r.get('result_items') or []))} | "
             f"{'Yes' if fs.get('has_accepted') or r.get('checkpoint_summary', {}).get('has_accepted') else 'No'} | "
             f"{len(r.get('documents') or [])} | {len(r.get('lot_lines') or [])} |"
         )
@@ -203,7 +204,7 @@ def _auction_section(r: dict[str, Any], index: int) -> list[str]:
     lines = [
         f"## {index}. Auction {r.get('auction_id')} — {r.get('title', '')[:100]}",
         "",
-        f"**Total H1:** ₹{total:,.2f}" if total else "",
+        f"**Total H1:** {format_inr_amount(total, decimals=2)}" if total else "",
         f"**Seller:** {r.get('seller_name') or '—'}",
         f"**Category:** {r.get('category') or '—'}",
         "",
@@ -219,7 +220,7 @@ def _auction_section(r: dict[str, Any], index: int) -> list[str]:
             inc = oi.get("increment_price_inr")
             lines.append(
                 f"| {oi.get('sr_no')} | {(oi.get('item_name') or '')[:50]} | "
-                f"{f'₹{op:,.0f}' if op else '—'} | {f'₹{inc:,.0f}' if inc else '—'} |"
+                f"{format_inr_or_dash(op)} | {format_inr_or_dash(inc)} |"
             )
         lines.append("")
     if r.get("result_items"):
@@ -228,7 +229,7 @@ def _auction_section(r: dict[str, Any], index: int) -> list[str]:
             bid = ri.get("winning_bid_inr")
             lines.append(
                 f"| {ri.get('sr_no')} | {(ri.get('item_name') or '')[:40]} | {ri.get('winning_bidder') or '—'} | "
-                f"{f'₹{bid:,.2f}' if bid else ri.get('winning_bid_text', '—')} | {ri.get('bid_datetime') or '—'} | "
+                f"{format_inr_amount(bid, decimals=2) if bid else ri.get('winning_bid_text', '—')} | {ri.get('bid_datetime') or '—'} | "
                 f"{ri.get('acceptance_status') or '—'} |"
             )
         lines.append("")

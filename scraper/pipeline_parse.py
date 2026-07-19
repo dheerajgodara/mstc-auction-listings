@@ -295,11 +295,35 @@ def run_pipeline_parse(
             if item.source != "mstc":
                 non_mstc_by_source.setdefault(item.source, set()).add(item.source_auction_id)
         non_mstc_records: dict[tuple[str, str], AuctionRecord] = {}
+        gem_client = None
         for src, ids in non_mstc_by_source.items():
             _phase(f"live enrich batch: {src} ids={len(ids)}")
             batch = _enrich_non_mstc_batch(src, ids)
             for aid, rec in batch.items():
                 non_mstc_records[(src, aid)] = rec
+            if src == "gem_forward" and batch and not skip_docs and docs_remaining > 0:
+                from scraper.gem_forward_client import GemForwardClient
+                from scraper.gem_forward_documents import attach_gem_documents
+
+                gem_client = GemForwardClient(transport="auto")
+                gem_client.init_session()
+                for aid, rec in list(batch.items()):
+                    if docs_remaining <= 0:
+                        break
+                    try:
+                        updated = attach_gem_documents(
+                            rec,
+                            client=gem_client,
+                            docs_dir=docs_dir,
+                            thumbs_dir=thumbs_dir,
+                        )
+                        non_mstc_records[(src, aid)] = updated
+                        new_docs = sum(len(l.documents or []) for l in (updated.lots or []))
+                        old_docs = sum(len(l.documents or []) for l in (rec.lots or []))
+                        if new_docs > old_docs:
+                            docs_remaining = max(0, docs_remaining - (new_docs - old_docs))
+                    except Exception as exc:
+                        logger.warning("GeM doc attach failed for %s: %s", aid, exc)
 
         for idx, item in enumerate(selected, start=1):
             try:

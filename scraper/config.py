@@ -115,7 +115,14 @@ GEM_FORWARD_HOME_PATH = "/home"
 GEM_FORWARD_SEARCH_PATH = "/ajax/search-auction"
 GEM_FORWARD_MODULE_TYPE = "2"
 GEM_FORWARD_SEARCH_TYPE = "2"
-GEM_FORWARD_STATUS_LIVE = "2"
+# GeM Forward xStatus codes (hidden #xStatus on forwardauction.gem.gov.in/eprocure/home):
+#   "6" = Live / Ongoing (homepage "Live (N)" — full public set; USE THIS for discovery)
+#   "2" = narrower subset (~¼ of Live); DO NOT use for discovery (misses pre-bid / PQ / EMD lots)
+#   "3" = Closed
+GEM_FORWARD_STATUS_LIVE = "6"
+GEM_FORWARD_STATUS_CLOSED = "3"
+# Safety net: Live (6) is typically 400–600+. Status "2" returns ~100–150 and must fail loud.
+GEM_FORWARD_LIVE_MIN_COUNT = 250
 GEM_FORWARD_PER_PAGE = 10
 GEM_FORWARD_REQUEST_DELAY_SEC = 0.5
 # Parent category IDs from /xcommon/ajax/parent-category-json/1
