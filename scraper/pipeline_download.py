@@ -311,6 +311,11 @@ def run_pipeline_download(
 
         pull_ledger(local_path=ledger_path)
         ledger = load_ledger(ledger_path)
+        eligible_n = len(select_for_download(ledger, limit=10**9, pdf_dir=pdf_dir, source=source))
+        _phase(
+            f"ledger items={len(ledger.items)} counts={ledger.status_counts()} "
+            f"download_eligible[{source}]={eligible_n}"
+        )
 
         stats: dict[str, Any] = {
             "html_downloaded": 0,
