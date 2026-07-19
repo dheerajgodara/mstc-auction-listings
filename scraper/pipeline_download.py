@@ -439,7 +439,7 @@ def run_pipeline_download(
             push_ledger(local_path=ledger_path)
 
         if flush_queue is not None and source == "mstc":
-            flush_queue.force_flush()
+            flush_queue.flush(force=True)
             write_ledger(ledger, ledger_path)
             push_ledger(local_path=ledger_path)
 
