@@ -1,25 +1,16 @@
-name: Pipeline Discover (legacy emergency)
+name: Lane Download GeM
 
-# Legacy combined discover — superseded by Lane Discover MSTC / GeM.
-# Manual only (no schedule, no chain).
 on:
+  schedule:
+    - cron: "15 1,7,13,19 * * *"
   workflow_dispatch:
-    inputs:
-      queue_cap:
-        description: "Max auctions to queue (default 2000)"
-        required: false
-        default: "2000"
-      sources:
-        description: "Comma sources (default mstc,gem_forward)"
-        required: false
-        default: "mstc,gem_forward"
 
 jobs:
-  pipeline-discover:
+  download-gem:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
     concurrency:
-      group: pipeline-discover-legacy
+      group: pipeline-download-gem
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
@@ -32,9 +23,10 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
-      - name: Run discover
+      - name: Download GeM docs
         env:
           PYTHONUNBUFFERED: "1"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
           HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
           HOSTINGER_PORT: ${{ secrets.HOSTINGER_PORT }}
@@ -43,10 +35,11 @@ jobs:
           HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DOWNLOAD_SUCCESS_PAUSE_SEC: "5"
         run: |
-          QUEUE_CAP="${{ github.event.inputs.queue_cap || '2000' }}"
-          SOURCES="${{ github.event.inputs.sources || 'mstc,gem_forward' }}"
-          PYTHONPATH=. python -m scraper.pipeline_discover \
-            --sources "$SOURCES" \
-            --queue-cap "$QUEUE_CAP" \
+          PYTHONPATH=. python -m scraper.pipeline_download \
+            --source gem_forward \
+            --batch-size 25 \
+            --max-batches 80 \
+            --skip-pdf \
             --break-stale-lock

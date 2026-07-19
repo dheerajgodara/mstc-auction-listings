@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from scraper.config import HOSTINGER_REMOTE_DIR, REPO_ROOT
 from scraper.import_tracking import stable_auction_key
@@ -28,34 +28,60 @@ IST = ZoneInfo("Asia/Kolkata")
 DEFAULT_LEDGER_PATH = REPO_ROOT / "work" / "pipeline_ledger.json"
 StageStatus = Literal["pending", "done", "failed", "blocked"]
 MAX_STAGE_ATTEMPTS = 5
+LEDGER_SCHEMA_VERSION = 2
 
 
 class LedgerItem(BaseModel):
+    """Per-auction stage row. Unknown legacy keys are preserved (extra=allow)."""
+
+    model_config = ConfigDict(extra="allow")
+
     stable_key: str
     source: str
     source_auction_id: str
+    # Lane stages (v2)
+    discover: StageStatus = "pending"
     download: StageStatus = "pending"
     parse: StageStatus = "pending"
+    build: StageStatus = "pending"
     deploy_ready: bool = False
     media_synced: Optional[bool] = None
     media_synced_at: Optional[str] = None
+    discover_attempts: int = 0
     download_attempts: int = 0
     parse_attempts: int = 0
+    build_attempts: int = 0
     decision: Optional[str] = None
     priority_score: int = 0
     closing: Optional[str] = None
     raw_html_path: Optional[str] = None
     pdf_path: Optional[str] = None
+    parsed_path: Optional[str] = None
+    parsed_at: Optional[str] = None
+    pdf_sha256: Optional[str] = None
+    html_sha256: Optional[str] = None
+    parser_version: Optional[str] = None
+    discover_seen_at: Optional[str] = None
+    deployed_at: Optional[str] = None
+    deployed_export_hash: Optional[str] = None
+    listing_fingerprint: Optional[str] = None
+    removed_from_source: bool = False
     reasons: list[str] = Field(default_factory=list)
     last_error: Optional[str] = None
+    discover_last_error: Optional[str] = None
+    download_last_error: Optional[str] = None
+    parse_last_error: Optional[str] = None
+    build_last_error: Optional[str] = None
     updated_at: str = ""
     first_queued_at: str = ""
 
 
 class PipelineLedger(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     generated_at: str
     items: list[LedgerItem] = Field(default_factory=list)
-    version: int = 1
+    version: int = LEDGER_SCHEMA_VERSION
 
     def by_key(self) -> dict[str, LedgerItem]:
         return {item.stable_key: item for item in self.items}
@@ -63,16 +89,28 @@ class PipelineLedger(BaseModel):
     def status_counts(self) -> dict[str, Any]:
         download = Counter(i.download for i in self.items)
         parse = Counter(i.parse for i in self.items)
+        discover = Counter(i.discover for i in self.items)
+        build = Counter(i.build for i in self.items)
         awaiting_sync = sum(
             1
             for i in self.items
             if i.source == "mstc" and i.download == "done" and i.media_synced is False
         )
+        by_source: dict[str, int] = dict(Counter(i.source for i in self.items))
         return {
+            "discover": dict(discover),
             "download": dict(download),
             "parse": dict(parse),
+            "build": dict(build),
             "deploy_ready": sum(1 for i in self.items if i.deploy_ready),
             "awaiting_hostinger_sync": awaiting_sync,
+            "parsed_but_not_deployed": sum(
+                1
+                for i in self.items
+                if i.parse == "done" and i.build != "done" and not i.removed_from_source
+            ),
+            "removed_from_source": sum(1 for i in self.items if i.removed_from_source),
+            "by_source": by_source,
             "total": len(self.items),
         }
 
@@ -82,7 +120,7 @@ def _now_iso() -> str:
 
 
 def empty_ledger() -> PipelineLedger:
-    return PipelineLedger(generated_at=_now_iso(), items=[])
+    return PipelineLedger(generated_at=_now_iso(), items=[], version=LEDGER_SCHEMA_VERSION)
 
 
 def load_ledger(path: Path | None = None) -> PipelineLedger:
@@ -100,8 +138,79 @@ def write_ledger(ledger: PipelineLedger, path: Path | None = None) -> Path:
     path = Path(path or DEFAULT_LEDGER_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     ledger.generated_at = _now_iso()
+    if getattr(ledger, "version", 1) < LEDGER_SCHEMA_VERSION:
+        ledger.version = LEDGER_SCHEMA_VERSION
     path.write_text(ledger.model_dump_json(indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def patch_ledger_items(
+    ledger: PipelineLedger,
+    updates: dict[str, dict[str, Any]],
+    *,
+    allowed_fields: set[str] | frozenset[str] | None = None,
+) -> PipelineLedger:
+    """Merge-safe field updates by stable_key (only allowed fields if provided)."""
+    by_key = ledger.by_key()
+    now = _now_iso()
+    for key, fields in updates.items():
+        item = by_key.get(key)
+        if item is None:
+            continue
+        for fname, value in fields.items():
+            if allowed_fields is not None and fname not in allowed_fields:
+                continue
+            if hasattr(item, fname) or fname in getattr(item, "__pydantic_extra__", {}) or True:
+                try:
+                    setattr(item, fname, value)
+                except Exception:
+                    extras = getattr(item, "__pydantic_extra__", None)
+                    if isinstance(extras, dict):
+                        extras[fname] = value
+        item.updated_at = now
+        by_key[key] = item
+    ledger.items = sorted(by_key.values(), key=lambda i: (-i.priority_score, i.stable_key))
+    return ledger
+
+
+def fail_budget_ok(*, failed: int, attempted: int, pct: float, absolute: int) -> bool:
+    if attempted <= 0:
+        return True
+    return failed <= max(absolute, int(attempted * pct))
+
+
+def select_for_download(
+    ledger: PipelineLedger,
+    *,
+    limit: int,
+    pdf_dir: Path | None = None,
+    source: str | None = None,
+) -> list[LedgerItem]:
+    """Select auctions that still need download or Hostinger sync.
+
+    ``source`` filters to one lane (``mstc`` or ``gem_forward``). Default
+    remains MSTC-only for backward compatibility with the legacy download job.
+    """
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    _ = pdf_dir
+
+    src = (source or "mstc").strip().lower()
+    if src == "mstc":
+        eligible = [i for i in ledger.items if mstc_download_eligible(i)]
+    elif src == "gem_forward":
+        eligible = [i for i in ledger.items if gem_download_eligible(i)]
+    else:
+        eligible = []
+    eligible.sort(
+        key=lambda i: (
+            _download_select_tier(i),
+            -i.priority_score,
+            i.first_queued_at or "",
+            i.stable_key,
+        )
+    )
+    return eligible[:limit]
 
 
 def upsert_from_work_plan(
@@ -150,18 +259,26 @@ def upsert_from_work_plan(
         except Exception:
             priority = {"new": 90, "changed": 70, "needs_repair": 80}.get(decision, 10)
 
-        # GeM / eAuction have no raw-HTML download stage; mark download done so
-        # they enter the parse queue without consuming the MSTC download cap.
+        # MSTC + GeM both need a Download lane before Parse.
+        # Legacy eAuction (if any remain) skip download.
         src_l = source.strip().lower()
-        initial_download = "pending" if src_l == "mstc" else "done"
+        if src_l == "mstc":
+            initial_download = "pending"
+        elif src_l == "gem_forward":
+            initial_download = "pending"
+        else:
+            initial_download = "done"
 
         if existing is None:
             by_key[key] = LedgerItem(
                 stable_key=key,
                 source=source,
                 source_auction_id=aid,
+                discover="done",
+                discover_seen_at=now.isoformat(),
                 download=initial_download,
                 parse="pending",
+                build="pending",
                 deploy_ready=False,
                 decision=decision or None,
                 priority_score=priority,
@@ -178,10 +295,14 @@ def upsert_from_work_plan(
             existing.closing = str(closing)
         if reasons:
             existing.reasons = reasons
-        if src_l != "mstc" and existing.download == "pending":
-            existing.download = "done"
+        existing.discover = "done"
+        existing.discover_seen_at = now.isoformat()
+        existing.removed_from_source = False
+        if src_l == "gem_forward" and existing.download == "done" and not (existing.raw_html_path or "").strip():
+            # Re-queue GeM for durable notice fetch when never cached.
+            pass
         if existing.download == "blocked" and existing.download_attempts < MAX_STAGE_ATTEMPTS:
-            existing.download = "pending" if src_l == "mstc" else "done"
+            existing.download = "pending" if src_l in {"mstc", "gem_forward"} else "done"
         if existing.parse == "blocked" and existing.parse_attempts < MAX_STAGE_ATTEMPTS:
             existing.parse = "pending"
         existing.updated_at = now.isoformat()
@@ -212,6 +333,17 @@ def mstc_download_eligible(item: LedgerItem) -> bool:
     # Legacy media_synced=None: only incomplete PDF history still needs work.
     # (Rows with pdf_path are grandfathered to True in Discover before select.)
     if not (item.pdf_path or "").strip():
+        return True
+    return False
+
+
+def gem_download_eligible(item: LedgerItem) -> bool:
+    """True when GeM row still needs durable notice/docs on Hostinger."""
+    if str(item.source or "").strip().lower() != "gem_forward":
+        return False
+    if item.removed_from_source:
+        return False
+    if item.download in ("pending", "failed") and item.download_attempts < MAX_STAGE_ATTEMPTS:
         return True
     return False
 
@@ -256,33 +388,6 @@ def grandfather_media_synced_legacy(ledger: PipelineLedger) -> int:
         _replace_item(ledger, item)
         updated += 1
     return updated
-
-
-def select_for_download(
-    ledger: PipelineLedger,
-    *,
-    limit: int,
-    pdf_dir: Path | None = None,
-) -> list[LedgerItem]:
-    """Select MSTC auctions that still need download or Hostinger PDF sync.
-
-    ``pdf_dir`` is accepted for API compatibility but does **not** invent
-    eligibility from empty local disks (ledger flags are source of truth).
-    """
-    if limit <= 0:
-        raise ValueError("limit must be positive")
-    _ = pdf_dir  # retained for callers; durability is ledger-based
-
-    eligible = [i for i in ledger.items if mstc_download_eligible(i)]
-    eligible.sort(
-        key=lambda i: (
-            _download_select_tier(i),
-            -i.priority_score,
-            i.first_queued_at or "",
-            i.stable_key,
-        )
-    )
-    return eligible[:limit]
 
 
 def _mstc_needs_pdf(item: LedgerItem, pdf_dir: Path | None) -> bool:

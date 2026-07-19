@@ -499,4 +499,111 @@ def send_ai_enrichment_report(payload: dict[str, Any], *, event: str = "report")
     if event in QUIET_EVENTS:
         logger.debug("telegram quiet AI event skipped: %s", event)
         return True
-    return send_telegram_message(build_ai_enrichment_message(payload, event=event))
+    # AI enricher held — do not send operational AI Telegram spam.
+    logger.info("AI telegram suppressed (enricher held): event=%s", event)
+    return True
+
+
+LANE_LABELS: dict[str, str] = {
+    "discover_mstc": "Discover MSTC",
+    "discover_gem": "Discover GeM",
+    "download_mstc": "Download MSTC",
+    "download_gem": "Download GeM",
+    "parse": "Parse",
+    "build_deploy": "Build Deploy",
+}
+
+
+def _ist_now_short() -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %H:%M IST")
+
+
+def build_lane_message(lane: str, event: str, stats: dict[str, Any]) -> str:
+    """Short professional per-lane Telegram body (plain text / HTML-safe)."""
+    label = LANE_LABELS.get(lane, lane)
+    header = f"SAI · {_h(label)}"
+    when = _h(stats.get("when") or _ist_now_short())
+    lines = [header]
+
+    if event == "failed":
+        lines.append(f"FAILED · {when}")
+        err = _clip(str(stats.get("error") or "unknown error"), 180)
+        lines.append(f"Error: {_h(err)}")
+        if stats.get("backlog_left") is not None:
+            lines.append(f"Backlog unchanged: {_h(stats.get('backlog_left'))} · Manual check required")
+        return "\n".join(lines)
+
+    status = str(stats.get("status") or "Done")
+    lines.append(f"{_h(status)} · {when}")
+
+    if lane.startswith("discover_"):
+        lines.append(
+            "Listed: {listed} · New: {new} · Queued download: {queued} · Unchanged: {unchanged}".format(
+                listed=_h(stats.get("listed", 0)),
+                new=_h(stats.get("new", 0)),
+                queued=_h(stats.get("queued_download", 0)),
+                unchanged=_h(stats.get("unchanged", 0)),
+            )
+        )
+        bits = []
+        if stats.get("cap") is not None:
+            bits.append(f"Cap: {_h(stats.get('cap'))}")
+        if stats.get("snapshot"):
+            bits.append(f"Snapshot: {_h(stats.get('snapshot'))}")
+        if bits:
+            lines.append(" · ".join(bits))
+    elif lane.startswith("download_"):
+        verb = "Fetched docs" if lane == "download_gem" else "Downloaded"
+        lines.append(
+            f"{verb}: {_h(stats.get('downloaded', 0))} · "
+            f"Skipped: {_h(stats.get('skipped_existing', 0))} · "
+            f"Failed: {_h(stats.get('failed', 0))}"
+        )
+        budget = "OK" if stats.get("fail_budget_ok", True) else "EXCEEDED"
+        lines.append(
+            f"Backlog left: {_h(stats.get('backlog_left', 0))} · Fail budget {budget}"
+        )
+        if stats.get("resume_next"):
+            lines.append("Next: auto-resume this lane")
+    elif lane == "parse":
+        lines.append(
+            f"Parsed: {_h(stats.get('parsed', 0))} · "
+            f"Skipped (fresh): {_h(stats.get('skipped_fresh', 0))} · "
+            f"Failed: {_h(stats.get('failed', 0))}"
+        )
+        lines.append(f"Parse backlog left: {_h(stats.get('backlog_left', 0))}")
+        if stats.get("resume_next"):
+            lines.append("Next: auto-resume this lane")
+    elif lane == "build_deploy":
+        deploy = "OK" if stats.get("deploy_ok", True) else "FAILED"
+        lines.append(
+            f"Ready merged: {_h(stats.get('ready_merged', 0))} · "
+            f"Site auctions: {_h(stats.get('export_count', 0))} · "
+            f"Deploy: {deploy}"
+        )
+        if stats.get("with_lots_count") is not None:
+            lines.append(f"Material-searchable (with lots): {_h(stats.get('with_lots_count'))}")
+
+    text = "\n".join(lines)
+    if len(text) > MAX_MESSAGE_CHARS:
+        text = text[: MAX_MESSAGE_CHARS - 1].rstrip() + "…"
+    return text
+
+
+def send_lane_report(
+    lane: str,
+    event: str,
+    stats: dict[str, Any] | None = None,
+    *,
+    noop: bool = False,
+) -> bool:
+    from scraper.config import TELEGRAM_NOOP_SILENT
+
+    stats = dict(stats or {})
+    if noop and TELEGRAM_NOOP_SILENT:
+        logger.debug("telegram noop silent: lane=%s", lane)
+        return True
+    return send_telegram_message(build_lane_message(lane, event, stats))

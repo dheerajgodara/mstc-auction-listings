@@ -127,28 +127,39 @@ def run_pipeline_deploy(
         if not production_json.is_file() or production_json.stat().st_size < 10:
             raise RuntimeError("no auctions.json available for deploy")
 
-        cache_pull = pull_remote_ai_cache(cache_dir=AI_ENRICHMENT_CACHE_DIR)
-        payload["ai_cache_pull"] = cache_pull.to_dict()
-        if not cache_pull.ok:
-            warnings.append(f"ai cache pull failed: {cache_pull.message}")
-        elif cache_pull.message == "remote AI cache pulled":
-            warnings.append(
-                f"ai cache pull ok ({cache_pull.file_count} file(s) from {cache_pull.remote_path})"
-            )
-        elif cache_pull.file_count:
-            warnings.append(
-                f"ai cache using local/GHA copy ({cache_pull.file_count} file(s); {cache_pull.message})"
-            )
+        ai_held = (os.environ.get("AI_ENRICHMENT_DISABLE") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if ai_held:
+            payload["ai_hydrate"] = {"skipped": True, "reason": "AI enricher held"}
+            warnings.append("ai hydrate skipped (enricher held)")
+        else:
+            cache_pull = pull_remote_ai_cache(cache_dir=AI_ENRICHMENT_CACHE_DIR)
+            payload["ai_cache_pull"] = cache_pull.to_dict()
+            if not cache_pull.ok:
+                warnings.append(f"ai cache pull failed: {cache_pull.message}")
+            elif cache_pull.message == "remote AI cache pulled":
+                warnings.append(
+                    f"ai cache pull ok ({cache_pull.file_count} file(s) from {cache_pull.remote_path})"
+                )
+            elif cache_pull.file_count:
+                warnings.append(
+                    f"ai cache using local/GHA copy ({cache_pull.file_count} file(s); {cache_pull.message})"
+                )
 
-        hydrate_result = hydrate_json_file(
-            production_json,
-            cache_dir=AI_ENRICHMENT_CACHE_DIR,
-            write=True,
-        )
-        payload["ai_hydrate"] = hydrate_result
-        ai_stats = hydrate_result.get("stats") or {}
-        if ai_stats.get("ready"):
-            warnings.append(f"ai hydrate merged {ai_stats.get('ready')} ready listing(s) into export")
+            hydrate_result = hydrate_json_file(
+                production_json,
+                cache_dir=AI_ENRICHMENT_CACHE_DIR,
+                write=True,
+            )
+            payload["ai_hydrate"] = hydrate_result
+            ai_stats = hydrate_result.get("stats") or {}
+            if ai_stats.get("ready"):
+                warnings.append(
+                    f"ai hydrate merged {ai_stats.get('ready')} ready listing(s) into export"
+                )
 
         export_sha = _export_sha256(production_json)
         payload["export_sha256"] = export_sha

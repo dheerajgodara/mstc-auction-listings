@@ -1,25 +1,21 @@
-name: Pipeline Discover (legacy emergency)
+name: Lane Discover MSTC
 
-# Legacy combined discover — superseded by Lane Discover MSTC / GeM.
-# Manual only (no schedule, no chain).
 on:
+  schedule:
+    - cron: "30 0,6,12,18 * * *"
   workflow_dispatch:
     inputs:
       queue_cap:
-        description: "Max auctions to queue (default 2000)"
+        description: "Queue cap (default 2000)"
         required: false
         default: "2000"
-      sources:
-        description: "Comma sources (default mstc,gem_forward)"
-        required: false
-        default: "mstc,gem_forward"
 
 jobs:
-  pipeline-discover:
+  discover-mstc:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     concurrency:
-      group: pipeline-discover-legacy
+      group: pipeline-discover-mstc
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +28,7 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
-      - name: Run discover
+      - name: Discover MSTC
         env:
           PYTHONUNBUFFERED: "1"
           SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
@@ -45,8 +41,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           QUEUE_CAP="${{ github.event.inputs.queue_cap || '2000' }}"
-          SOURCES="${{ github.event.inputs.sources || 'mstc,gem_forward' }}"
           PYTHONPATH=. python -m scraper.pipeline_discover \
-            --sources "$SOURCES" \
+            --sources mstc \
             --queue-cap "$QUEUE_CAP" \
             --break-stale-lock

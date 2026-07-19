@@ -1,12 +1,8 @@
-name: Pipeline Drain
+name: Pipeline Drain (legacy emergency)
 
+# Legacy serial drain — superseded by Lane Parse Assets + Lane Build Deploy.
+# Manual only (no schedule, no chain from download).
 on:
-  workflow_run:
-    workflows: ["Pipeline Download"]
-    types: [completed]
-  schedule:
-    # Safety sweep every 6h at :00 UTC (offset from download :30)
-    - cron: "0 */6 * * *"
   workflow_dispatch:
     inputs:
       max_parse:
@@ -18,7 +14,7 @@ on:
         required: false
         default: "25"
       skip_docs:
-        description: "Skip document downloads during parse (faster unfreeze)"
+        description: "Skip document downloads during parse"
         required: false
         default: "false"
         type: boolean
@@ -28,56 +24,31 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     concurrency:
-      group: auction-pipeline-serial
+      group: pipeline-drain-legacy
       cancel-in-progress: false
-    # After download: only on success. Schedule/manual always.
-    if: >
-      github.event_name != 'workflow_run' ||
-      github.event.workflow_run.conclusion == 'success'
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install Python dependencies
-        run: pip install -r requirements.txt
-
-      - name: Restore AI enrichment cache
-        uses: actions/cache@v4
-        with:
-          path: data/ai_enrichment_cache
-          key: ai-enrichment-${{ runner.os }}-${{ hashFiles('scraper/ai_enrichment/schema.py', 'scraper/ai_enrichment/payload.py') }}
-          restore-keys: |
-            ai-enrichment-${{ runner.os }}-
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+      - run: pip install -r requirements.txt
+      - uses: pnpm/action-setup@v4
         with:
           version: 9
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "pnpm"
           cache-dependency-path: web/pnpm-lock.yaml
-
-      - name: Install web dependencies
+      - name: Install web deps
         working-directory: web
         run: pnpm install --frozen-lockfile || pnpm install
-
-      - name: Configure SSH key
+      - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
-
-      - name: Run drain (parse 100 → deploy until clear)
+      - name: Drain (emergency)
         env:
           PYTHONUNBUFFERED: "1"
           SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
@@ -88,6 +59,7 @@ jobs:
           HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          AI_ENRICHMENT_DISABLE: "1"
         run: |
           MAX_PARSE="${{ github.event.inputs.max_parse || '100' }}"
           MAX_CYCLES="${{ github.event.inputs.max_cycles || '25' }}"
@@ -101,16 +73,3 @@ jobs:
             --max-cycles "$MAX_CYCLES" \
             --break-stale-lock \
             $EXTRA_ARGS
-
-      - name: Upload drain reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pipeline-drain-${{ github.run_id }}
-          path: |
-            work/pipeline_ledger.json
-            work/runs/drain_*/drain_report.json
-            work/runs/drain_*/drain.log
-            work/runs/parse_*/parse_report.json
-            work/runs/deploy_*/deploy_report.json
-          if-no-files-found: ignore

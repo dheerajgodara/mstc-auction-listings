@@ -1,15 +1,36 @@
 # 4-stage pipeline runbook
 
-## Production flow
+> **2026-07 update:** Primary production path is **six independent GHA lanes**
+> (Discover-MSTC, Discover-GeM, Download-MSTC, Download-GeM, Parse Assets, Build Deploy).
+> See [`PIPELINE_DATA_MODEL.md`](PIPELINE_DATA_MODEL.md). Legacy Discover/Download/Drain
+> workflows are **manual emergency only**. AI enricher is **held**.
 
-1. **Discover** (`pipeline-discover.yml`) — every **6h IST** (`00/06/12/18`), queue fill cap **2000**. Owns discovery + bootstrap + ledger upsert. No PDF download.
-2. **Download** (`pipeline-download.yml`) — after Discover **success**: drain ledger in **batches of 25**, flush PDFs to Hostinger each batch, until backlog clear (max **80** batches). Requeue trusts ledger durability (`download=done` + `pdf_path` + `media_synced=True`); an empty CI `pdfs/` tree does **not** imply re-download. Media rsync uses `--chmod=F644` so CI umask `600` PDFs stay publicly readable (otherwise live verify returns HTTP **403**).
-3. **Drain** (`pipeline-drain.yml`) — after Download **success** (and 6h safety sweep): **Parse 100 → Deploy** until parse backlog clear.
-4. **Parse / Deploy** workflows — **manual emergency only** (drain owns the loop).
+## Production flow (independent lanes)
 
-```text
-Cron 6h IST → Discover → Download drain (25×N) → Parse/Deploy drain
+1. **Discover-MSTC** / **Discover-GeM** — every ~6h, each own concurrency group. Cap 2000. Writes Hostinger snapshots only (no site publish).
+2. **Download-MSTC** / **Download-GeM** — every ~6h + self-resume. 5s pause after each success. Item-level ledger checkpoints.
+3. **Parse Assets** — every ~2h + self-resume. One auction at a time → `parsed/{source}/{id}.json`.
+4. **Build Deploy** — every ~2h. Merge discovery + parse cache → one site deploy. Material search needs lots.
+
+Lanes do **not** wait for each other. Telegram: `SAI · {Lane}` short reports.
+
+### Migrate ledger
+
+```bash
+PYTHONPATH=. python -m scraper.pipeline_schema_migrate --pull --push
 ```
+
+## Legacy emergency
+
+```bash
+gh workflow run pipeline-discover.yml
+gh workflow run pipeline-download.yml -f source=mstc
+gh workflow run pipeline-drain.yml -f max_parse=100 -f max_cycles=25
+```
+
+---
+
+## Aged-out closing dates
 
 ## Fast retries
 

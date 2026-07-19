@@ -40,7 +40,7 @@ from scraper.pipeline_ledger import (
 from scraper.raw_store import pull_public_pdf_files, pull_raw_store
 from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
-from scraper.telegram_reporter import send_telegram_report
+from scraper.telegram_reporter import send_lane_report, send_telegram_report
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_discover")
@@ -87,7 +87,12 @@ def run_pipeline_discover(
     run_dir = repo_root / "work" / "runs" / run_id
     _setup_logging(run_dir)
 
-    lock_path = repo_root / "work" / "discover.lock"
+    lock_name = "discover.lock"
+    if sources == ["mstc"]:
+        lock_name = "discover_mstc.lock"
+    elif sources == ["gem_forward"]:
+        lock_name = "discover_gem.lock"
+    lock_path = repo_root / "work" / lock_name
     acquire_refresh_lock(
         lock_path=lock_path,
         run_id=run_id,
@@ -158,6 +163,26 @@ def run_pipeline_discover(
         if discovery_path.is_file():
             discovery_data = json.loads(discovery_path.read_text(encoding="utf-8"))
 
+        # Per-source Hostinger snapshots (independent Discover lanes).
+        from scraper.parse_cache import push_discovery_snapshot
+
+        src_set = {s.strip().lower() for s in sources}
+        if src_set == {"mstc"}:
+            snap_name = "discovery_mstc_latest.json"
+            lane_id = "discover_mstc"
+        elif src_set == {"gem_forward"}:
+            snap_name = "discovery_gem_latest.json"
+            lane_id = "discover_gem"
+        else:
+            snap_name = "discovery_latest.json"
+            lane_id = "discover_mstc" if "mstc" in src_set else "discover_gem"
+        snap_path = run_dir / snap_name
+        snap_payload = dict(discovery_data)
+        snap_payload["schema_version"] = 1
+        if len(src_set) == 1:
+            snap_payload["source"] = next(iter(src_set))
+        snap_path.write_text(json.dumps(snap_payload, indent=2, default=str) + "\n", encoding="utf-8")
+        push_discovery_snapshot(snap_path, snap_name)
         plan = build_work_plan(discovery_data, previous_export)
         deep_items = [i for i in plan.items if i.action == "deep_parse"]
         ledger = load_ledger(ledger_path)
@@ -219,6 +244,21 @@ def run_pipeline_discover(
         )
         event = "discover_empty" if queued_count == 0 else "discover_done"
         send_telegram_report(payload, event=event)
+        listed = int(payload["discovery"]["total"] or 0)
+        send_lane_report(
+            lane_id,
+            "finished",
+            {
+                "status": "Done",
+                "listed": listed,
+                "new": queued_new,
+                "queued_download": queued_count,
+                "unchanged": max(0, listed - queued_new),
+                "cap": queue_cap,
+                "snapshot": snap_name,
+            },
+            noop=queued_count == 0 and listed == 0,
+        )
         _phase(
             f"done queued={queued_count} batches≈{est_batches} "
             f"discovery_total={payload['discovery']['total']}"
@@ -232,16 +272,29 @@ def run_pipeline_discover(
         payload["warnings"] = warnings
         payload["finished_at"] = datetime.now(IST).isoformat()
         send_telegram_report(payload, event="discover_failed")
+        srcs = sources or []
+        fail_lane = (
+            "discover_mstc"
+            if srcs == ["mstc"]
+            else "discover_gem"
+            if srcs == ["gem_forward"]
+            else "discover_mstc"
+        )
+        send_lane_report(
+            fail_lane,
+            "failed",
+            {"error": str(exc), "backlog_left": "?"},
+        )
         raise
     finally:
         release_refresh_lock(lock_path=lock_path, run_id=run_id)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Pipeline process 0: discover + queue fill")
+    parser = argparse.ArgumentParser(description="Pipeline discover lane (source-filtered)")
     parser.add_argument("--queue-cap", type=int, default=PIPELINE_DOWNLOAD_CAP_CATCHUP)
     parser.add_argument("--batch-size", type=int, default=PIPELINE_DOWNLOAD_BATCH_SIZE)
-    parser.add_argument("--sources", default="mstc,gem_forward,eauction")
+    parser.add_argument("--sources", default="mstc,gem_forward")
     parser.add_argument("--min-closing-date", default=None)
     parser.add_argument("--break-stale-lock", action="store_true", default=True)
     args = parser.parse_args(argv)

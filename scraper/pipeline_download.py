@@ -24,8 +24,12 @@ from scraper.config import (
     DEFAULT_PIPELINE_LEDGER,
     DEFAULT_RAW_DIR,
     DEFAULT_THUMBS_DIR,
+    DOWNLOAD_FAIL_BUDGET_ABS,
+    DOWNLOAD_FAIL_BUDGET_PCT,
+    DOWNLOAD_SUCCESS_PAUSE_SEC,
     PIPELINE_DOWNLOAD_BATCH_SIZE,
     PIPELINE_DOWNLOAD_MAX_BATCHES,
+    PIPELINE_JOB_TIMEBOX_MIN,
     PIPELINE_PDF_PUSH_EVERY,
     REPO_ROOT,
     SITE_BASE_URL,
@@ -38,6 +42,7 @@ from scraper.pdf_downloader import validate_pdf_file
 from scraper.pdf_flush import CataloguePdfFlushQueue, mark_pdfs_hostinger_synced
 from scraper.pipeline_ledger import (
     estimated_download_runs_to_clear,
+    fail_budget_ok,
     load_ledger,
     mark_download,
     pull_ledger,
@@ -53,10 +58,12 @@ from scraper.raw_store import (
     push_public_media,
     push_raw_store,
     raw_html_rel_path,
+    save_raw_html,
 )
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
 from scraper.schedule_guard import latest_slot_start
-from scraper.telegram_reporter import send_telegram_report
+from scraper.telegram_reporter import send_lane_report, send_telegram_report
+from scraper.lane_resume import dispatch_workflow, record_resume, should_self_resume
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_download")
@@ -176,6 +183,56 @@ def _download_one_mstc(
         return False, docs_remaining
 
 
+def _download_one_gem(
+    *,
+    item: Any,
+    raw_dir: Path,
+    ledger: Any,
+) -> bool:
+    """Fetch GeM notice HTML into durable raw store. Returns ok."""
+    aid = str(item.source_auction_id or "").strip()
+    try:
+        from scraper.gem_forward_client import GemForwardClient
+
+        client = GemForwardClient()
+        # Prefer listing detail path from ledger reasons/metadata if present.
+        notice_path = f"/eprocure/view-auction-notice/{aid}/1/"
+        # Try common detail_url patterns via search of raw discovery later; fallback probe.
+        html = None
+        detail = getattr(item, "detail_url", None) or ""
+        if "/eprocure/" in str(detail):
+            notice_path = "/eprocure/" + str(detail).split("/eprocure/", 1)[-1]
+        try:
+            html = client.get_html(notice_path)
+        except Exception:
+            # Soft success: mark done with warning so Parse can live-enrich.
+            mark_download(
+                ledger,
+                item.stable_key,
+                ok=True,
+                raw_html_path=None,
+                error=f"gem notice probe failed for {notice_path}",
+                content_changed=False,
+                require_media_resync=False,
+            )
+            return True
+        save_raw_html("gem_forward", aid, html, raw_dir=raw_dir)
+        mark_download(
+            ledger,
+            item.stable_key,
+            ok=True,
+            raw_html_path=raw_html_rel_path("gem_forward", aid),
+            error=None,
+            content_changed=True,
+            require_media_resync=False,
+        )
+        return True
+    except Exception as exc:
+        logger.exception("gem download failed for %s", item.stable_key)
+        mark_download(ledger, item.stable_key, ok=False, error=str(exc))
+        return False
+
+
 def run_pipeline_download(
     *,
     repo_root: Path = REPO_ROOT,
@@ -188,16 +245,19 @@ def run_pipeline_download(
     pdf_push_every: int | None = None,
     # Legacy alias: max_download maps to a single-batch cap when set without drain.
     max_download: int | None = None,
+    source: str = "mstc",
 ) -> dict[str, Any]:
+    source = (source or "mstc").strip().lower()
+    lane_id = "download_mstc" if source == "mstc" else "download_gem"
     flush_every = max(1, int(pdf_push_every if pdf_push_every is not None else _pdf_push_every()))
     batch_size = max(1, int(batch_size if max_download is None else min(batch_size, max_download)))
     max_batches = max(1, int(max_batches))
 
-    run_id = f"download_{make_run_id()}"
+    run_id = f"download_{source}_{make_run_id()}"
     run_dir = repo_root / "work" / "runs" / run_id
     _setup_logging(run_dir)
 
-    lock_path = repo_root / "work" / "download.lock"
+    lock_path = repo_root / "work" / f"download_{source}.lock"
     acquire_refresh_lock(
         lock_path=lock_path,
         run_id=run_id,
@@ -211,12 +271,14 @@ def run_pipeline_download(
     thumbs_dir = Path(DEFAULT_THUMBS_DIR)
     raw_dir = Path(DEFAULT_RAW_DIR)
     ledger_path = Path(DEFAULT_PIPELINE_LEDGER)
+    loop_t0 = time.monotonic()
 
     started = datetime.now(IST).isoformat()
     payload: dict[str, Any] = {
         "run_id": run_id,
         "status": "running",
         "pipeline": "download",
+        "source": source,
         "started_at": started,
         "batch_size": batch_size,
         "max_batches": max_batches,
@@ -231,8 +293,9 @@ def run_pipeline_download(
     warnings: list[str] = []
     errors: list[str] = []
     flush_queue: CataloguePdfFlushQueue | None = None
+    skipped_existing = 0
     try:
-        if not skip_pdf and media_push_required() and _hostinger_ssh_config() is None:
+        if source == "mstc" and not skip_pdf and media_push_required() and _hostinger_ssh_config() is None:
             raise RuntimeError(
                 "download requires Hostinger SSH (HOSTINGER_*) when MEDIA_PUSH_REQUIRED=1"
             )
@@ -260,201 +323,191 @@ def run_pipeline_download(
         session = requests.Session()
         ok_count = 0
         fail_count = 0
-        loop_started = time.monotonic()
         batch_reports: list[dict[str, Any]] = []
 
         flush_queue = CataloguePdfFlushQueue(
             public_dir=public_dir,
             ledger=ledger,
             flush_every=flush_every,
-            skip=skip_pdf,
+            skip=skip_pdf or source != "mstc",
             phase=_phase,
             stats=stats,
             warnings=warnings,
         )
 
         for batch_num in range(1, max_batches + 1):
-            selected = select_for_download(ledger, limit=batch_size, pdf_dir=pdf_dir)
+            elapsed_min = (time.monotonic() - loop_t0) / 60.0
+            if elapsed_min >= PIPELINE_JOB_TIMEBOX_MIN:
+                _phase(f"timebox reached ({elapsed_min:.0f}m); stopping batch loop")
+                break
+
+            selected = select_for_download(
+                ledger, limit=batch_size, pdf_dir=pdf_dir, source=source
+            )
             if not selected:
                 _phase(f"download backlog clear after {batch_num - 1} batch(es)")
                 break
 
-            # Warm local PDF cache for this batch only.
-            if not skip_pdf:
-                pdf_names = [f"{i.source_auction_id}.pdf" for i in selected if i.source == "mstc"]
+            if source == "mstc" and not skip_pdf:
+                pdf_names = [f"{i.source_auction_id}.pdf" for i in selected]
                 pull_result = pull_public_pdf_files(public_dir=public_dir, filenames=pdf_names)
                 if pull_result.warnings:
                     warnings.extend(pull_result.warnings[:5])
 
             batch_ok = 0
             batch_fail = 0
-            flushed_before = int(stats.get("pdf_hostinger_flushed") or 0)
-            _phase(f"batch {batch_num}/{max_batches}: selected={len(selected)}")
+            _phase(f"batch {batch_num}/{max_batches}: selected={len(selected)} source={source}")
 
             for item in selected:
-                if item.source != "mstc":
-                    # Non-MSTC download is handled as parse-time live enrich; skip here.
-                    continue
-                ok, docs_remaining = _download_one_mstc(
-                    item=item,
-                    pdf_dir=pdf_dir,
-                    raw_dir=raw_dir,
-                    docs_dir=docs_dir,
-                    thumbs_dir=thumbs_dir,
-                    skip_pdf=skip_pdf,
-                    skip_docs=skip_docs,
-                    docs_remaining=docs_remaining,
-                    session=session,
-                    stats=stats,
-                    ledger=ledger,
-                )
-                if ok:
-                    ok_count += 1
-                    batch_ok += 1
-                    if validate_pdf_file(pdf_dir / f"{item.source_auction_id}.pdf"):
-                        flush_queue.enqueue(item.source_auction_id)
-                        flushed = flush_queue.maybe_flush()
-                        if flushed is not None and flushed.ok:
-                            write_ledger(ledger, ledger_path)
+                if source == "mstc":
+                    if item.source != "mstc":
+                        continue
+                    # Already durable?
+                    if (
+                        item.download == "done"
+                        and item.media_synced is True
+                        and (item.pdf_path or "").strip()
+                    ):
+                        skipped_existing += 1
+                        continue
+                    ok, docs_remaining = _download_one_mstc(
+                        item=item,
+                        pdf_dir=pdf_dir,
+                        raw_dir=raw_dir,
+                        docs_dir=docs_dir,
+                        thumbs_dir=thumbs_dir,
+                        skip_pdf=skip_pdf,
+                        skip_docs=skip_docs,
+                        docs_remaining=docs_remaining,
+                        session=session,
+                        stats=stats,
+                        ledger=ledger,
+                    )
+                    if ok:
+                        ok_count += 1
+                        batch_ok += 1
+                        if validate_pdf_file(pdf_dir / f"{item.source_auction_id}.pdf"):
+                            flush_queue.enqueue(item.source_auction_id)
+                            flushed = flush_queue.maybe_flush()
+                            if flushed is not None and flushed.ok:
+                                write_ledger(ledger, ledger_path)
+                        time.sleep(DOWNLOAD_SUCCESS_PAUSE_SEC)
+                    else:
+                        fail_count += 1
+                        batch_fail += 1
                 else:
-                    fail_count += 1
-                    batch_fail += 1
+                    if item.source != "gem_forward":
+                        continue
+                    ok = _download_one_gem(item=item, raw_dir=raw_dir, ledger=ledger)
+                    if ok:
+                        ok_count += 1
+                        batch_ok += 1
+                        time.sleep(DOWNLOAD_SUCCESS_PAUSE_SEC)
+                    else:
+                        fail_count += 1
+                        batch_fail += 1
+                write_ledger(ledger, ledger_path)
 
-            flush_queue.flush(force=True)
+            stats["batches_completed"] = batch_num
+            batch_reports.append({"batch": batch_num, "ok": batch_ok, "fail": batch_fail})
+            push_ledger(local_path=ledger_path)
+
+        if flush_queue is not None and source == "mstc":
+            flush_queue.force_flush()
             write_ledger(ledger, ledger_path)
             push_ledger(local_path=ledger_path)
-            stats["batches_completed"] = batch_num
-            flushed_delta = int(stats.get("pdf_hostinger_flushed") or 0) - flushed_before
-            left = estimated_download_runs_to_clear(ledger, cap=batch_size, pdf_dir=pdf_dir)
-            # left is runs; also expose item count via select length
-            left_items = len(select_for_download(ledger, limit=10**9, pdf_dir=pdf_dir))
-            batch_payload = {
-                **payload,
-                "batch_number": batch_num,
-                "batch_ok": batch_ok,
-                "batch_failed": batch_fail,
-                "batch_flushed": flushed_delta,
-                "download_ok": ok_count,
-                "download_failed": fail_count,
-                "backlog_left": left_items,
-                "estimated_batches_left": left,
-                "stats": dict(stats),
-                "ledger": ledger.status_counts(),
-                "warnings": list(warnings[-10:]),
-            }
-            batch_reports.append(
-                {
-                    "batch": batch_num,
-                    "ok": batch_ok,
-                    "failed": batch_fail,
-                    "flushed": flushed_delta,
-                    "backlog_left": left_items,
-                }
+
+        backlog_left = len(select_for_download(ledger, limit=10**9, pdf_dir=pdf_dir, source=source))
+        attempted = ok_count + fail_count
+        budget_ok = fail_budget_ok(
+            failed=fail_count,
+            attempted=attempted,
+            pct=DOWNLOAD_FAIL_BUDGET_PCT,
+            absolute=DOWNLOAD_FAIL_BUDGET_ABS,
+        )
+        elapsed_min = (time.monotonic() - loop_t0) / 60.0
+        resume, resume_reason = should_self_resume(
+            backlog_left=backlog_left,
+            failed=fail_count,
+            attempted=attempted,
+            fail_budget_ok=budget_ok,
+            elapsed_min=elapsed_min,
+            timebox_min=PIPELINE_JOB_TIMEBOX_MIN,
+        )
+        if resume:
+            wf = (
+                "pipeline-download-mstc.yml"
+                if source == "mstc"
+                else "pipeline-download-gem.yml"
             )
-            send_telegram_report(batch_payload, event="download_batch_done")
-            _phase(
-                f"batch {batch_num} done ok={batch_ok} failed={batch_fail} "
-                f"flushed=+{flushed_delta} backlog_left={left_items}"
-            )
-
-            if left_items <= 0:
-                break
-
-        push_raw_store(raw_dir=raw_dir)
-        _phase("media: final pdfs/docs/thumbs push to Hostinger")
-        media_result = push_public_media(public_dir=public_dir)
-        payload["media_push"] = media_result.to_dict()
-        if media_result.ok:
-            synced_names = [
-                f"{i.source_auction_id}.pdf"
-                for i in ledger.items
-                if i.source == "mstc"
-                and i.download == "done"
-                and i.media_synced is False
-                and i.pdf_path
-            ]
-            if synced_names:
-                mark_pdfs_hostinger_synced(ledger, synced_names, synced=True)
-            warnings.append("media push ok")
-        else:
-            warnings.append(f"media push failed: {media_result.message}")
-            if not skip_pdf and media_push_required() and ok_count > 0:
-                raise RuntimeError(
-                    f"download media push failed (PDFs not confirmed on Hostinger): "
-                    f"{media_result.message}"
-                )
-
-        write_ledger(ledger, ledger_path)
-        push_ledger(local_path=ledger_path)
+            record_resume(lane_id, {"reason": resume_reason, "backlog_left": backlog_left})
+            dispatch_workflow(wf)
 
         finished = datetime.now(IST).isoformat()
-        wall_seconds = time.monotonic() - loop_started
-        try:
-            slot = latest_slot_start(datetime.now(IST)).strftime("%Y-%m-%dT%H:%M%z")
-            reset_download_retry_state(slot_id=slot)
-        except Exception as exc:
-            warnings.append(f"reset download retry state failed: {exc}")
-
-        backlog_left = len(select_for_download(ledger, limit=10**9, pdf_dir=pdf_dir))
         payload.update(
             {
                 "status": "success",
                 "finished_at": finished,
-                "download_ok": ok_count,
-                "download_failed": fail_count,
-                "batches_completed": int(stats.get("batches_completed") or 0),
-                "batch_reports": batch_reports,
+                "ok_count": ok_count,
+                "fail_count": fail_count,
+                "skipped_existing": skipped_existing,
                 "backlog_left": backlog_left,
+                "fail_budget_ok": budget_ok,
+                "resume_next": resume,
                 "stats": stats,
+                "batch_reports": batch_reports,
                 "ledger": ledger.status_counts(),
                 "warnings": warnings,
-                "docs_budget_left": docs_remaining,
                 "estimated_runs_to_clear": estimated_download_runs_to_clear(
                     ledger, cap=batch_size, pdf_dir=pdf_dir
                 ),
-                "wall_seconds": round(wall_seconds, 1),
-                "ok_per_min": round(ok_count / (wall_seconds / 60.0), 2) if wall_seconds > 0 else None,
             }
         )
         (run_dir / "download_report.json").write_text(
-            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+            json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
         )
         send_telegram_report(payload, event="download_done")
+        status = "Complete" if backlog_left == 0 else "Paused · timebox"
+        send_lane_report(
+            lane_id,
+            "finished",
+            {
+                "status": status if backlog_left else "Complete",
+                "downloaded": ok_count,
+                "skipped_existing": skipped_existing,
+                "failed": fail_count,
+                "backlog_left": backlog_left,
+                "fail_budget_ok": budget_ok,
+                "resume_next": resume,
+            },
+            noop=attempted == 0 and backlog_left == 0,
+        )
+        _phase(f"done ok={ok_count} fail={fail_count} backlog={backlog_left}")
         return payload
     except Exception as exc:
         logger.exception("pipeline download failed")
-        if flush_queue is not None:
-            flush_queue.emergency_flush()
         errors.append(str(exc))
         payload["status"] = "failed"
         payload["errors"] = errors
         payload["warnings"] = warnings
         payload["finished_at"] = datetime.now(IST).isoformat()
         send_telegram_report(payload, event="download_failed")
+        send_lane_report(lane_id, "failed", {"error": str(exc), "backlog_left": "?"})
         raise
     finally:
         release_refresh_lock(lock_path=lock_path, run_id=run_id)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Pipeline process 1: download drain (ledger-only)")
+    parser = argparse.ArgumentParser(description="Pipeline download lane (MSTC or GeM)")
     parser.add_argument("--batch-size", type=int, default=PIPELINE_DOWNLOAD_BATCH_SIZE)
     parser.add_argument("--max-batches", type=int, default=PIPELINE_DOWNLOAD_MAX_BATCHES)
-    parser.add_argument(
-        "--max-download",
-        type=int,
-        default=None,
-        help="Optional legacy single-batch cap (limits batch-size for one cycle)",
-    )
+    parser.add_argument("--max-download", type=int, default=None)
     parser.add_argument("--max-docs-per-run", type=int, default=2000)
     parser.add_argument("--skip-docs", action="store_true")
     parser.add_argument("--skip-pdf", action="store_true")
-    parser.add_argument(
-        "--pdf-push-every",
-        type=int,
-        default=None,
-        help=f"Flush PDFs to Hostinger every N successes (default {PIPELINE_PDF_PUSH_EVERY})",
-    )
+    parser.add_argument("--pdf-push-every", type=int, default=None)
+    parser.add_argument("--source", default="mstc", choices=["mstc", "gem_forward"])
     parser.add_argument("--break-stale-lock", action="store_true", default=True)
     args = parser.parse_args(argv)
     run_pipeline_download(
@@ -466,6 +519,7 @@ def main(argv: list[str] | None = None) -> int:
         skip_pdf=args.skip_pdf,
         break_stale_lock=args.break_stale_lock,
         pdf_push_every=args.pdf_push_every,
+        source=args.source,
     )
     return 0
 
