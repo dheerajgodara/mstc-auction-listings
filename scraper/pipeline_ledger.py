@@ -261,6 +261,14 @@ def download_eligible(item: LedgerItem, *, source: str | None = None) -> bool:
         not (item.hostinger_doc_url or "").strip() or not (item.hostinger_doc_path or "").strip()
     ):
         return item.download_attempts < MAX_STAGE_ATTEMPTS
+    # Repair: URL/path stamped without a durable content hash (phantom Hostinger "done")
+    if (
+        item.download == "done"
+        and src == "mstc"
+        and not (item.doc_sha256 or "").strip()
+        and item.download_attempts < MAX_STAGE_ATTEMPTS
+    ):
+        return True
     return False
 
 
