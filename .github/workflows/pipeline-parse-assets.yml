@@ -2,7 +2,8 @@ name: Lane Parse Assets
 
 on:
   schedule:
-    - cron: "0 */2 * * *"
+    # Temporary backlog drain: every 30m (UTC); long jobs still self-resume
+    - cron: "10,40 * * * *"
   workflow_dispatch:
     inputs:
       max_parse:

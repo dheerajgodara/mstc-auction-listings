@@ -2,7 +2,8 @@ name: Lane Discover GeM
 
 on:
   schedule:
-    - cron: "35 0,6,12,18 * * *"
+    # Temporary backlog drain: every 2h (UTC), 5m after Discover MSTC
+    - cron: "25 */2 * * *"
   workflow_dispatch:
     inputs:
       queue_cap:

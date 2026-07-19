@@ -2,7 +2,8 @@ name: Lane Download MSTC
 
 on:
   schedule:
-    - cron: "0 1,7,13,19 * * *"
+    # Temporary backlog drain: every 30m (UTC)
+    - cron: "5,35 * * * *"
   workflow_dispatch:
     inputs:
       max_download:

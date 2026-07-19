@@ -2,7 +2,8 @@ name: Lane Build Deploy
 
 on:
   schedule:
-    - cron: "30 */2 * * *"
+    # Temporary backlog drain: every 15m (UTC), staggered off :00/:15/:30/:45
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
     inputs:
       no_deploy:

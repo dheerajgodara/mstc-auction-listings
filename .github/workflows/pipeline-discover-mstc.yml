@@ -2,7 +2,8 @@ name: Lane Discover MSTC
 
 on:
   schedule:
-    - cron: "30 0,6,12,18 * * *"
+    # Temporary backlog drain: every 2h (UTC)
+    - cron: "20 */2 * * *"
   workflow_dispatch:
     inputs:
       queue_cap:

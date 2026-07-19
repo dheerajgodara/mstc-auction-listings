@@ -2,7 +2,8 @@ name: Lane Download GeM
 
 on:
   schedule:
-    - cron: "15 1,7,13,19 * * *"
+    # Temporary backlog drain: ~every 45m (UTC :00 and :45)
+    - cron: "0,45 * * * *"
   workflow_dispatch:
     inputs:
       max_download:
