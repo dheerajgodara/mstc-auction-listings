@@ -91,6 +91,85 @@ export function buildAuctionBreadcrumbJsonLd(
     { name: routeId },
   ]);
 }
+
+const PORTAL_PUBLISHER: Record<string, string> = {
+  mstc: "MSTC",
+  gem_forward: "GeM Forward",
+  eauction: "eAuction.gov.in",
+};
+
+/** WebPage JSON-LD for auction detail (alongside Event). */
+export function buildAuctionWebPageJsonLd(
+  auction: AuctionRecord,
+): JsonLdObject | null {
+  const enriched = enrichAuctionDisplay(auction);
+  const name = enriched.display_title?.trim() || enriched.item_summary?.trim();
+  if (!name) return null;
+  const url = auctionCanonicalUrl(enriched);
+  const description =
+    enriched.display_buyer_summary?.trim() ||
+    enriched.item_summary?.trim() ||
+    undefined;
+  const page: JsonLdObject = {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    name,
+    url,
+    isPartOf: {
+      "@type": "WebSite",
+      name: "Scrap Auction India",
+      url: absoluteUrl("/"),
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "Scrap Auction India",
+      url: absoluteUrl("/"),
+    },
+  };
+  if (description) page.description = description;
+  if (enriched.closing) page.expires = enriched.closing;
+  return page;
+}
+
+/** ItemList of lots on an auction detail page (not Product offers). */
+export function buildAuctionLotsItemListJsonLd(
+  auction: AuctionRecord,
+): JsonLdObject | null {
+  const enriched = enrichAuctionDisplay(auction);
+  const lots = enriched.lots ?? [];
+  if (lots.length === 0) return null;
+  const pageUrl = auctionCanonicalUrl(enriched);
+  return {
+    "@context": "https://schema.org",
+    "@type": "ItemList",
+    name: `Lots — ${enriched.display_title || enriched.auction_number}`,
+    url: pageUrl,
+    numberOfItems: lots.length,
+    itemListElement: lots.slice(0, 50).map((lot, index) => ({
+      "@type": "ListItem",
+      position: index + 1,
+      name: lot.item_title || lot.lot_id || `Lot ${index + 1}`,
+      url: pageUrl,
+    })),
+  };
+}
+
+/** Organization publisher note for the aggregating site (not the portal seller). */
+export function buildPublisherOrganizationJsonLd(): JsonLdObject {
+  return {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    name: "Scrap Auction India",
+    url: absoluteUrl("/"),
+    description:
+      "Public auction discovery for Indian scrap and industrial lots. Bidding happens only on official source portals.",
+  };
+}
+
+export function officialPortalLabel(source?: string | null): string {
+  if (!source) return "the official auction portal";
+  return PORTAL_PUBLISHER[source] ?? "the official auction portal";
+}
 export type ItemListEntry = {
   name: string;
   url: string;
