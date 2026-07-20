@@ -77,12 +77,26 @@ def verify_predeploy_build(
     docs_dir = out_dir / "docs"
     thumbs_dir = out_dir / "thumbs"
 
+    allow_small = (os.environ.get("PIPELINE_ALLOW_SMALL_EXPORT") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    media_r2_only = (os.environ.get("MEDIA_R2_ONLY") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
     if not index_html.is_file():
         errors.append(f"missing {index_html}")
     if not json_path.is_file():
         errors.append(f"missing {json_path}")
     if not pdfs_dir.is_dir():
-        errors.append(f"missing {pdfs_dir}")
+        if media_r2_only or allow_small:
+            warnings.append(f"missing {pdfs_dir} (CDN-only / small export)")
+        else:
+            errors.append(f"missing {pdfs_dir}")
     if not docs_dir.is_dir():
         warnings.append(f"missing {docs_dir}")
     if not thumbs_dir.is_dir():
@@ -91,11 +105,6 @@ def verify_predeploy_build(
     count = 0
     by_source: dict[str, int] = {}
     earliest: datetime | None = None
-    allow_small = (os.environ.get("PIPELINE_ALLOW_SMALL_EXPORT") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
     if json_path.is_file():
         data = json.loads(json_path.read_text(encoding="utf-8"))
         auctions = data.get("auctions", [])

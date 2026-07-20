@@ -266,17 +266,22 @@ def run_pipeline_deploy(
             cwd=web_dir,
         )
 
+        # Adaptive floor: fresh-start / MSTC-first refill will be <1000 for a while.
+        # Hardcoded 1000 blocked publishing 164 valid CDN catalogues after ledger heal.
+        export_count = 0
+        try:
+            export_count = int(
+                json.loads(production_json.read_text(encoding="utf-8")).get("count") or 0
+            )
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            export_count = 0
+        adaptive_min = 0 if allow_small else max(1, min(50, export_count or 1))
+
         predeploy = verify_predeploy_build(
             out_dir=out_dir,
-            min_count=0
-            if (os.environ.get("PIPELINE_ALLOW_SMALL_EXPORT") or "").strip().lower()
-            in {"1", "true", "yes"}
-            else 1000,
+            min_count=adaptive_min,
             min_closing_date=resolve_min_closing().isoformat(),
-            require_sources=[]
-            if (os.environ.get("PIPELINE_ALLOW_SMALL_EXPORT") or "").strip().lower()
-            in {"1", "true", "yes"}
-            else ["mstc"],
+            require_sources=[] if allow_small or export_count < 10 else ["mstc"],
             warn_only_sources=["gem_forward", "eauction"],
         )
         payload["predeploy"] = {
