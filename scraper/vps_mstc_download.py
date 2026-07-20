@@ -222,6 +222,12 @@ def run_vps_mstc_download(
                     consecutive_fail = 0
                     pending_flush.append(r)
 
+                # Experiment antiflake: cool-down after consecutive portal fails (500 storms).
+                if consecutive_fail >= 2:
+                    extra = min(15.0, 5.0 * consecutive_fail)
+                    _phase(f"cool-down {extra:.0f}s after consecutive fails={consecutive_fail}")
+                    time.sleep(extra)
+
             if pending_flush:
                 flush_ok, flush_msg, verified = flush_download_files(
                     pending_flush, public_dir=public_dir

@@ -83,6 +83,16 @@ cd /opt/mstc-auction-listings
 | `VPS_DOWNLOAD_CONCURRENCY` | 2 | Parallel portal fetches |
 | `VPS_DOWNLOAD_FAIL_STREAK_ABORT` | 5 | Abort wave on consecutive fails |
 
-## Why VPS
+## Antiflake (MSTC HTTP 500 storms)
 
-GHA runners were ~26 PDFs/h against MSTC. On this VPS, polite batching hit ~50 PDFs/min when the portal is healthy. Production worker adds R2 + ledger tax but keeps the same politeness recipe.
+Proven on `/opt/mstc-pdf-experiment` (same VPS, Viynu untouched):
+
+| Tactic | Implementation |
+|--------|----------------|
+| Edge-first UA | `scraper/pdf_downloader.py` rotates Edge → Firefox → Chrome → Safari |
+| Fresh session | New `requests.Session` every attempt; `Connection: close` |
+| No cache | `Cache-Control` / `Pragma: no-cache` + cache-buster query params |
+| Cool-down | VPS worker sleeps `min(15, 5×consecutive_fails)` after ≥2 fails |
+| Health gate | Abort wave after 5 consecutive fails |
+
+When healthy: ~0.2–0.35s/PDF. Batching alone does **not** fix a 500 storm — UA rotation + cool-down does.
