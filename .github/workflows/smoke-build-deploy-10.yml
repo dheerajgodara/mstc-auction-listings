@@ -1,0 +1,102 @@
+name: Smoke Build Deploy 10
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke-build-deploy-10:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: pipeline-build-deploy-smoke
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: wip/scraper-speed-rate-test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install web deps
+        working-directory: web
+        run: pnpm install --frozen-lockfile || pnpm install
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
+          chmod 600 ~/.ssh/hostinger_key
+      - name: Parse 10 then timed build-deploy
+        env:
+          PYTHONUNBUFFERED: "1"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
+          HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
+          HOSTINGER_PORT: ${{ secrets.HOSTINGER_PORT }}
+          HOSTINGER_USERNAME: ${{ secrets.HOSTINGER_USERNAME }}
+          HOSTINGER_SSH_KEY: ~/.ssh/hostinger_key
+          HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          AI_ENRICHMENT_DISABLE: "1"
+          MEDIA_R2_ONLY: "1"
+          PIPELINE_ALLOW_SMALL_EXPORT: "1"
+          PARSE_SUCCESS_PAUSE_SEC: "0"
+          PARSE_WORKERS: "2"
+          PARSER_CACHE_VERSION: "2"
+          SKIP_LEDGER_PULL: "1"
+          SKIP_LEDGER_PUSH: "1"
+          SKIP_PARSED_PULL: "1"
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          cp tests/fixtures/smoke_ledger_deploy_10.json work/pipeline_ledger.json
+          echo "=== parse prep (10) ==="
+          PARSE_START=$(date +%s)
+          PYTHONPATH=. python -m scraper.pipeline_parse_assets \
+            --break-stale-lock --max-parse 10 --wave-size 10 \
+            --auction-ids 589371,589184,588623,589235,588927,590494,589397,589379,590546,588456
+          echo "parse_prep_wall_sec=$(( $(date +%s) - PARSE_START ))"
+          PYTHONPATH=. python - <<'PY'
+          import json
+          from pathlib import Path
+          from datetime import datetime, timedelta, timezone
+          root = Path("work/parsed/mstc")
+          closing = (datetime.now(timezone.utc) + timedelta(days=45)).isoformat()
+          opening = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+          n = 0
+          for p in root.glob("*.json"):
+              art = json.loads(p.read_text(encoding="utf-8"))
+              rec = art.get("record") or {}
+              rec["closing"] = closing
+              rec["opening"] = opening
+              art["record"] = rec
+              p.write_text(json.dumps(art, indent=2) + "\n", encoding="utf-8")
+              n += 1
+          ledger_path = Path("work/pipeline_ledger.json")
+          ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+          for item in ledger.get("items") or []:
+              item["closing"] = closing
+              item["opening"] = opening
+          ledger_path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
+          print(f"forced_future_closing artifacts={n}")
+          PY
+          echo "=== build-deploy timed ==="
+          START=$(date +%s)
+          PYTHONPATH=. python -m scraper.pipeline_build_deploy \
+            --break-stale-lock --allow-small-export
+          echo "build_deploy_smoke_wall_sec=$(( $(date +%s) - START ))"
