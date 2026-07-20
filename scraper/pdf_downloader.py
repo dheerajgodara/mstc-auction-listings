@@ -9,16 +9,29 @@ from pathlib import Path
 
 import requests
 
-from scraper.config import PDF_DETAIL_URL, REQUEST_TIMEOUT, USER_AGENT
+from scraper.config import (
+    PDF_BACKOFF_BASE_SEC,
+    PDF_BACKOFF_BUDGET_SEC,
+    PDF_BACKOFF_CAP_SEC,
+    PDF_DETAIL_URL,
+    PDF_DOWNLOAD_RETRIES,
+    REQUEST_TIMEOUT,
+    USER_AGENT,
+)
 
 logger = logging.getLogger(__name__)
 
 MIN_PDF_BYTES = 1000
 
-# MSTC's catalogue endpoint is intermittently 500. Retries + backoff recover most.
-DEFAULT_PDF_RETRIES = 5
-DEFAULT_PDF_BACKOFF_BASE_SEC = 2.0
-DEFAULT_PDF_BACKOFF_CAP_SEC = 45.0
+# MSTC's catalogue endpoint is intermittently 500. Tight retries + full jitter.
+DEFAULT_PDF_RETRIES = PDF_DOWNLOAD_RETRIES
+DEFAULT_PDF_BACKOFF_BASE_SEC = PDF_BACKOFF_BASE_SEC
+DEFAULT_PDF_BACKOFF_CAP_SEC = PDF_BACKOFF_CAP_SEC
+DEFAULT_PDF_BACKOFF_BUDGET_SEC = PDF_BACKOFF_BUDGET_SEC
+
+# Split timeouts: fail connect fast; allow more time for PDF body.
+PDF_CONNECT_TIMEOUT_SEC = float(os.getenv("PDF_CONNECT_TIMEOUT_SEC", "10"))
+PDF_READ_TIMEOUT_SEC = float(os.getenv("PDF_READ_TIMEOUT_SEC", str(REQUEST_TIMEOUT)))
 
 
 def is_valid_pdf_bytes(content: bytes) -> bool:
@@ -42,21 +55,62 @@ def validate_pdf_file(path: Path) -> bool:
 
 
 def _is_retryable_http(status: int) -> bool:
+    """Only transient statuses — never retry 404/403."""
     return status in {408, 425, 429, 500, 502, 503, 504}
+
+
+def classify_pdf_error(exc: BaseException) -> str:
+    """Taxonomy for retry policy / wave metrics."""
+    if isinstance(exc, requests.Timeout):
+        return "timeout"
+    if isinstance(exc, requests.ConnectionError):
+        return "timeout"
+    if isinstance(exc, requests.HTTPError):
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in (401, 403):
+            return "auth"
+        if status == 404:
+            return "not_found"
+        if status == 429:
+            return "rate_limit"
+        if status is not None and int(status) >= 500:
+            return "portal_500"
+        if "HTML error" in str(exc):
+            return "portal_500"
+        return "portal_http"
+    if isinstance(exc, ValueError) and "Expected PDF" in str(exc):
+        return "invalid_body"
+    return "other"
+
+
+def _retry_after_sec(exc: BaseException) -> float | None:
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return None
+    raw = (resp.headers or {}).get("Retry-After")
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return None
 
 
 def _fetch_pdf_bytes(
     auction_id: str,
     *,
     session: requests.Session | None = None,
-    timeout: float | None = None,
+    timeout: float | tuple[float, float] | None = None,
 ) -> bytes:
     """Single attempt POST to MSTC catalogue PDF endpoint."""
     sess = session or requests
+    to = timeout
+    if to is None:
+        to = (PDF_CONNECT_TIMEOUT_SEC, PDF_READ_TIMEOUT_SEC)
     resp = sess.post(
         PDF_DETAIL_URL,
         data={"auc": auction_id},
-        timeout=timeout if timeout is not None else REQUEST_TIMEOUT,
+        timeout=to,
         headers={
             "User-Agent": USER_AGENT,
             "Content-Type": "application/x-www-form-urlencoded",
@@ -64,6 +118,8 @@ def _fetch_pdf_bytes(
             "Accept": "application/pdf,*/*",
         },
     )
+    if resp.status_code in (403, 404):
+        resp.raise_for_status()
     if _is_retryable_http(resp.status_code):
         raise requests.HTTPError(
             f"{resp.status_code} Server Error for url: {resp.url}",
@@ -96,12 +152,13 @@ def download_pdf(
     retries: int = DEFAULT_PDF_RETRIES,
     backoff_base_sec: float = DEFAULT_PDF_BACKOFF_BASE_SEC,
     backoff_cap_sec: float = DEFAULT_PDF_BACKOFF_CAP_SEC,
+    backoff_budget_sec: float = DEFAULT_PDF_BACKOFF_BUDGET_SEC,
     session: requests.Session | None = None,
 ) -> Path:
     """Download auction catalogue PDF with retries for MSTC flakiness.
 
     Retries on 5xx/429/timeouts and HTML error bodies. Uses exponential backoff
-    with jitter. Validates response is a real PDF before writing.
+    with full jitter. Caps total sleep per item. Never retries 403/404.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,6 +167,8 @@ def download_pdf(
     last_exc: Exception | None = None
     own_session = session is None
     sess = session or requests.Session()
+    sleep_spent = 0.0
+    content: bytes | None = None
 
     try:
         for attempt in range(1, attempts + 1):
@@ -118,29 +177,50 @@ def download_pdf(
                 break
             except (requests.RequestException, ValueError) as exc:
                 last_exc = exc
-                retryable = isinstance(exc, (requests.Timeout, requests.ConnectionError, requests.HTTPError))
+                kind = classify_pdf_error(exc)
+                retryable = kind in {
+                    "timeout",
+                    "portal_500",
+                    "rate_limit",
+                    "portal_http",
+                    "invalid_body",
+                }
                 if isinstance(exc, requests.HTTPError):
                     status = getattr(getattr(exc, "response", None), "status_code", None)
-                    retryable = status is None or _is_retryable_http(int(status)) or "HTML error" in str(exc)
-                if isinstance(exc, ValueError) and "Expected PDF" in str(exc):
-                    retryable = True
+                    if status in (403, 404):
+                        retryable = False
                 if not retryable or attempt >= attempts:
                     raise
-                delay = min(backoff_cap_sec, backoff_base_sec * (2 ** (attempt - 1)))
-                delay *= 0.75 + random.random() * 0.5  # jitter
+                if sleep_spent >= backoff_budget_sec:
+                    logger.warning(
+                        "MSTC PDF %s aborting retries — sleep budget %.1fs exhausted",
+                        auction_id,
+                        backoff_budget_sec,
+                    )
+                    raise
+                ra = _retry_after_sec(exc)
+                if ra is not None:
+                    delay = min(backoff_cap_sec, ra)
+                else:
+                    exp = min(backoff_cap_sec, backoff_base_sec * (2 ** (attempt - 1)))
+                    delay = random.uniform(0.0, exp)  # full jitter
+                delay = min(delay, max(0.0, backoff_budget_sec - sleep_spent))
                 logger.warning(
-                    "MSTC PDF %s attempt %d/%d failed (%s); retry in %.1fs",
+                    "MSTC PDF %s attempt %d/%d failed (%s/%s); retry in %.1fs",
                     auction_id,
                     attempt,
                     attempts,
+                    kind,
                     exc,
                     delay,
                 )
                 time.sleep(delay)
+                sleep_spent += delay
         else:
             assert last_exc is not None
             raise last_exc
 
+        assert content is not None
         fd, tmp_name = tempfile.mkstemp(
             prefix=f".{auction_id}.", suffix=".pdf.part", dir=output_path.parent
         )

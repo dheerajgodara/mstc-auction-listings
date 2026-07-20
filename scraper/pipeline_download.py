@@ -1,4 +1,4 @@
-"""Fast download lane: parallel portal fetch → batch Hostinger flush → HTTP-200 → done."""
+"""Fast download lane: parallel portal fetch → batch R2 flush → CDN verify → done."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ from scraper.config import (
     DOWNLOAD_DECOUPLE_FLUSH,
     DOWNLOAD_FAIL_BUDGET_ABS,
     DOWNLOAD_FAIL_BUDGET_PCT,
-    DOWNLOAD_FETCH_TIMEOUT_SEC,
     DOWNLOAD_STALL_ABORT_MIN,
     DOWNLOAD_STREAM_FLUSH_EVERY,
     DOWNLOAD_SUCCESS_PAUSE_SEC,
@@ -47,6 +46,7 @@ from scraper.hostinger_ssh import (
 )
 from scraper.lane_resume import dispatch_workflow, kick_if_needed, record_resume, should_self_resume
 from scraper.media_sync import media_push_required
+from scraper.object_store import media_r2_only, r2_configured
 from scraper.pipeline_ledger import (
     count_parse_eligible,
     estimated_download_runs_to_clear,
@@ -67,6 +67,39 @@ from scraper.telegram_reporter import send_lane_report
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_download")
+
+
+def _classify_fetch_error(err: str | None) -> str:
+    text = (err or "").lower()
+    if "wave_deadline" in text:
+        return "deadline"
+    if "timeout" in text or "timed out" in text or "connecttimeout" in text:
+        return "timeout"
+    if "500" in text or "html error" in text:
+        return "portal_500"
+    if "403" in text or "401" in text:
+        return "auth"
+    if "404" in text:
+        return "not_found"
+    if "r2" in text or "cdn" in text:
+        return "r2"
+    return "other"
+
+
+def _empty_wave_metrics() -> dict[str, Any]:
+    return {
+        "portal_ok": 0,
+        "portal_500": 0,
+        "timeout": 0,
+        "deadline": 0,
+        "auth": 0,
+        "not_found": 0,
+        "r2_ok": 0,
+        "r2_fail": 0,
+        "other": 0,
+        "sleep_sec_total": 0.0,
+        "wall_sec": 0.0,
+    }
 
 
 def _phase(msg: str) -> None:
@@ -171,6 +204,8 @@ def _mark_unverified_pending(
             ok=False,
             error=error,
             raw_html_path=r.get("raw_html_path"),
+            local_doc_path=str(r.get("local_path") or "") or None,
+            bump_attempts=False,
         )
 
 
@@ -255,22 +290,23 @@ def run_pipeline_download(
 
         ok_pf, pf_msg = preflight_hostinger()
         _phase(pf_msg)
-        # Hard-fail only when SSH is configured but Hostinger is unreachable.
-        # Incomplete env is handled by MEDIA_PUSH_REQUIRED below (and unit tests).
+        # Soft-fail Hostinger when R2-only media + ledger can load locally/R2.
         if not ok_pf and _live_ssh_cfg() is not None:
-            send_lane_report(
-                lane_id,
-                "failed",
-                {
-                    "error": f"Hostinger stalled (preflight): {pf_msg}",
-                    "github_run_url": _github_run_url(),
-                },
-            )
-            raise RuntimeError(f"Hostinger preflight failed: {pf_msg}")
+            if media_r2_only() and r2_configured():
+                warnings.append(f"Hostinger preflight soft-fail (R2-only): {pf_msg}")
+                _phase(f"Hostinger preflight soft-fail (R2-only continue): {pf_msg}")
+            else:
+                send_lane_report(
+                    lane_id,
+                    "failed",
+                    {
+                        "error": f"Hostinger stalled (preflight): {pf_msg}",
+                        "github_run_url": _github_run_url(),
+                    },
+                )
+                raise RuntimeError(f"Hostinger preflight failed: {pf_msg}")
 
         if media_push_required() and _hostinger_ssh_config() is None:
-            from scraper.object_store import media_r2_only, r2_configured
-
             if not (media_r2_only() and r2_configured()):
                 raise RuntimeError(
                     "download requires Hostinger SSH (HOSTINGER_*) when MEDIA_PUSH_REQUIRED=1 "
@@ -309,6 +345,8 @@ def run_pipeline_download(
             "documents": {},
             "batches_completed": 0,
             "waves_completed": 0,
+            "wave_metrics": [],
+            "_lock": threading.Lock(),
         }
         ok_count = 0
         fail_count = 0
@@ -457,10 +495,12 @@ def run_pipeline_download(
             batch_fail = 0
             failed_keys: list[str] = []
             wave_deadline = time.monotonic() + max(60.0, float(DOWNLOAD_WAVE_DEADLINE_SEC))
-            fetch_timeout = max(30.0, float(DOWNLOAD_FETCH_TIMEOUT_SEC))
             stream_every = max(0, int(DOWNLOAD_STREAM_FLUSH_EVERY))
+            metrics = _empty_wave_metrics()
+            wave_t0 = time.monotonic()
 
-            if source == "mstc" and not skip_pdf:
+            # Prefer CDN/R2 resume; Hostinger media pull is waste under MEDIA_R2_ONLY.
+            if source == "mstc" and not skip_pdf and not media_r2_only():
                 pdf_names = [f"{i.source_auction_id}.pdf" for i in selected]
                 pull_result = pull_public_pdf_files(
                     public_dir=public_dir, filenames=pdf_names, timeout_sec=90, attempts=2
@@ -472,8 +512,10 @@ def run_pipeline_download(
             results: list[dict[str, Any]] = []
             pending_stream: list[dict[str, Any]] = []
             flushed_keys: set[str] = set()
+            poison_keys: set[str] = set()
 
-            with ThreadPoolExecutor(max_workers=min(workers, len(selected))) as pool:
+            pool = ThreadPoolExecutor(max_workers=min(workers, len(selected)))
+            try:
                 futs: dict = {}
                 for item in selected:
                     resume = journal.local_resume_path(item.stable_key)
@@ -523,11 +565,13 @@ def run_pipeline_download(
                 while pending_futs:
                     if time.monotonic() >= wave_deadline:
                         _phase(
-                            f"wave {wave_num}: deadline reached — abandoning "
+                            f"wave {wave_num}: deadline reached — cancelling "
                             f"{len(pending_futs)} in-flight fetch(es)"
                         )
                         for fut in list(pending_futs):
+                            fut.cancel()
                             item = futs[fut]
+                            metrics["deadline"] += 1
                             results.append(
                                 {
                                     "stable_key": item.stable_key,
@@ -540,6 +584,7 @@ def run_pipeline_download(
                             attempted_ids.append(str(item.source_auction_id))
                             attempted_keys.add(item.stable_key)
                             failed_keys.append(item.stable_key)
+                        pending_futs.clear()
                         break
                     wait_s = min(5.0, max(0.1, wave_deadline - time.monotonic()))
                     done, pending_futs = wait(
@@ -548,7 +593,8 @@ def run_pipeline_download(
                     for fut in done:
                         item = futs[fut]
                         try:
-                            r = fut.result(timeout=fetch_timeout)
+                            # Future already finished; timeout here is only a safety net.
+                            r = fut.result(timeout=1.0)
                         except Exception as exc:
                             r = {
                                 "stable_key": item.stable_key,
@@ -560,6 +606,13 @@ def run_pipeline_download(
                         results.append(r)
                         attempted_ids.append(str(item.source_auction_id))
                         attempted_keys.add(item.stable_key)
+                        if r.get("ok"):
+                            metrics["portal_ok"] += 1
+                        else:
+                            kind = _classify_fetch_error(str(r.get("error") or ""))
+                            metrics[kind] = int(metrics.get(kind) or 0) + 1
+                            if kind == "portal_500":
+                                poison_keys.add(str(r["stable_key"]))
                         journal.append(
                             {
                                 "stable_key": r.get("stable_key"),
@@ -577,11 +630,16 @@ def run_pipeline_download(
                                 bok, bfail, fkeys = _flush_pending(
                                     list(pending_stream), wave_num=wave_num
                                 )
+                                metrics["r2_ok"] += bok
+                                metrics["r2_fail"] += bfail
                                 flushed_keys.update(str(x["stable_key"]) for x in pending_stream)
                                 batch_ok += bok
                                 batch_fail += bfail
                                 failed_keys.extend(fkeys)
                                 pending_stream.clear()
+            finally:
+                # Do not wait for abandoned in-flight portal calls after deadline.
+                pool.shutdown(wait=False, cancel_futures=True)
 
             timing["fetch_s"] += time.monotonic() - t_fetch
 
@@ -607,12 +665,50 @@ def run_pipeline_download(
 
             if pending_ok:
                 bok, bfail, fkeys = _flush_pending(pending_ok, wave_num=wave_num)
+                metrics["r2_ok"] += bok
+                metrics["r2_fail"] += bfail
                 batch_ok += bok
                 batch_fail += bfail
                 failed_keys.extend(fkeys)
 
+            metrics["wall_sec"] = round(time.monotonic() - wave_t0, 2)
+            wall = max(0.001, float(metrics["wall_sec"]))
+            # Heuristic thrash detector: high timeout/500 share vs wall.
+            sleepish = float(metrics["timeout"]) + float(metrics["portal_500"])
+            if sleepish / max(1, len(results)) > 0.4 and wall > 30:
+                _phase(
+                    f"wave {wave_num} thrash warning: timeout+500 share high "
+                    f"({sleepish}/{len(results)}) wall={wall:.0f}s"
+                )
+            metrics["poison_skipped"] = len(poison_keys)
+            stats.setdefault("wave_metrics", []).append({"wave": wave_num, **metrics})
+            _phase(
+                f"wave {wave_num} metrics: portal_ok={metrics['portal_ok']} "
+                f"portal_500={metrics['portal_500']} timeout={metrics['timeout']} "
+                f"r2_ok={metrics['r2_ok']} r2_fail={metrics['r2_fail']} "
+                f"deadline={metrics['deadline']} wall_s={metrics['wall_sec']}"
+            )
+
+            # Prefer retrying only transient portal failures; skip hard invalid / auth.
+            by_key = ledger.by_key()
+            filtered: list[str] = []
+            seen: set[str] = set()
+            for key in failed_keys:
+                if key in seen:
+                    continue
+                seen.add(key)
+                item = by_key.get(key)
+                err = (item.download_error if item else "") or ""
+                kind = _classify_fetch_error(err)
+                if kind in {"auth", "not_found", "invalid_body", "deadline"}:
+                    continue
+                # Repeated identical 500s: allow one wave-end retry only if attempts low.
+                if kind == "portal_500" and item and item.download_attempts >= 2:
+                    continue
+                filtered.append(key)
+
             _pause_between_auctions()
-            return batch_ok, batch_fail, failed_keys
+            return batch_ok, batch_fail, filtered
 
         for batch_num in range(1, max_batches + 1):
             elapsed_min = (time.monotonic() - loop_t0) / 60.0

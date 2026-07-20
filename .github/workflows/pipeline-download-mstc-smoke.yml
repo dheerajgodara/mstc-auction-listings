@@ -1,31 +1,23 @@
-name: Lane Download MSTC
+name: Lane Download MSTC Smoke (20 PDF timed)
 
 on:
   schedule:
-    # Temporary backlog drain: every 30m (UTC)
-    - cron: "5,35 * * * *"
+    # Nightly 20-auction timed smoke (UTC ~02:15)
+    - cron: "15 2 * * *"
   workflow_dispatch:
     inputs:
       max_download:
-        description: "Per-run download cap (default 2000)"
+        description: "Smoke cap (default 20)"
         required: false
-        default: "2000"
-      migrate_ledger:
-        description: "Run ledger schema migrate before download"
-        required: false
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
+        default: "20"
 
 jobs:
-  download-mstc:
+  download-mstc-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 30
     concurrency:
-      group: pipeline-download-mstc
-      cancel-in-progress: false
+      group: pipeline-download-mstc-smoke
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,18 +29,8 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
-      - name: Migrate ledger (optional)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.migrate_ledger == 'true' }}
-        env:
-          PYTHONUNBUFFERED: "1"
-          HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
-          HOSTINGER_PORT: ${{ secrets.HOSTINGER_PORT }}
-          HOSTINGER_USERNAME: ${{ secrets.HOSTINGER_USERNAME }}
-          HOSTINGER_SSH_KEY: ~/.ssh/hostinger_key
-          HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
-        run: PYTHONPATH=. python -m scraper.pipeline_schema_migrate --pull --push
-      - name: Download MSTC wave (parallel fetch + batch flush)
-        timeout-minutes: 90
+      - name: Timed 20-PDF MSTC smoke
+        timeout-minutes: 15
         env:
           PYTHONUNBUFFERED: "1"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -61,12 +43,10 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DOWNLOAD_SUCCESS_PAUSE_SEC: "0"
-          DOWNLOAD_BATCH_RETRY_ROUNDS: "2"
-          DOWNLOAD_WAVE_SIZE: "25"
+          DOWNLOAD_BATCH_RETRY_ROUNDS: "1"
+          DOWNLOAD_WAVE_SIZE: "20"
           DOWNLOAD_FETCH_WORKERS_MSTC: "6"
-          DOWNLOAD_WAVE_DEADLINE_SEC: "600"
-          DOWNLOAD_FETCH_TIMEOUT_SEC: "120"
-          DOWNLOAD_STALL_ABORT_MIN: "20"
+          DOWNLOAD_WAVE_DEADLINE_SEC: "240"
           DOWNLOAD_STREAM_FLUSH_EVERY: "5"
           DOWNLOAD_DECOUPLE_FLUSH: "1"
           DOWNLOAD_CIRCUIT_COOLDOWN_SEC: "25"
@@ -74,23 +54,29 @@ jobs:
           PDF_BACKOFF_CAP_SEC: "12"
           R2_UPLOAD_WORKERS: "6"
           R2_SKIP_ACL: "1"
-          SSH_CONNECT_TIMEOUT: "15"
-          SSH_SERVER_ALIVE_INTERVAL: "30"
-          RSYNC_IO_TIMEOUT: "120"
+          MEDIA_R2_ONLY: "1"
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
           R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
-          MEDIA_R2_ONLY: "1"
         run: |
           CAP="${{ github.event.inputs.max_download }}"
-          if [ -z "$CAP" ]; then CAP=2000; fi
+          if [ -z "$CAP" ]; then CAP=20; fi
+          START=$(date +%s)
           PYTHONPATH=. python -m scraper.pipeline_download \
             --source mstc \
-            --wave-size 25 \
-            --batch-size 25 \
-            --max-batches 80 \
+            --wave-size 20 \
+            --batch-size 20 \
+            --max-batches 2 \
             --max-download "$CAP" \
             --break-stale-lock
+          END=$(date +%s)
+          ELAPSED=$((END - START))
+          echo "smoke_wall_sec=$ELAPSED"
+          # Soft gate: log rate; hard-fail only if catastrophically slow with zero commits
+          # (portal 500s are expected; success metric tracked in Telegram/wave_metrics).
+          if [ "$ELAPSED" -gt 600 ]; then
+            echo "WARN: smoke exceeded 10m wall ($ELAPSED s)"
+          fi

@@ -668,12 +668,17 @@ def mark_download(
     local_doc_path: str | None = None,
     object_doc_url: str | None = None,
     fetched_local_only: bool = False,
+    bump_attempts: bool | None = None,
 ) -> LedgerItem | None:
     _ = require_media_resync
     item = ledger.by_key().get(stable_key)
     if item is None:
         return None
-    item.download_attempts += 1
+    # Flush/CDN-lag staging must not burn portal attempt budget.
+    if bump_attempts is None:
+        bump_attempts = not (ok and fetched_local_only)
+    if bump_attempts:
+        item.download_attempts += 1
     item.updated_at = _now_iso()
     # Map legacy pdf_path arg
     if hostinger_doc_path is None and pdf_path:
@@ -867,38 +872,49 @@ def pull_ledger(
     local = Path(local_path or DEFAULT_LEDGER_PATH)
     local.parent.mkdir(parents=True, exist_ok=True)
     cfg = _hostinger_ssh_config()
-    if cfg is None or shutil.which("rsync") is None:
-        msg = "ledger pull failed: Hostinger SSH/rsync not configured"
-        if require:
-            raise RuntimeError(msg)
-        return False
-    remote_root = remote_pipeline_root(cfg["remote_dir"])
-    target = f"{cfg['username']}@{cfg['host']}"
-    remote = f"{target}:{remote_root}/pipeline_ledger.json"
-    from scraper.hostinger_ssh import rsync_timeout_args, run_rsync_with_retries
-
-    cmd = ["rsync", "-az", *rsync_timeout_args(), "-e", _ssh_cmd(cfg), remote, str(local)]
     last_exc: Exception | None = None
-    tries = max(1, int(attempts))
-    # Cap per-attempt wall clock so soft hangs fail fast (was up to 300s×4).
-    per_try = min(int(timeout_sec), 90)
-    for attempt in range(1, tries + 1):
-        try:
-            run_rsync_with_retries(
-                cmd,
-                timeout_sec=per_try,
-                label="ledger-pull",
-                attempts=1,
-            )
-            if attempt > 1:
-                logger.info("ledger pull succeeded on attempt %s/%s", attempt, tries)
-            return True
-        except Exception as exc:
-            last_exc = exc
-            logger.info("ledger pull attempt %s/%s failed: %s", attempt, tries, exc)
-            if attempt < tries:
-                time.sleep(min(15, 3 * attempt))
-    msg = f"ledger pull failed after {tries} attempts: {last_exc}"
+    if cfg is not None and shutil.which("rsync") is not None:
+        remote_root = remote_pipeline_root(cfg["remote_dir"])
+        target = f"{cfg['username']}@{cfg['host']}"
+        remote = f"{target}:{remote_root}/pipeline_ledger.json"
+        from scraper.hostinger_ssh import rsync_timeout_args, run_rsync_with_retries
+
+        cmd = ["rsync", "-az", *rsync_timeout_args(), "-e", _ssh_cmd(cfg), remote, str(local)]
+        tries = max(1, int(attempts))
+        # Cap per-attempt wall clock so soft hangs fail fast (was up to 300s×4).
+        per_try = min(int(timeout_sec), 90)
+        for attempt in range(1, tries + 1):
+            try:
+                run_rsync_with_retries(
+                    cmd,
+                    timeout_sec=per_try,
+                    label="ledger-pull",
+                    attempts=1,
+                )
+                if attempt > 1:
+                    logger.info("ledger pull succeeded on attempt %s/%s", attempt, tries)
+                return True
+            except Exception as exc:
+                last_exc = exc
+                logger.info("ledger pull attempt %s/%s failed: %s", attempt, tries, exc)
+                if attempt < tries:
+                    time.sleep(min(15, 3 * attempt))
+    else:
+        last_exc = RuntimeError("Hostinger SSH/rsync not configured")
+
+    # R2 mirror fallback — keeps download lane alive when Hostinger SSH blips.
+    if _pull_ledger_from_r2(local):
+        logger.info("ledger pull recovered from R2 mirror")
+        return True
+
+    if local.is_file() and local.stat().st_size > 0:
+        logger.warning(
+            "ledger pull failed (%s); continuing with existing local ledger",
+            last_exc,
+        )
+        return False
+
+    msg = f"ledger pull failed after Hostinger+R2: {last_exc}"
     if require:
         logger.error(msg)
         raise RuntimeError(msg) from last_exc
@@ -906,12 +922,55 @@ def pull_ledger(
     return False
 
 
+def _ledger_r2_key() -> str:
+    from scraper.config import LEDGER_R2_KEY
+
+    return (LEDGER_R2_KEY or "pipeline/pipeline_ledger.json").lstrip("/")
+
+
+def _pull_ledger_from_r2(local: Path) -> bool:
+    try:
+        from scraper.object_store import download_object_to_path, r2_configured
+
+        if not r2_configured():
+            return False
+        key = _ledger_r2_key()
+        tmp = local.with_suffix(local.suffix + ".r2part")
+        got = download_object_to_path(key=key, dest=tmp)
+        if not got.get("ok") or not tmp.is_file() or tmp.stat().st_size < 2:
+            tmp.unlink(missing_ok=True)
+            return False
+        tmp.replace(local)
+        return True
+    except Exception as exc:
+        logger.info("ledger R2 pull failed: %s", exc)
+        return False
+
+
+def _push_ledger_to_r2(local: Path) -> bool:
+    try:
+        from scraper.object_store import r2_configured, upload_file
+
+        if not r2_configured() or not local.is_file():
+            return False
+        up = upload_file(local, key=_ledger_r2_key(), content_type="application/json")
+        return bool(up.get("ok"))
+    except Exception as exc:
+        logger.warning("ledger R2 push failed: %s", exc)
+        return False
+
+
 def push_ledger(*, local_path: Path | None = None, timeout_sec: int = 120) -> bool:
     local = Path(local_path or DEFAULT_LEDGER_PATH)
     if not local.is_file():
         return False
+
+    r2_ok = _push_ledger_to_r2(local)
     cfg = _hostinger_ssh_config()
     if cfg is None or shutil.which("rsync") is None:
+        if r2_ok:
+            logger.info("ledger pushed to R2 only (Hostinger SSH unavailable)")
+            return True
         return False
     remote_root = remote_pipeline_root(cfg["remote_dir"])
     target = f"{cfg['username']}@{cfg['host']}"
@@ -921,6 +980,9 @@ def push_ledger(*, local_path: Path | None = None, timeout_sec: int = 120) -> bo
         run_ssh(cfg, f"mkdir -p {remote_root}", timeout_sec=60, multiplex=False)
     except Exception as exc:
         logger.warning("ledger remote mkdir failed: %s", exc)
+        if r2_ok:
+            logger.warning("ledger Hostinger push soft-fail; R2 mirror ok")
+            return True
         return False
     remote = f"{target}:{remote_root}/pipeline_ledger.json"
     cmd = ["rsync", "-az", *rsync_timeout_args(), "-e", _ssh_cmd(cfg), str(local), remote]
@@ -934,4 +996,8 @@ def push_ledger(*, local_path: Path | None = None, timeout_sec: int = 120) -> bo
         return True
     except Exception as exc:
         logger.warning("ledger push failed: %s", exc)
+        if r2_ok:
+            logger.warning("ledger Hostinger push soft-fail; local+R2 retained")
+            return True
+        logger.warning("ledger push soft-fail; local write retained for next run")
         return False

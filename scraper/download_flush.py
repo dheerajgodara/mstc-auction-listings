@@ -1,17 +1,20 @@
 """Batch media flush to R2 CDN + parallel HTTP-200 verify (download waves).
 
 With MEDIA_R2_ONLY (default), Hostinger rsync is skipped; durability is R2 upload
-verified against R2_PUBLIC_BASE_URL (files.scrapauctionindia.com).
+verified against R2_PUBLIC_BASE_URL (files.csmg.in).
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from scraper.config import R2_UPLOAD_WORKERS
 from scraper.object_store import (
+    _s3_client,
     media_r2_only,
     public_object_url,
     r2_configured,
@@ -28,12 +31,13 @@ def flush_download_files(
     *,
     public_dir: Path,
 ) -> tuple[bool, str, list[dict[str, Any]]]:
-    """Upload local docs to R2, then verify public CDN URLs.
+    """Upload local docs to R2 (parallel), then verify public CDN URLs.
 
     Each item dict needs: stable_key, hostinger_doc_path (e.g. pdfs/1.pdf),
     local_path (absolute Path or str).
 
-    Returns (ok, message, verified_items) where verified_items passed HTTP 200.
+    Returns (ok, message, verified_items) where verified_items passed HTTP 200
+    (or soft-pass after PutObject when MEDIA_R2_ONLY).
     """
     del public_dir  # reserved for future local staging roots
     ready: list[dict[str, Any]] = []
@@ -64,17 +68,28 @@ def flush_download_files(
 
     uploaded_items: list[dict[str, Any]] = []
     errors: list[str] = []
+    client = _s3_client()
+    upload_workers = max(1, min(int(R2_UPLOAD_WORKERS), len(ready), 8))
 
-    for it in ready:
+    def _upload_one(it: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
         rel = it["hostinger_doc_path"]
-        up = upload_hostinger_rel(it["local_path"], rel)
+        up = upload_hostinger_rel(it["local_path"], rel, client=client)
         if not up.get("ok"):
-            errors.append(f"{rel}: {up.get('error')}")
-            continue
+            return None, f"{rel}: {up.get('error')}"
         out = dict(it)
         out["object_doc_url"] = up.get("url") or public_object_url(rel) or public_doc_url(rel)
         out["hostinger_doc_url"] = out["object_doc_url"]
-        uploaded_items.append(out)
+        out["upload_ms"] = up.get("upload_ms")
+        return out, None
+
+    with ThreadPoolExecutor(max_workers=upload_workers) as pool:
+        futs = {pool.submit(_upload_one, it): it for it in ready}
+        for fut in as_completed(futs):
+            got, err = fut.result()
+            if err:
+                errors.append(err)
+            elif got is not None:
+                uploaded_items.append(got)
 
     if not uploaded_items:
         return False, "; ".join(errors) or "R2 upload failed", []
@@ -84,17 +99,27 @@ def flush_download_files(
     def _check(it: dict[str, Any]) -> dict[str, Any] | None:
         url = str(it.get("object_doc_url") or public_doc_url(it["hostinger_doc_path"]))
         sniff = str(it["hostinger_doc_path"]).startswith("docs/gem/")
-        if verify_public_object_url(url, sniff_magic=sniff):
+        t0 = time.monotonic()
+        ok = verify_public_object_url(url, sniff_magic=sniff)
+        verify_ms = int((time.monotonic() - t0) * 1000)
+        if ok:
             out = dict(it)
             out["hostinger_doc_url"] = url
             out["object_doc_url"] = url
+            out["verify_ms"] = verify_ms
             return out
         # Custom domains can lag briefly after PutObject; accept upload if URL builds.
         if media_r2_only() and url:
-            logger.warning("CDN verify soft-pass after upload for %s", url)
+            logger.warning(
+                "CDN verify soft-pass after upload for %s verify_ms=%s",
+                url,
+                verify_ms,
+            )
             out = dict(it)
             out["hostinger_doc_url"] = url
             out["object_doc_url"] = url
+            out["verify_ms"] = verify_ms
+            out["cdn_soft_pass"] = True
             return out
         return None
 

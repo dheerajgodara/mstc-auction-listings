@@ -43,15 +43,22 @@ def count_pdf_objects() -> tuple[int, int]:
     return n, total
 
 
-def publish_status(payload: str) -> None:
+def publish_status(payload: str, *, wave_id: str | None = None, delta: int | None = None) -> None:
     """Write a tiny public status object so local curl can watch progress."""
     from scraper.object_store import upload_file
     import tempfile
     from pathlib import Path
 
+    lines = [payload.rstrip("\n")]
+    if wave_id is not None:
+        lines.append(f"wave_id={wave_id}")
+    if delta is not None:
+        lines.append(f"delta={delta:+d}")
+    body = "\n".join(lines) + "\n"
+
     with tempfile.TemporaryDirectory() as td:
         path = Path(td) / "status.txt"
-        path.write_text(payload, encoding="utf-8")
+        path.write_text(body, encoding="utf-8")
         up = upload_file(path, key="pdfs/_poll/status.txt", content_type="text/plain")
         if not up.get("ok"):
             print(f"status upload warn: {up.get('error')}", flush=True)
@@ -92,7 +99,7 @@ def main() -> int:
             f"list_ms={int(dt*1000)} elapsed_min={(time.time()-t_start)/60:.1f}"
         )
         print(line, flush=True)
-        publish_status(line + "\n")
+        publish_status(line + "\n", delta=delta_n if prev_n is not None else None)
         if prev_n is not None and n > prev_n:
             print(
                 f"[{_utc()}] NEW_UPLOADS +{n - prev_n} since last poll (~{args.interval:.0f}s window)",

@@ -1,19 +1,18 @@
-"""Portal fetch → local durable files (no Hostinger push)."""
+"""Portal fetch → local durable files (R2 flush happens in download lane)."""
 
 from __future__ import annotations
 
 import hashlib
 import logging
+import random
 import shutil
 import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-import requests
-
 from scraper.download_throttle import DownloadThrottle
-from scraper.main import enrich_auction, resolve_auction_listing
+from scraper.main import enrich_auction, listing_stub_for_download
 from scraper.pdf_downloader import validate_pdf_file
 from scraper.pdf_flush import _sha256_file
 from scraper.raw_store import has_raw_html, raw_html_rel_path, save_raw_html
@@ -42,6 +41,8 @@ def fetch_mstc_to_local(
     """Fetch MSTC HTML+PDF to local public pdfs/. Does not push Hostinger."""
     aid = str(item.source_auction_id)
     host = "www.mstcecommerce.com"
+    # Jitter worker start so concurrent workers don't align on the same second.
+    time.sleep(random.uniform(0.0, 0.35))
     throttle.for_host(host).wait_turn()
     t0 = time.monotonic()
     try:
@@ -53,7 +54,13 @@ def fetch_mstc_to_local(
                 "ok": False,
                 "error": "skip_pdf set — Hostinger durability required",
             }
-        base, _ = resolve_auction_listing(aid)
+        detail = (
+            getattr(item, "detail_url", None)
+            or getattr(item, "portal_doc_url", None)
+            or None
+        )
+        # Stub only — never scan ~21 MSTC offices per auction during download.
+        base = listing_stub_for_download(aid, detail_url=str(detail) if detail else None)
         base.source = "mstc"
         downloaded = enrich_auction(
             base,

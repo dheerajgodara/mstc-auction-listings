@@ -161,7 +161,7 @@ DOWNLOAD_FETCH_TIMEOUT_SEC = float(os.getenv("DOWNLOAD_FETCH_TIMEOUT_SEC", "180"
 # Abort lane if zero download commits for this many minutes while pending work remains.
 DOWNLOAD_STALL_ABORT_MIN = float(os.getenv("DOWNLOAD_STALL_ABORT_MIN", "20"))
 # Mid-wave flush every K successful local fetches (0 = only end-of-wave).
-DOWNLOAD_STREAM_FLUSH_EVERY = int(os.getenv("DOWNLOAD_STREAM_FLUSH_EVERY", "10"))
+DOWNLOAD_STREAM_FLUSH_EVERY = int(os.getenv("DOWNLOAD_STREAM_FLUSH_EVERY", "5"))
 # When 1, fetch lane marks fetched_local and continues even if Hostinger flush fails.
 DOWNLOAD_DECOUPLE_FLUSH = os.getenv("DOWNLOAD_DECOUPLE_FLUSH", "1").strip() not in (
     "0",
@@ -195,13 +195,24 @@ DOWNLOAD_BATCH_RETRY_ROUNDS = int(os.getenv("DOWNLOAD_BATCH_RETRY_ROUNDS", "2"))
 DOWNLOAD_WAVE_SIZE = int(os.getenv("DOWNLOAD_WAVE_SIZE", "25"))
 # Per-source fetch workers (portal concurrency). 0 = use source default.
 DOWNLOAD_FETCH_WORKERS = int(os.getenv("DOWNLOAD_FETCH_WORKERS", "0"))
-DOWNLOAD_FETCH_WORKERS_MSTC = int(os.getenv("DOWNLOAD_FETCH_WORKERS_MSTC", "4"))
+DOWNLOAD_FETCH_WORKERS_MSTC = int(os.getenv("DOWNLOAD_FETCH_WORKERS_MSTC", "6"))
 DOWNLOAD_FETCH_WORKERS_GEM = int(os.getenv("DOWNLOAD_FETCH_WORKERS_GEM", "3"))
 DOWNLOAD_THROTTLE_MIN_SEC = float(os.getenv("DOWNLOAD_THROTTLE_MIN_SEC", "0.15"))
 DOWNLOAD_THROTTLE_MAX_SEC = float(os.getenv("DOWNLOAD_THROTTLE_MAX_SEC", "45"))
-DOWNLOAD_CIRCUIT_FAIL_RATIO = float(os.getenv("DOWNLOAD_CIRCUIT_FAIL_RATIO", "0.4"))
+DOWNLOAD_CIRCUIT_FAIL_RATIO = float(os.getenv("DOWNLOAD_CIRCUIT_FAIL_RATIO", "0.5"))
 DOWNLOAD_CIRCUIT_WINDOW = int(os.getenv("DOWNLOAD_CIRCUIT_WINDOW", "20"))
-DOWNLOAD_CIRCUIT_COOLDOWN_SEC = float(os.getenv("DOWNLOAD_CIRCUIT_COOLDOWN_SEC", "90"))
+DOWNLOAD_CIRCUIT_COOLDOWN_SEC = float(os.getenv("DOWNLOAD_CIRCUIT_COOLDOWN_SEC", "25"))
+# MSTC catalogue PDF retries (portal is flaky; keep budget tight under concurrency).
+PDF_DOWNLOAD_RETRIES = int(os.getenv("PDF_DOWNLOAD_RETRIES", "3"))
+PDF_BACKOFF_BASE_SEC = float(os.getenv("PDF_BACKOFF_BASE_SEC", "1.5"))
+PDF_BACKOFF_CAP_SEC = float(os.getenv("PDF_BACKOFF_CAP_SEC", "12"))
+PDF_BACKOFF_BUDGET_SEC = float(os.getenv("PDF_BACKOFF_BUDGET_SEC", "20"))
+# Parallel R2 PutObject workers during wave flush.
+R2_UPLOAD_WORKERS = int(os.getenv("R2_UPLOAD_WORKERS", "6"))
+# Skip ACL on PutObject (R2 custom-domain buckets do not need public-read ACL).
+R2_SKIP_ACL = os.getenv("R2_SKIP_ACL", "1").strip() not in ("0", "false", "False", "no")
+# Optional R2 mirror of pipeline ledger (durability when Hostinger SSH blips).
+LEDGER_R2_KEY = (os.getenv("LEDGER_R2_KEY", "pipeline/pipeline_ledger.json") or "").strip()
 # Deprecated: in-step retries removed; kept for env compatibility (ignored by download lane).
 DOWNLOAD_STEP_ATTEMPTS = int(os.getenv("DOWNLOAD_STEP_ATTEMPTS", "1"))
 DOWNLOAD_STEP_RETRY_SEC = float(os.getenv("DOWNLOAD_STEP_RETRY_SEC", "5"))

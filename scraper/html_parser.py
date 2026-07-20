@@ -100,14 +100,32 @@ def _parse_lots(soup: BeautifulSoup) -> list[dict[str, Any]]:
 
 
 def fetch_html_detail(auction_id: str) -> str:
+    """Fetch MSTC HTML detail; 1–2 short retries on timeout/connection only."""
+    import time
+
     url = f"{MSTC_BASE_URL}{HTML_DETAIL_PATH.format(auction_id=auction_id)}"
-    resp = requests.get(
-        url,
-        timeout=REQUEST_TIMEOUT,
-        headers={"User-Agent": USER_AGENT, "Accept": "text/html"},
-    )
-    resp.raise_for_status()
-    return resp.text
+    headers = {"User-Agent": USER_AGENT, "Accept": "text/html"}
+    # (connect, read) — fail connect fast; HTML bodies are small.
+    timeout = (10, float(REQUEST_TIMEOUT))
+    last_exc: Exception | None = None
+    for attempt in range(1, 3):
+        try:
+            resp = requests.get(url, timeout=timeout, headers=headers)
+            resp.raise_for_status()
+            return resp.text
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_exc = exc
+            if attempt >= 2:
+                break
+            time.sleep(0.4 * attempt)
+            logger.warning(
+                "HTML detail %s attempt %d/2 failed (%s); retry",
+                auction_id,
+                attempt,
+                exc,
+            )
+    assert last_exc is not None
+    raise last_exc
 
 
 def parse_html_detail(html: str) -> dict[str, Any]:

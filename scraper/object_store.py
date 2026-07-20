@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import mimetypes
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -23,9 +25,13 @@ from scraper.config import (
     R2_ENDPOINT_URL,
     R2_PUBLIC_BASE_URL,
     R2_SECRET_ACCESS_KEY,
+    R2_SKIP_ACL,
 )
 
 logger = logging.getLogger("scraper.object_store")
+
+_client_lock = threading.Lock()
+_cached_client: Any = None
 
 
 def r2_configured() -> bool:
@@ -78,25 +84,36 @@ def media_key_from_url(url: str) -> str | None:
     return None
 
 
-def _s3_client():
+def _s3_client(*, reuse: bool = True):
+    """Return an S3 client for R2. Reuses one process-wide client by default."""
+    global _cached_client
     import boto3
     from botocore.config import Config as BotoConfig
 
     endpoint = r2_endpoint()
     if not endpoint:
         raise RuntimeError("R2 endpoint missing")
-    return boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=R2_ACCESS_KEY_ID,
-        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-        region_name="auto",
-        config=BotoConfig(
-            connect_timeout=15,
-            read_timeout=120,
-            retries={"max_attempts": 3, "mode": "standard"},
-        ),
-    )
+
+    def _new():
+        return boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=R2_ACCESS_KEY_ID,
+            aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+            region_name="auto",
+            config=BotoConfig(
+                connect_timeout=15,
+                read_timeout=120,
+                retries={"max_attempts": 3, "mode": "standard"},
+            ),
+        )
+
+    if not reuse:
+        return _new()
+    with _client_lock:
+        if _cached_client is None:
+            _cached_client = _new()
+        return _cached_client
 
 
 def upload_file(
@@ -104,8 +121,9 @@ def upload_file(
     *,
     key: str,
     content_type: str | None = None,
+    client: Any | None = None,
 ) -> dict[str, Any]:
-    """Upload a local file to R2. Returns {ok, url?, error?, key}."""
+    """Upload a local file to R2. Returns {ok, url?, error?, key, upload_ms?}."""
     path = Path(local_path)
     if not path.is_file():
         return {"ok": False, "key": key, "error": "local file missing"}
@@ -117,27 +135,47 @@ def upload_file(
         return {"ok": False, "key": key, "error": "R2 endpoint missing"}
 
     ctype = content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    t0 = time.monotonic()
     try:
-        client = _s3_client()
-        # Custom-domain buckets do not need ACL; omit if it fails on some tokens.
+        s3 = client or _s3_client()
+        # Custom-domain / R2 buckets: ACL is unnecessary; skip double PutObject by default.
         extra: dict[str, Any] = {"ContentType": ctype}
         try:
-            client.upload_file(str(path), R2_BUCKET, key.lstrip("/"), ExtraArgs=extra)
+            s3.upload_file(str(path), R2_BUCKET, key.lstrip("/"), ExtraArgs=extra)
         except Exception:
+            if R2_SKIP_ACL:
+                raise
             extra["ACL"] = "public-read"
-            client.upload_file(str(path), R2_BUCKET, key.lstrip("/"), ExtraArgs=extra)
+            s3.upload_file(str(path), R2_BUCKET, key.lstrip("/"), ExtraArgs=extra)
         url = public_object_url(key)
-        logger.info("R2 upload ok key=%s bytes=%s", key, path.stat().st_size)
-        return {"ok": True, "key": key.lstrip("/"), "url": url, "bucket": R2_BUCKET}
+        upload_ms = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "R2 upload ok key=%s bytes=%s upload_ms=%s",
+            key,
+            path.stat().st_size,
+            upload_ms,
+        )
+        return {
+            "ok": True,
+            "key": key.lstrip("/"),
+            "url": url,
+            "bucket": R2_BUCKET,
+            "upload_ms": upload_ms,
+        }
     except Exception as exc:
         logger.warning("R2 upload failed key=%s: %s", key, exc)
         return {"ok": False, "key": key, "error": str(exc)}
 
 
-def upload_hostinger_rel(local_path: Path, hostinger_doc_path: str) -> dict[str, Any]:
+def upload_hostinger_rel(
+    local_path: Path,
+    hostinger_doc_path: str,
+    *,
+    client: Any | None = None,
+) -> dict[str, Any]:
     """Upload using relative media key as object key (pdfs/…, docs/…, thumbs/…)."""
     key = str(hostinger_doc_path).lstrip("/")
-    return upload_file(local_path, key=key)
+    return upload_file(local_path, key=key, client=client)
 
 
 def verify_public_object_url(

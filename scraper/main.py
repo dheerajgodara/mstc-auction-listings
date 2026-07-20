@@ -85,7 +85,31 @@ def _passes_min_closing(record: AuctionRecord, min_closing: datetime | None) -> 
     return record.closing >= min_closing
 
 
+def listing_stub_for_download(
+    auction_id: str,
+    *,
+    detail_url: str | None = None,
+) -> AuctionRecord:
+    """Minimal AuctionRecord for download_only — never scans MSTC offices."""
+    url = (detail_url or "").strip() or (
+        f"https://www.mstcindia.co.in/TenderEntry/Lot_Item_Details_AucID.aspx?ARID={auction_id}"
+    )
+    return AuctionRecord(
+        id=auction_id,
+        auction_number=auction_id,
+        region="",
+        office="",
+        mstc_html_url=url,
+        detail_url=url,
+        source_pdf_url=PDF_DETAIL_URL,
+        source="mstc",
+        source_auction_id=auction_id,
+        status=ExtractionStatus.LISTING_ONLY,
+    )
+
+
 def resolve_auction_listing(auction_id: str) -> tuple[AuctionRecord, ListingApiOfficeResponse | None]:
+    """Resolve listing via office API scan (parse/repair paths only — not download)."""
     for office_code in OFFICE_CODES:
         try:
             office_meta = fetch_office_auctions(office_code)
@@ -94,16 +118,7 @@ def resolve_auction_listing(auction_id: str) -> tuple[AuctionRecord, ListingApiO
                     return listing_to_base(auction, office_meta), office_meta
         except Exception as exc:
             logger.debug("Office %s lookup failed for %s: %s", office_code, auction_id, exc)
-    stub = AuctionRecord(
-        id=auction_id,
-        auction_number=auction_id,
-        region="",
-        office="",
-        mstc_html_url=f"https://www.mstcindia.co.in/TenderEntry/Lot_Item_Details_AucID.aspx?ARID={auction_id}",
-        source_pdf_url=PDF_DETAIL_URL,
-        status=ExtractionStatus.LISTING_ONLY,
-    )
-    return stub, None
+    return listing_stub_for_download(auction_id), None
 
 
 def enrich_auction(
@@ -134,34 +149,46 @@ def enrich_auction(
     source = str(base.source or "mstc")
 
     if mode == "download_only":
+        # Adaptive throttle (DownloadThrottle) owns pacing — no fixed REQUEST_DELAY_SEC.
+        stats_lock = stats.get("_lock") if isinstance(stats, dict) else None
+
+        def _inc(key: str, n: int = 1) -> None:
+            if stats_lock is not None:
+                with stats_lock:
+                    stats[key] = stats.get(key, 0) + n
+            else:
+                stats[key] = stats.get(key, 0) + n
+
         try:
-            time.sleep(REQUEST_DELAY_SEC)
             html = fetch_html_detail(base.id)
             save_raw_html(source, base.id, html, raw_dir=raw_root)
-            stats["html_downloaded"] = stats.get("html_downloaded", 0) + 1
+            _inc("html_downloaded")
             url = f"{MSTC_BASE_URL}{HTML_DETAIL_PATH.format(auction_id=base.id)}"
             base.mstc_html_url = url
             base.detail_url = base.detail_url or url
         except Exception as exc:
             logger.warning("HTML download failed for %s: %s", base.id, exc)
             base.errors.append(f"html_download: {exc}")
-            stats["html_failures"] = stats.get("html_failures", 0) + 1
+            _inc("html_failures")
 
         if not skip_pdf:
             try:
-                time.sleep(REQUEST_DELAY_SEC)
                 _path, downloaded = ensure_catalogue_pdf(base.id, pdf_dir)
                 if downloaded:
-                    stats["pdf_downloaded"] = stats.get("pdf_downloaded", 0) + 1
+                    _inc("pdf_downloaded")
                 else:
-                    stats["pdf_cache_hits"] = stats.get("pdf_cache_hits", 0) + 1
+                    _inc("pdf_cache_hits")
                 base.pdf_url = f"pdfs/{base.id}.pdf"
                 base.source_pdf_url = PDF_DETAIL_URL
             except Exception as exc:
                 logger.warning("PDF download failed for %s: %s", base.id, exc)
                 base.errors.append(f"pdf_download: {exc}")
-                stats["pdf_failures"] = stats.get("pdf_failures", 0) + 1
-                stats.setdefault("pdf_failed_ids", []).append(base.id)
+                _inc("pdf_failures")
+                if stats_lock is not None:
+                    with stats_lock:
+                        stats.setdefault("pdf_failed_ids", []).append(base.id)
+                else:
+                    stats.setdefault("pdf_failed_ids", []).append(base.id)
                 # Foolproof download_only: PDF is required for MSTC catalogue rows.
                 base.status = ExtractionStatus.FAILED
                 return base

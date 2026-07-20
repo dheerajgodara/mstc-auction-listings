@@ -289,22 +289,10 @@ def push_heartbeat(
     *,
     filename: str = "download_heartbeat.json",
 ) -> bool:
-    """Best-effort write of lane heartbeat to Hostinger auction_pipeline/."""
+    """Best-effort lane heartbeat — Hostinger when available, else R2."""
     import json
     from datetime import datetime
     from zoneinfo import ZoneInfo
-
-    cfg = hostinger_ssh_config()
-    if cfg is None or shutil.which("rsync") is None:
-        return False
-    # Inline domain root (avoid circular import with raw_store)
-    remote = cfg["remote_dir"].rstrip("/")
-    marker = "/public_html/"
-    if marker in remote:
-        domain_root = remote.split(marker, 1)[0]
-    else:
-        domain_root = str(Path(remote).parent.parent) if remote else ""
-    remote_root = f"{domain_root.rstrip('/')}/auction_pipeline"
 
     IST = ZoneInfo("Asia/Kolkata")
     body = dict(payload)
@@ -312,20 +300,49 @@ def push_heartbeat(
     local = Path(REPO_ROOT) / "work" / filename
     local.parent.mkdir(parents=True, exist_ok=True)
     local.write_text(json.dumps(body, indent=2, default=str), encoding="utf-8")
-    target = f"{cfg['username']}@{cfg['host']}"
-    remote_path = f"{target}:{remote_root}/{filename}"
-    cmd = [
-        "rsync",
-        "-az",
-        *rsync_timeout_args(),
-        "-e",
-        ssh_e(cfg, multiplex=False),
-        str(local),
-        remote_path,
-    ]
+
+    hostinger_ok = False
+    cfg = hostinger_ssh_config()
+    if cfg is not None and shutil.which("rsync") is not None:
+        # Inline domain root (avoid circular import with raw_store)
+        remote = cfg["remote_dir"].rstrip("/")
+        marker = "/public_html/"
+        if marker in remote:
+            domain_root = remote.split(marker, 1)[0]
+        else:
+            domain_root = str(Path(remote).parent.parent) if remote else ""
+        remote_root = f"{domain_root.rstrip('/')}/auction_pipeline"
+        target = f"{cfg['username']}@{cfg['host']}"
+        remote_path = f"{target}:{remote_root}/{filename}"
+        cmd = [
+            "rsync",
+            "-az",
+            *rsync_timeout_args(),
+            "-e",
+            ssh_e(cfg, multiplex=False),
+            str(local),
+            remote_path,
+        ]
+        try:
+            run_rsync_with_retries(cmd, timeout_sec=30, label="heartbeat", attempts=2)
+            hostinger_ok = True
+        except Exception as exc:
+            logger.warning("heartbeat Hostinger push failed: %s", exc)
+
+    r2_ok = False
     try:
-        run_rsync_with_retries(cmd, timeout_sec=30, label="heartbeat", attempts=2)
-        return True
+        from scraper.object_store import r2_configured, upload_file
+
+        if r2_configured():
+            up = upload_file(
+                local,
+                key=f"pipeline/{filename}",
+                content_type="application/json",
+            )
+            r2_ok = bool(up.get("ok"))
+            if not r2_ok:
+                logger.warning("heartbeat R2 push failed: %s", up.get("error"))
     except Exception as exc:
-        logger.warning("heartbeat push failed: %s", exc)
-        return False
+        logger.warning("heartbeat R2 push failed: %s", exc)
+
+    return hostinger_ok or r2_ok
