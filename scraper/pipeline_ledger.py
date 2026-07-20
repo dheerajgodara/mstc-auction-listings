@@ -539,6 +539,8 @@ def mark_parse(
     parsed_path: str | None = None,
     error: str | None = None,
     parser_version: str | None = None,
+    # Durability/save/verify failures stay pending (re-queueable), like download.
+    durability_failed: bool = False,
     # Legacy
     deploy_ready: bool = False,
 ) -> LedgerItem | None:
@@ -557,7 +559,14 @@ def mark_parse(
         if parser_version:
             item.parser_version = parser_version
         item.deploy = "pending"
+    elif durability_failed:
+        # Hostinger save/verify (or missing doc) — status-only re-queue.
+        item.lots_count = 0
+        item.parsed_path = None
+        item.parse_error = error or "parse durability incomplete — hostinger artifact required"
+        item.parse = "pending"
     else:
+        # Content failure (e.g. no lots).
         item.lots_count = 0
         item.parse_error = error or "no lots"
         if item.parse_attempts >= MAX_STAGE_ATTEMPTS:

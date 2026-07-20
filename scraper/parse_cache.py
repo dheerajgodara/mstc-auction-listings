@@ -98,9 +98,19 @@ def is_fresh_parse(
     return isinstance(lots, list) and len(lots) > 0
 
 
+def remote_parsed_path(source: str, source_auction_id: str, *, remote_root: str) -> str:
+    return f"{remote_root.rstrip('/')}/parsed/{source.strip()}/{source_auction_id}.json"
+
+
 def push_parsed_file(local_path: Path, *, source: str, source_auction_id: str) -> bool:
+    """Rsync one parse artifact to Hostinger. Returns True only on successful transfer."""
     cfg = _hostinger_ssh_config()
     if cfg is None or shutil.which("rsync") is None or not local_path.is_file():
+        logger.warning(
+            "push parsed %s/%s skipped (ssh/rsync/local missing)",
+            source,
+            source_auction_id,
+        )
         return False
     remote_root = remote_pipeline_root(cfg["remote_dir"])
     target = f"{cfg['username']}@{cfg['host']}"
@@ -132,6 +142,79 @@ def push_parsed_file(local_path: Path, *, source: str, source_auction_id: str) -
     except Exception as exc:
         logger.warning("push parsed %s/%s failed: %s", source, source_auction_id, exc)
         return False
+
+
+def verify_parsed_file(
+    source: str,
+    source_auction_id: str,
+    *,
+    expected_sha256: str,
+) -> bool:
+    """SSH: remote parsed JSON exists and sha256 matches local artifact."""
+    expected = (expected_sha256 or "").strip().lower()
+    if not expected:
+        return False
+    cfg = _hostinger_ssh_config()
+    if cfg is None:
+        return False
+    remote_root = remote_pipeline_root(cfg["remote_dir"])
+    remote_path = remote_parsed_path(source, source_auction_id, remote_root=remote_root)
+    target = f"{cfg['username']}@{cfg['host']}"
+    # Prefer sha256sum; fall back to shasum -a 256.
+    remote_cmd = (
+        f"if [ -f {remote_path} ]; then "
+        f"(sha256sum {remote_path} 2>/dev/null || shasum -a 256 {remote_path} 2>/dev/null); "
+        f"else echo MISSING; fi"
+    )
+    cmd = [
+        "ssh",
+        "-i",
+        cfg["key_path"],
+        "-p",
+        cfg["port"],
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "BatchMode=yes",
+        target,
+        remote_cmd,
+    ]
+    try:
+        proc = subprocess.run(cmd, check=True, timeout=60, capture_output=True, text=True)
+        out = (proc.stdout or "").strip()
+        if not out or out.startswith("MISSING"):
+            return False
+        remote_sha = out.split()[0].strip().lower()
+        ok = remote_sha == expected
+        if not ok:
+            logger.warning(
+                "verify parsed %s/%s sha mismatch remote=%s expected=%s",
+                source,
+                source_auction_id,
+                remote_sha,
+                expected,
+            )
+        return ok
+    except Exception as exc:
+        logger.warning("verify parsed %s/%s failed: %s", source, source_auction_id, exc)
+        return False
+
+
+def push_and_verify_parsed_file(
+    local_path: Path,
+    *,
+    source: str,
+    source_auction_id: str,
+) -> bool:
+    """Push then verify Hostinger durability for one parse artifact."""
+    if not local_path.is_file():
+        return False
+    expected = file_sha256(local_path)
+    if not push_parsed_file(local_path, source=source, source_auction_id=source_auction_id):
+        return False
+    return verify_parsed_file(
+        source, source_auction_id, expected_sha256=expected
+    )
 
 
 def pull_parsed_tree(*, local_root: Path | None = None) -> int:

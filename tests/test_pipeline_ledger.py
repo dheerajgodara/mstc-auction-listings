@@ -120,6 +120,18 @@ def test_ledger_mark_download_and_parse_retries(tmp_path: Path):
     mark_parse(ledger, "mstc:1", ok=False, error="boom")
     assert ledger.by_key()["mstc:1"].parse == "failed"
 
+    mark_parse(
+        ledger,
+        "mstc:1",
+        ok=False,
+        error="hostinger verify failed",
+        durability_failed=True,
+    )
+    assert ledger.by_key()["mstc:1"].parse == "pending"
+
+    # Content failures still escalate to blocked.
+    ledger.by_key()["mstc:1"].parse = "failed"
+    ledger.by_key()["mstc:1"].parse_attempts = 0
     for _ in range(MAX_STAGE_ATTEMPTS):
         mark_parse(ledger, "mstc:1", ok=False, error="boom")
     assert ledger.by_key()["mstc:1"].parse == "blocked"
