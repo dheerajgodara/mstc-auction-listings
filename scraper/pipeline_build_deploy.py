@@ -218,7 +218,12 @@ def run_build_deploy(
         export["auctions"] = cleaned
         export["count"] = len(cleaned)
         min_closing = tomorrow_min_closing_date()
-        strip = strip_aged_out_auctions(export, min_closing_date=min_closing)
+        strip = strip_aged_out_auctions(
+            export,
+            min_closing_date=min_closing,
+            # Cutover / growth: closing>=tomorrow can age out >poison_threshold in one pass.
+            allow_large_aged_out_strip=bool(allow_small_export),
+        )
         export = strip.export
         repair = repair_absolute_asset_paths(export)
         export = repair.export
