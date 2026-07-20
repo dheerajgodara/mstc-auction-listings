@@ -64,6 +64,18 @@ def flush_download_files(
         local = Path(str(raw.get("local_path") or ""))
         if not rel or not local.is_file():
             continue
+        # Fail closed: never flush GeM HTML shells / unknown magic to Hostinger.
+        if rel.startswith("docs/gem/"):
+            from scraper.gem_doc_validate import classify_local_gem_file
+
+            ok, _kind, err = classify_local_gem_file(local)
+            if not ok:
+                logger.warning(
+                    "skip flush %s — local file failed gem magic (%s)",
+                    rel,
+                    err,
+                )
+                continue
         ready.append({**raw, "hostinger_doc_path": rel, "local_path": local})
 
     if not ready:

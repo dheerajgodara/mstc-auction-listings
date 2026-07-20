@@ -31,12 +31,37 @@ def _sha256_file(path: Path) -> str | None:
     return h.hexdigest()
 
 
-def verify_hostinger_doc_url(url: str, *, timeout_sec: float = 30.0) -> bool:
-    """Return True when the public Hostinger doc URL responds with HTTP 200."""
+def verify_hostinger_doc_url(
+    url: str,
+    *,
+    timeout_sec: float = 30.0,
+    sniff_magic: bool = False,
+) -> bool:
+    """Return True when the public Hostinger doc URL responds with HTTP 200.
+
+    When ``sniff_magic`` is True (GeM docs), also Range-GET the first bytes and
+    reject HTML shells / unknown magic.
+    """
     u = (url or "").strip()
     if not u:
         return False
     try:
+        if sniff_magic or "/docs/gem/" in u:
+            resp = requests.get(
+                u,
+                timeout=timeout_sec,
+                allow_redirects=True,
+                headers={"Range": "bytes=0-4095"},
+            )
+            if resp.status_code not in (200, 206):
+                resp.close()
+                return False
+            from scraper.gem_doc_validate import is_gem_document_bytes
+
+            ok, _kind, _err = is_gem_document_bytes(resp.content)
+            resp.close()
+            return ok
+
         resp = requests.head(u, timeout=timeout_sec, allow_redirects=True)
         if resp.status_code == 200:
             return True

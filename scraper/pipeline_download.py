@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -109,6 +110,21 @@ def _commit_verified(
 ) -> int:
     n = 0
     for r in verified:
+        rel = str(r.get("hostinger_doc_path") or "")
+        local = Path(str(r.get("local_path") or ""))
+        if rel.startswith("docs/gem/"):
+            from scraper.gem_doc_validate import classify_local_gem_file
+
+            ok, _kind, err = classify_local_gem_file(local)
+            if not ok:
+                mark_download(
+                    ledger,
+                    str(r["stable_key"]),
+                    ok=False,
+                    error=err or "gem_html_rejected",
+                    raw_html_path=r.get("raw_html_path"),
+                )
+                continue
         mark_download(
             ledger,
             str(r["stable_key"]),
@@ -263,6 +279,7 @@ def run_pipeline_download(
         batch_reports: list[dict[str, Any]] = []
 
         gem_client = None
+        gem_lock = threading.Lock()
         if source == "gem_forward":
             from scraper.gem_forward_client import GemForwardClient
 
@@ -283,13 +300,15 @@ def run_pipeline_download(
                     stats=stats,
                     throttle=throttle,
                 )
-            return fetch_gem_to_local(
-                item=item,
-                raw_dir=raw_dir,
-                public_dir=public_dir,
-                client=gem_client,
-                throttle=throttle,
-            )
+            # Shared GemForwardClient is not thread-safe — serialize portal I/O.
+            with gem_lock:
+                return fetch_gem_to_local(
+                    item=item,
+                    raw_dir=raw_dir,
+                    public_dir=public_dir,
+                    client=gem_client,
+                    throttle=throttle,
+                )
 
         def _process_wave(selected: list[Any], *, wave_num: int) -> tuple[int, int, list[str]]:
             nonlocal ok_count, fail_count

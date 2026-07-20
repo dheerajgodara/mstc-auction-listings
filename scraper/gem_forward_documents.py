@@ -97,7 +97,10 @@ def attach_gem_documents(
         try:
             time.sleep(delay_sec)
             content = _download_binary(client, dl_path)
-            if len(content) < MIN_DOC_BYTES:
+            from scraper.gem_doc_validate import is_gem_document_bytes
+
+            ok, _kind, _err = is_gem_document_bytes(content)
+            if not ok:
                 continue
             safe = _safe_name(_tender_doc_save_name(doc, content))
             dest = auction_docs / safe

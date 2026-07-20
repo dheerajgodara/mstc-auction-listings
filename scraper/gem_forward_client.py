@@ -70,7 +70,8 @@ class _SshCurlTransport:
             "BatchMode=yes",
             f"{username}@{host}",
         ]
-        self._cookie_file = "/tmp/gem_forward_cookies.txt"
+        # Per-process jar avoids cross-job / cross-client cookie clobber on Hostinger.
+        self._cookie_file = f"/tmp/gem_forward_cookies_{os.getpid()}.txt"
 
     def _remote(self, script: str) -> str:
         cmd = self._ssh_base + [script]

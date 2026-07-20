@@ -458,7 +458,8 @@ def _download_binary(client: GemForwardClient, path: str) -> bytes:
         host = os.getenv("HOSTINGER_HOST", HOSTINGER_HOST).strip()
         port = os.getenv("HOSTINGER_PORT", str(HOSTINGER_PORT)).strip()
         user = os.getenv("HOSTINGER_USERNAME", HOSTINGER_USERNAME).strip()
-        cookie = "/tmp/gem_forward_cookies.txt"
+        ssh_tr = getattr(client, "_ssh", None)
+        cookie = getattr(ssh_tr, "_cookie_file", None) or f"/tmp/gem_forward_cookies_{os.getpid()}.txt"
         script = (
             f"curl -sL -m {REQUEST_TIMEOUT} -b {shlex.quote(cookie)} -c {shlex.quote(cookie)} "
             f"-A {shlex.quote(USER_AGENT)} {shlex.quote(url)}"

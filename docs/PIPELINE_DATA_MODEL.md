@@ -2,6 +2,12 @@
 
 **Law:** Every MSTC/GeM portal listing has a PDF/doc. Nothing is live without a Hostinger copy **and** successful parse (`lots_count > 0`).
 
+## GeM document URL law
+
+- `eauction-download-document/{id}/{token}` is an **HTML UI shell** (hint only). Never save its body as `docs/gem/{id}.*`.
+- Real binaries come from notice → `xcommon/ajax/file-list` → `xcommon/file-download` (or notice PDF).
+- `download=done` requires magic `%PDF` / Office `PK` / OLE — never HTML / unknown `.bin`.
+
 ## Flow
 
 1. **Discover** — record listing + `portal_doc_url` (required)
