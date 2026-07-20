@@ -74,7 +74,8 @@ const COMPONENT_EVENT_MAP = [
     events: ["search", "no_results", "compare_add", "compare_remove", "diligence_open"],
   },
   { file: "discovery-toolbar.tsx", events: ["sort_change"] },
-  { file: "auction-card.tsx", events: ["watchlist_toggle", "pdf_open", "source_open"] },
+  // source_open retired with outbound bid CTAs; constant kept for taxonomy compatibility.
+  { file: "auction-card.tsx", events: ["watchlist_toggle", "pdf_open"] },
   { file: "lot-details.tsx", events: ["lot_expand"] },
   { file: "command-palette.tsx", events: ["apply_saved_search", "command_palette"] },
   { file: "map-page-app.tsx", events: ["map_view"] },
