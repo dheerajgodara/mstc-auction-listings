@@ -154,8 +154,10 @@ PIPELINE_DOWNLOAD_AUTO_RETRIES_PER_SLOT = 2
 
 # Six independent GHA lanes
 DOWNLOAD_SUCCESS_PAUSE_SEC = float(os.getenv("DOWNLOAD_SUCCESS_PAUSE_SEC", "5"))
-# Per durable step (fetch / push / HTTP 200): retries with fixed sleep.
-DOWNLOAD_STEP_ATTEMPTS = int(os.getenv("DOWNLOAD_STEP_ATTEMPTS", "5"))
+# Batch-end reattempts of failed auctions within a batch (not in-step retries).
+DOWNLOAD_BATCH_RETRY_ROUNDS = int(os.getenv("DOWNLOAD_BATCH_RETRY_ROUNDS", "5"))
+# Deprecated: in-step retries removed; kept for env compatibility (ignored by download lane).
+DOWNLOAD_STEP_ATTEMPTS = int(os.getenv("DOWNLOAD_STEP_ATTEMPTS", "1"))
 DOWNLOAD_STEP_RETRY_SEC = float(os.getenv("DOWNLOAD_STEP_RETRY_SEC", "5"))
 PIPELINE_DISCOVER_MSTC_CAP = int(os.getenv("PIPELINE_DISCOVER_MSTC_CAP", "2000"))
 PIPELINE_DISCOVER_GEM_CAP = int(os.getenv("PIPELINE_DISCOVER_GEM_CAP", "2000"))

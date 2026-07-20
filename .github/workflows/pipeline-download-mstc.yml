@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       max_download:
-        description: "Per-run download cap (empty = production uncapped)"
+        description: "Per-run download cap (default 2000)"
         required: false
-        default: ""
+        default: "2000"
       migrate_ledger:
         description: "Run ledger schema migrate before download"
         required: false
@@ -60,14 +60,13 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DOWNLOAD_SUCCESS_PAUSE_SEC: "5"
+          DOWNLOAD_BATCH_RETRY_ROUNDS: "5"
         run: |
-          EXTRA=""
-          if [ -n "${{ github.event.inputs.max_download }}" ]; then
-            EXTRA="--max-download ${{ github.event.inputs.max_download }}"
-          fi
+          CAP="${{ github.event.inputs.max_download }}"
+          if [ -z "$CAP" ]; then CAP=2000; fi
           PYTHONPATH=. python -m scraper.pipeline_download \
             --source mstc \
             --batch-size 25 \
             --max-batches 80 \
-            --break-stale-lock \
-            $EXTRA
+            --max-download "$CAP" \
+            --break-stale-lock

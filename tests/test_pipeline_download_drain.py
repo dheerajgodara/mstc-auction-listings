@@ -59,13 +59,19 @@ def test_download_drain_exits_when_backlog_empty(tmp_path: Path, monkeypatch):
                                                 with patch(
                                                     "scraper.pipeline_download.release_refresh_lock"
                                                 ):
-                                                    result = run_pipeline_download(
-                                                        repo_root=repo,
-                                                        batch_size=25,
-                                                        max_batches=5,
-                                                        skip_docs=True,
-                                                    )
+                                                    with patch(
+                                                        "scraper.pipeline_download.send_lane_report",
+                                                        return_value=True,
+                                                    ):
+                                                        result = run_pipeline_download(
+                                                            repo_root=repo,
+                                                            batch_size=25,
+                                                            max_batches=5,
+                                                            max_download=25,
+                                                            skip_docs=True,
+                                                        )
     assert result["status"] == "success"
     assert result["download_ok"] == 0
+    assert result["ok_count"] == 0
     assert result["batches_completed"] == 0
     assert result["backlog_left"] == 0

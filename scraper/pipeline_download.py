@@ -24,12 +24,12 @@ from scraper.config import (
     DEFAULT_PIPELINE_LEDGER,
     DEFAULT_RAW_DIR,
     DEFAULT_THUMBS_DIR,
+    DOWNLOAD_BATCH_RETRY_ROUNDS,
     DOWNLOAD_FAIL_BUDGET_ABS,
     DOWNLOAD_FAIL_BUDGET_PCT,
-    DOWNLOAD_STEP_ATTEMPTS,
-    DOWNLOAD_STEP_RETRY_SEC,
     DOWNLOAD_SUCCESS_PAUSE_SEC,
     PIPELINE_DOWNLOAD_BATCH_SIZE,
+    PIPELINE_DOWNLOAD_CAP_CATCHUP,
     PIPELINE_DOWNLOAD_MAX_BATCHES,
     PIPELINE_JOB_TIMEBOX_MIN,
     PIPELINE_PDF_PUSH_EVERY,
@@ -117,20 +117,6 @@ def _github_run_url() -> str | None:
     return None
 
 
-def _retry_call(fn, *, attempts: int, sleep_sec: float, label: str):
-    """Run fn until it returns without raising; sleep between failures."""
-    last_err: BaseException | None = None
-    for attempt in range(1, max(1, attempts) + 1):
-        try:
-            return fn()
-        except BaseException as exc:
-            last_err = exc
-            _phase(f"{label} attempt {attempt}/{attempts} failed: {exc}")
-            if attempt < attempts:
-                time.sleep(max(0.0, sleep_sec))
-    raise RuntimeError(f"{label} failed after {attempts} attempts: {last_err}")
-
-
 def _download_one_mstc(
     *,
     item: Any,
@@ -146,16 +132,13 @@ def _download_one_mstc(
     stats: dict[str, Any],
     ledger: Any,
 ) -> tuple[bool, int]:
-    """Fetch MSTC PDF, push to Hostinger, verify HTTP 200, then mark download=done."""
+    """Fetch → save Hostinger → HTTP 200 check (one try each). Fail → pending."""
     import shutil
 
     aid = str(item.source_auction_id)
-    attempts = DOWNLOAD_STEP_ATTEMPTS
-    sleep_sec = DOWNLOAD_STEP_RETRY_SEC
     docs_left = docs_remaining
 
-    def _fetch() -> None:
-        nonlocal docs_left
+    try:
         base, _ = resolve_auction_listing(aid)
         base.source = "mstc"
         downloaded = enrich_auction(
@@ -185,9 +168,6 @@ def _download_one_mstc(
             if not skip_pdf and not has_pdf:
                 parts.append("missing or invalid catalogue PDF")
             raise RuntimeError("; ".join(parts) if parts else "download incomplete")
-
-    try:
-        _retry_call(_fetch, attempts=attempts, sleep_sec=sleep_sec, label=f"fetch mstc:{aid}")
     except Exception as exc:
         logger.exception("download fetch failed for %s", item.stable_key)
         mark_download(ledger, item.stable_key, ok=False, error=str(exc))
@@ -195,7 +175,6 @@ def _download_one_mstc(
 
     item.raw_html_path = raw_html_rel_path("mstc", aid)
     if skip_pdf:
-        # Local-only mode: cannot claim Hostinger durability.
         mark_download(
             ledger,
             item.stable_key,
@@ -209,7 +188,7 @@ def _download_one_mstc(
     local_pdf = pdf_dir / f"{aid}.pdf"
     public_pdf = public_dir / "pdfs" / f"{aid}.pdf"
 
-    def _push() -> None:
+    try:
         public_pdf.parent.mkdir(parents=True, exist_ok=True)
         if local_pdf.resolve() != public_pdf.resolve():
             shutil.copy2(local_pdf, public_pdf)
@@ -219,21 +198,14 @@ def _download_one_mstc(
         pushed = set(result.files or [])
         if f"{aid}.pdf" not in pushed and media_push_required():
             raise RuntimeError(f"Hostinger PDF push did not confirm {aid}.pdf")
-
-    try:
-        _retry_call(_push, attempts=attempts, sleep_sec=sleep_sec, label=f"push mstc:{aid}")
     except Exception as exc:
         mark_download(ledger, item.stable_key, ok=False, error=str(exc), raw_html_path=item.raw_html_path)
         return False, docs_left
 
     url = public_doc_url(rel)
-
-    def _verify() -> None:
+    try:
         if not verify_hostinger_doc_url(url):
             raise RuntimeError(f"Hostinger URL not HTTP 200: {url}")
-
-    try:
-        _retry_call(_verify, attempts=attempts, sleep_sec=sleep_sec, label=f"verify mstc:{aid}")
     except Exception as exc:
         mark_download(ledger, item.stable_key, ok=False, error=str(exc), raw_html_path=item.raw_html_path)
         return False, docs_left
@@ -259,7 +231,7 @@ def _download_one_gem(
     ledger: Any,
     public_dir: Path,
 ) -> bool:
-    """Download GeM portal doc → Hostinger → HTTP 200 → mark done."""
+    """Fetch → save Hostinger → HTTP 200 check (one try each). Fail → pending."""
     import hashlib
 
     from scraper.gem_forward_client import GemForwardClient
@@ -267,15 +239,11 @@ def _download_one_gem(
 
     aid = str(item.source_auction_id or "").strip()
     portal = (getattr(item, "portal_doc_url", None) or "").strip()
-    attempts = DOWNLOAD_STEP_ATTEMPTS
-    sleep_sec = DOWNLOAD_STEP_RETRY_SEC
     if not portal:
         mark_download(ledger, item.stable_key, ok=False, error="missing portal_doc_url")
         return False
 
-    body_holder: dict[str, bytes] = {}
-
-    def _fetch() -> None:
+    try:
         client = GemForwardClient()
         client.init_session()
         detail = getattr(item, "detail_url", None) or ""
@@ -289,42 +257,30 @@ def _download_one_gem(
         body = _download_binary(client, portal)
         if len(body) < 500:
             raise RuntimeError(f"gem doc too small ({len(body)} bytes)")
-        body_holder["body"] = body
-
-    try:
-        _retry_call(_fetch, attempts=attempts, sleep_sec=sleep_sec, label=f"fetch gem:{aid}")
     except Exception as exc:
         logger.exception("gem download failed for %s", item.stable_key)
         mark_download(ledger, item.stable_key, ok=False, error=str(exc))
         return False
 
-    body = body_holder["body"]
     ext = "pdf" if body[:4] == b"%PDF" else "bin"
     rel = f"docs/gem/{aid}.{ext}"
     rel_dir = public_dir / "docs" / "gem"
     out_path = rel_dir / f"{aid}.{ext}"
 
-    def _push() -> None:
+    try:
         rel_dir.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(body)
         push = push_public_media(public_dir=public_dir, timeout_sec=300)
         if not push.ok and media_push_required():
             raise RuntimeError(f"Hostinger docs push failed: {push.message}")
-
-    try:
-        _retry_call(_push, attempts=attempts, sleep_sec=sleep_sec, label=f"push gem:{aid}")
     except Exception as exc:
         mark_download(ledger, item.stable_key, ok=False, error=str(exc))
         return False
 
     url = public_doc_url(rel)
-
-    def _verify() -> None:
+    try:
         if not verify_hostinger_doc_url(url):
             raise RuntimeError(f"Hostinger URL not HTTP 200: {url}")
-
-    try:
-        _retry_call(_verify, attempts=attempts, sleep_sec=sleep_sec, label=f"verify gem:{aid}")
     except Exception as exc:
         mark_download(ledger, item.stable_key, ok=False, error=str(exc))
         return False
@@ -344,6 +300,11 @@ def _download_one_gem(
     return True
 
 
+def _pause_between_auctions() -> None:
+    """Always wait between auctions (success or fail)."""
+    time.sleep(max(0.0, DOWNLOAD_SUCCESS_PAUSE_SEC))
+
+
 def run_pipeline_download(
     *,
     repo_root: Path = REPO_ROOT,
@@ -354,21 +315,25 @@ def run_pipeline_download(
     skip_pdf: bool = False,
     break_stale_lock: bool = True,
     pdf_push_every: int | None = None,
-    # When set: true per-run item cap (single batch); skips self-resume.
-    max_download: int | None = None,
+    # Per-run unique-auction cap (default 2000). Skips self-resume when set.
+    max_download: int | None = PIPELINE_DOWNLOAD_CAP_CATCHUP,
     source: str = "mstc",
 ) -> dict[str, Any]:
     source = (source or "mstc").strip().lower()
     lane_id = "download_mstc" if source == "mstc" else "download_gem"
     flush_every = max(1, int(pdf_push_every if pdf_push_every is not None else _pdf_push_every()))
-    capped_run = max_download is not None and int(max_download) > 0
-    if capped_run:
-        batch_size = max(1, min(int(batch_size), int(max_download)))
-        max_batches = 1
+    batch_size = max(1, int(batch_size))
+    # Hard ceiling: never process more than catch-up cap unique auctions per run.
+    if max_download is None or int(max_download) <= 0:
+        run_item_cap = int(PIPELINE_DOWNLOAD_CAP_CATCHUP)
+        capped_run = True
     else:
-        batch_size = max(1, int(batch_size))
-        max_batches = max(1, int(max_batches))
-    run_item_cap = int(max_download) if capped_run else None
+        run_item_cap = int(max_download)
+        capped_run = True
+    batch_size = min(batch_size, run_item_cap)
+    # Enough batches to reach the cap (do not collapse capped runs to max_batches=1).
+    needed = max(1, (run_item_cap + batch_size - 1) // batch_size)
+    max_batches = max(1, max(int(max_batches), needed))
 
     run_id = f"download_{source}_{make_run_id()}"
     run_dir = repo_root / "work" / "runs" / run_id
@@ -451,6 +416,7 @@ def run_pipeline_download(
         ok_count = 0
         fail_count = 0
         attempted_ids: list[str] = []
+        attempted_keys: set[str] = set()
         batch_reports: list[dict[str, Any]] = []
 
         # Per-item durable path (fetch→push→HTTP 200); flush queue unused.
@@ -464,20 +430,53 @@ def run_pipeline_download(
             warnings=warnings,
         )
 
+        def _unique_attempted() -> int:
+            return len(attempted_keys)
+
+        def _download_item(item: Any) -> bool:
+            nonlocal docs_remaining
+            if source == "mstc":
+                if item.source != "mstc":
+                    return False
+                if item.download == "done":
+                    return True
+                ok, docs_remaining = _download_one_mstc(
+                    item=item,
+                    pdf_dir=pdf_dir,
+                    public_dir=public_dir,
+                    raw_dir=raw_dir,
+                    docs_dir=docs_dir,
+                    thumbs_dir=thumbs_dir,
+                    skip_pdf=skip_pdf,
+                    skip_docs=skip_docs,
+                    docs_remaining=docs_remaining,
+                    session=session,
+                    stats=stats,
+                    ledger=ledger,
+                )
+            else:
+                if item.source != "gem_forward":
+                    return False
+                ok = _download_one_gem(
+                    item=item, raw_dir=raw_dir, ledger=ledger, public_dir=public_dir
+                )
+            attempted_ids.append(str(item.source_auction_id))
+            attempted_keys.add(item.stable_key)
+            _phase(f"download_item source={source} id={item.source_auction_id} ok={ok}")
+            write_ledger(ledger, ledger_path)
+            _pause_between_auctions()
+            return bool(ok)
+
         for batch_num in range(1, max_batches + 1):
             elapsed_min = (time.monotonic() - loop_t0) / 60.0
             if elapsed_min >= PIPELINE_JOB_TIMEBOX_MIN:
                 _phase(f"timebox reached ({elapsed_min:.0f}m); stopping batch loop")
                 break
-            if run_item_cap is not None and (ok_count + fail_count) >= run_item_cap:
+            if _unique_attempted() >= run_item_cap:
                 _phase(f"max-download cap reached ({run_item_cap})")
                 break
 
-            remaining = (
-                run_item_cap - (ok_count + fail_count)
-                if run_item_cap is not None
-                else batch_size
-            )
+            remaining = run_item_cap - _unique_attempted()
             select_n = min(batch_size, remaining)
             selected = select_for_download(
                 ledger, limit=select_n, pdf_dir=pdf_dir, source=source
@@ -494,61 +493,62 @@ def run_pipeline_download(
 
             batch_ok = 0
             batch_fail = 0
+            failed_keys: list[str] = []
             _phase(f"batch {batch_num}/{max_batches}: selected={len(selected)} source={source}")
 
             for item in selected:
-                if run_item_cap is not None and (ok_count + fail_count) >= run_item_cap:
+                if _unique_attempted() >= run_item_cap and item.stable_key not in attempted_keys:
                     break
-                if source == "mstc":
-                    if item.source != "mstc":
-                        continue
-                    if item.download == "done":
-                        skipped_existing += 1
-                        continue
-                    ok, docs_remaining = _download_one_mstc(
-                        item=item,
-                        pdf_dir=pdf_dir,
-                        public_dir=public_dir,
-                        raw_dir=raw_dir,
-                        docs_dir=docs_dir,
-                        thumbs_dir=thumbs_dir,
-                        skip_pdf=skip_pdf,
-                        skip_docs=skip_docs,
-                        docs_remaining=docs_remaining,
-                        session=session,
-                        stats=stats,
-                        ledger=ledger,
-                    )
-                    attempted_ids.append(str(item.source_auction_id))
-                    _phase(
-                        f"download_item source=mstc id={item.source_auction_id} ok={ok}"
-                    )
-                    if ok:
-                        ok_count += 1
-                        batch_ok += 1
-                        time.sleep(DOWNLOAD_SUCCESS_PAUSE_SEC)
-                    else:
-                        fail_count += 1
-                        batch_fail += 1
+                if item.download == "done":
+                    skipped_existing += 1
+                    continue
+                ok = _download_item(item)
+                if ok:
+                    ok_count += 1
+                    batch_ok += 1
                 else:
-                    if item.source != "gem_forward":
+                    fail_count += 1
+                    batch_fail += 1
+                    failed_keys.append(item.stable_key)
+
+            # Batch-end reattempts: only failed IDs from this batch, up to N rounds.
+            retry_rounds = max(0, int(DOWNLOAD_BATCH_RETRY_ROUNDS))
+            for retry_round in range(1, retry_rounds + 1):
+                if not failed_keys:
+                    break
+                elapsed_min = (time.monotonic() - loop_t0) / 60.0
+                if elapsed_min >= PIPELINE_JOB_TIMEBOX_MIN:
+                    _phase("timebox during batch-end retry; stopping retries")
+                    break
+                _phase(
+                    f"batch {batch_num} retry round {retry_round}/{retry_rounds}: "
+                    f"failed={len(failed_keys)}"
+                )
+                still_failed: list[str] = []
+                by_key = ledger.by_key()
+                for key in failed_keys:
+                    item = by_key.get(key)
+                    if item is None or item.download == "done":
                         continue
-                    ok = _download_one_gem(item=item, raw_dir=raw_dir, ledger=ledger, public_dir=public_dir)
-                    attempted_ids.append(str(item.source_auction_id))
-                    _phase(
-                        f"download_item source=gem_forward id={item.source_auction_id} ok={ok}"
-                    )
+                    ok = _download_item(item)
                     if ok:
                         ok_count += 1
                         batch_ok += 1
-                        time.sleep(DOWNLOAD_SUCCESS_PAUSE_SEC)
+                        fail_count = max(0, fail_count - 1)
+                        batch_fail = max(0, batch_fail - 1)
                     else:
-                        fail_count += 1
-                        batch_fail += 1
-                write_ledger(ledger, ledger_path)
+                        still_failed.append(key)
+                failed_keys = still_failed
 
             stats["batches_completed"] = batch_num
-            batch_reports.append({"batch": batch_num, "ok": batch_ok, "fail": batch_fail})
+            batch_reports.append(
+                {
+                    "batch": batch_num,
+                    "ok": batch_ok,
+                    "fail": batch_fail,
+                    "retry_left": len(failed_keys),
+                }
+            )
             push_ledger(local_path=ledger_path)
 
         backlog_left = len(select_for_download(ledger, limit=10**9, pdf_dir=pdf_dir, source=source))
@@ -560,8 +560,9 @@ def run_pipeline_download(
             absolute=DOWNLOAD_FAIL_BUDGET_ABS,
         )
         elapsed_min = (time.monotonic() - loop_t0) / 60.0
+        # Capped runs (default 2000) do not self-resume; cron/autonomy kick the next drain.
         resume = False
-        resume_reason = "capped_run" if capped_run else ""
+        resume_reason = "capped_run"
         if not capped_run:
             resume, resume_reason = should_self_resume(
                 backlog_left=backlog_left,
@@ -587,14 +588,17 @@ def run_pipeline_download(
                 "finished_at": finished,
                 "ok_count": ok_count,
                 "fail_count": fail_count,
+                "download_ok": ok_count,
                 "skipped_existing": skipped_existing,
                 "attempted_ids": attempted_ids,
+                "unique_attempted": len(attempted_keys),
                 "max_download": run_item_cap,
                 "backlog_left": backlog_left,
                 "fail_budget_ok": budget_ok,
                 "resume_next": resume,
                 "resume_reason": resume_reason,
                 "stats": stats,
+                "batches_completed": int(stats.get("batches_completed") or 0),
                 "batch_reports": batch_reports,
                 "ledger": ledger.status_counts(),
                 "warnings": warnings,
@@ -644,7 +648,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Pipeline download lane (MSTC or GeM)")
     parser.add_argument("--batch-size", type=int, default=PIPELINE_DOWNLOAD_BATCH_SIZE)
     parser.add_argument("--max-batches", type=int, default=PIPELINE_DOWNLOAD_MAX_BATCHES)
-    parser.add_argument("--max-download", type=int, default=None)
+    parser.add_argument(
+        "--max-download",
+        type=int,
+        default=PIPELINE_DOWNLOAD_CAP_CATCHUP,
+        help="Unique auctions attempted per run (default 2000)",
+    )
     parser.add_argument("--max-docs-per-run", type=int, default=2000)
     parser.add_argument("--skip-docs", action="store_true")
     parser.add_argument("--skip-pdf", action="store_true")
