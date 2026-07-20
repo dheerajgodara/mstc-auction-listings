@@ -31,7 +31,9 @@ def count_pdf_objects() -> tuple[int, int]:
         resp = client.list_objects_v2(**kwargs)
         for obj in resp.get("Contents") or []:
             key = obj.get("Key") or ""
-            if key.endswith("/"):
+            if key.endswith("/") or "/_poll/" in key or key.startswith("pdfs/_poll/"):
+                continue
+            if key.startswith("pdfs/_smoke/"):
                 continue
             n += 1
             total += int(obj.get("Size") or 0)
@@ -39,6 +41,20 @@ def count_pdf_objects() -> tuple[int, int]:
             break
         token = resp.get("NextContinuationToken")
     return n, total
+
+
+def publish_status(payload: str) -> None:
+    """Write a tiny public status object so local curl can watch progress."""
+    from scraper.object_store import upload_file
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "status.txt"
+        path.write_text(payload, encoding="utf-8")
+        up = upload_file(path, key="pdfs/_poll/status.txt", content_type="text/plain")
+        if not up.get("ok"):
+            print(f"status upload warn: {up.get('error')}", flush=True)
 
 
 def main() -> int:
@@ -55,6 +71,7 @@ def main() -> int:
     deadline = time.time() + max(40.0, args.minutes * 60.0)
     prev_n = None
     poll = 0
+    t_start = time.time()
     while time.time() < deadline:
         poll += 1
         t0 = time.time()
@@ -65,21 +82,23 @@ def main() -> int:
             time.sleep(args.interval)
             continue
         dt = time.time() - t0
-        delta = "" if prev_n is None else f" delta={n - prev_n:+d}"
+        delta_n = 0 if prev_n is None else (n - prev_n)
+        delta = "" if prev_n is None else f" delta={delta_n:+d}"
         rate = ""
         if prev_n is not None and args.interval > 0:
-            rate = f" rate={(n - prev_n) / (args.interval / 60.0):.2f}/min"
-        print(
-            f"[{_utc()}] poll={poll} pdfs_objects={n} bytes={nbytes}{delta}{rate} list_ms={int(dt*1000)}",
-            flush=True,
+            rate = f" rate={delta_n / (args.interval / 60.0):.2f}/min"
+        line = (
+            f"[{_utc()}] poll={poll} pdfs_objects={n} bytes={nbytes}{delta}{rate} "
+            f"list_ms={int(dt*1000)} elapsed_min={(time.time()-t_start)/60:.1f}"
         )
+        print(line, flush=True)
+        publish_status(line + "\n")
         if prev_n is not None and n > prev_n:
             print(
                 f"[{_utc()}] NEW_UPLOADS +{n - prev_n} since last poll (~{args.interval:.0f}s window)",
                 flush=True,
             )
         prev_n = n
-        # sleep remaining of interval
         slept = time.time() - t0
         wait = max(0.0, args.interval - slept)
         if time.time() + wait >= deadline:
