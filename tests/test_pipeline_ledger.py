@@ -9,7 +9,6 @@ from scraper.pipeline_ledger import (
     LedgerItem,
     empty_ledger,
     estimated_download_runs_to_clear,
-    grandfather_media_synced_legacy,
     mark_download,
     mark_parse,
     select_for_download,
@@ -73,8 +72,10 @@ def test_ledger_select_parse_prefers_mstc():
                 source_auction_id="g1",
                 download="done",
                 parse="pending",
+                hostinger_doc_path="docs/gem/g1.pdf",
+                hostinger_doc_url="https://example.com/docs/gem/g1.pdf",
                 priority_score=99,
-                first_queued_at=now,
+                first_seen_at=now,
                 updated_at=now,
             ),
             LedgerItem(
@@ -83,8 +84,10 @@ def test_ledger_select_parse_prefers_mstc():
                 source_auction_id="1",
                 download="done",
                 parse="pending",
+                hostinger_doc_path="pdfs/1.pdf",
+                hostinger_doc_url="https://example.com/pdfs/1.pdf",
                 priority_score=10,
-                first_queued_at=now,
+                first_seen_at=now,
                 updated_at=now,
             ),
         ]
@@ -136,23 +139,25 @@ def test_mark_download_resets_parse_when_redownloaded():
             source_auction_id="9",
             download="done",
             parse="done",
-            deploy_ready=True,
-            first_queued_at=datetime.now(IST).isoformat(),
+            lots_count=2,
+            hostinger_doc_path="pdfs/9.pdf",
+            hostinger_doc_url="https://example.com/pdfs/9.pdf",
+            first_seen_at=datetime.now(IST).isoformat(),
             updated_at=datetime.now(IST).isoformat(),
         )
     )
     mark_download(ledger, "mstc:9", ok=True, pdf_path="pdfs/9.pdf")
     item = ledger.by_key()["mstc:9"]
     assert item.parse == "pending"
-    assert item.deploy_ready is False
+    assert item.lots_count == 0
 
 
-def test_select_for_download_requeues_done_without_valid_pdf(tmp_path: Path):
+def test_select_for_download_skips_done_status_is_truth(tmp_path: Path):
+    """Queue truth: done rows are never requeued; only pending (with portal URL)."""
     pdf_dir = tmp_path / "pdfs"
     pdf_dir.mkdir()
     now = datetime.now(IST).isoformat()
     ledger = empty_ledger()
-    # Done but no pdf_path → must requeue (true repair).
     ledger.items.append(
         LedgerItem(
             stable_key="mstc:missing",
@@ -160,47 +165,12 @@ def test_select_for_download_requeues_done_without_valid_pdf(tmp_path: Path):
             source_auction_id="missing",
             download="done",
             parse="done",
-            pdf_path=None,
+            portal_doc_url="https://example.com/x",
             priority_score=50,
-            first_queued_at=now,
+            first_seen_at=now,
             updated_at=now,
         )
     )
-    # Done with path but Hostinger sync owed → requeue (sync debt).
-    corrupt = pdf_dir / "corrupt.pdf"
-    corrupt.write_bytes(b"<html>nope</html>" + (b"x" * 2000))
-    ledger.items.append(
-        LedgerItem(
-            stable_key="mstc:corrupt",
-            source="mstc",
-            source_auction_id="corrupt",
-            download="done",
-            parse="pending",
-            pdf_path="pdfs/corrupt.pdf",
-            media_synced=False,
-            priority_score=40,
-            first_queued_at=now,
-            updated_at=now,
-        )
-    )
-    # Done + synced + path → skip (even if local were missing).
-    good = pdf_dir / "good.pdf"
-    good.write_bytes(b"%PDF-1.4\n" + (b"y" * 2000))
-    ledger.items.append(
-        LedgerItem(
-            stable_key="mstc:good",
-            source="mstc",
-            source_auction_id="good",
-            download="done",
-            parse="pending",
-            pdf_path="pdfs/good.pdf",
-            media_synced=True,
-            priority_score=99,
-            first_queued_at=now,
-            updated_at=now,
-        )
-    )
-    # Pending still wins priority alongside repairs.
     ledger.items.append(
         LedgerItem(
             stable_key="mstc:new",
@@ -208,18 +178,14 @@ def test_select_for_download_requeues_done_without_valid_pdf(tmp_path: Path):
             source_auction_id="new",
             download="pending",
             parse="pending",
+            portal_doc_url="https://example.com/y",
             priority_score=80,
-            first_queued_at=now,
+            first_seen_at=now,
             updated_at=now,
         )
     )
-
     selected = select_for_download(ledger, limit=10, pdf_dir=pdf_dir)
-    keys = [s.stable_key for s in selected]
-    assert "mstc:good" not in keys
-    # Priority: new → sync → repair
-    assert keys == ["mstc:new", "mstc:corrupt", "mstc:missing"]
-    assert estimated_download_runs_to_clear(ledger, cap=2, pdf_dir=pdf_dir) == 2
+    assert [s.stable_key for s in selected] == ["mstc:new"]
 
 
 def test_select_for_download_skips_synced_when_local_pdf_missing(tmp_path: Path):
@@ -235,10 +201,11 @@ def test_select_for_download_skips_synced_when_local_pdf_missing(tmp_path: Path)
             source_auction_id="hostinger",
             download="done",
             parse="done",
-            pdf_path="pdfs/hostinger.pdf",
-            media_synced=True,
+            hostinger_doc_path="pdfs/hostinger.pdf",
+            hostinger_doc_url="https://example.com/pdfs/hostinger.pdf",
+            doc_sha256="abc",
             priority_score=99,
-            first_queued_at=now,
+            first_seen_at=now,
             updated_at=now,
         )
     )
@@ -246,20 +213,20 @@ def test_select_for_download_skips_synced_when_local_pdf_missing(tmp_path: Path)
     assert selected == []
 
 
-def test_select_for_download_prefers_pending_over_sync_debt(tmp_path: Path):
+def test_select_for_download_prefers_pending_over_done(tmp_path: Path):
     now = datetime.now(IST).isoformat()
     ledger = empty_ledger()
     ledger.items.append(
         LedgerItem(
-            stable_key="mstc:sync",
+            stable_key="mstc:done",
             source="mstc",
-            source_auction_id="sync",
+            source_auction_id="done",
             download="done",
             parse="pending",
-            pdf_path="pdfs/sync.pdf",
-            media_synced=False,
+            hostinger_doc_path="pdfs/done.pdf",
+            hostinger_doc_url="https://example.com/pdfs/done.pdf",
             priority_score=99,
-            first_queued_at=now,
+            first_seen_at=now,
             updated_at=now,
         )
     )
@@ -271,32 +238,17 @@ def test_select_for_download_prefers_pending_over_sync_debt(tmp_path: Path):
             download="pending",
             parse="pending",
             priority_score=1,
-            first_queued_at=now,
+            first_seen_at=now,
             updated_at=now,
         )
     )
     selected = select_for_download(ledger, limit=1)
     assert [s.stable_key for s in selected] == ["mstc:new"]
 
-
-def test_grandfather_media_synced_legacy_then_skip(tmp_path: Path):
+def test_select_for_download_ignores_done_phantoms(tmp_path: Path):
+    """Phantoms stay done until preflight resets them — eligibility does not repair."""
     now = datetime.now(IST).isoformat()
     ledger = empty_ledger()
-    ledger.items.append(
-        LedgerItem(
-            stable_key="mstc:legacy",
-            source="mstc",
-            source_auction_id="legacy",
-            download="done",
-            parse="done",
-            pdf_path="pdfs/legacy.pdf",
-            media_synced=None,
-            priority_score=50,
-            first_queued_at=now,
-            updated_at=now,
-        )
-    )
-    # Incomplete legacy (no pdf_path) stays eligible after grandfather.
     ledger.items.append(
         LedgerItem(
             stable_key="mstc:incomplete",
@@ -304,63 +256,49 @@ def test_grandfather_media_synced_legacy_then_skip(tmp_path: Path):
             source_auction_id="incomplete",
             download="done",
             parse="pending",
-            pdf_path=None,
-            media_synced=None,
             priority_score=40,
-            first_queued_at=now,
+            first_seen_at=now,
             updated_at=now,
         )
     )
-    n = grandfather_media_synced_legacy(ledger)
-    assert n == 1
-    assert ledger.by_key()["mstc:legacy"].media_synced is True
-    assert ledger.by_key()["mstc:incomplete"].media_synced is None
     selected = select_for_download(ledger, limit=10, pdf_dir=tmp_path)
-    assert [s.stable_key for s in selected] == ["mstc:incomplete"]
+    assert selected == []
 
 
-def test_select_for_download_requeues_unsynced_media(tmp_path: Path):
-    pdf_dir = tmp_path / "pdfs"
-    pdf_dir.mkdir()
-    good = pdf_dir / "ok.pdf"
-    good.write_bytes(b"%PDF-1.4\n" + (b"y" * 2000))
+def test_select_for_download_failed_is_requeued(tmp_path: Path):
     now = datetime.now(IST).isoformat()
     ledger = empty_ledger()
     ledger.items.append(
         LedgerItem(
-            stable_key="mstc:ok",
+            stable_key="mstc:failed",
             source="mstc",
-            source_auction_id="ok",
-            download="done",
+            source_auction_id="failed",
+            download="failed",
             parse="pending",
-            pdf_path="pdfs/ok.pdf",
-            media_synced=False,
             priority_score=10,
-            first_queued_at=now,
+            first_seen_at=now,
             updated_at=now,
         )
     )
     ledger.items.append(
         LedgerItem(
-            stable_key="mstc:synced",
+            stable_key="mstc:done",
             source="mstc",
-            source_auction_id="synced",
+            source_auction_id="done",
             download="done",
             parse="pending",
-            pdf_path="pdfs/ok.pdf",
-            media_synced=True,
+            hostinger_doc_path="pdfs/done.pdf",
+            hostinger_doc_url="https://example.com/pdfs/done.pdf",
             priority_score=99,
-            first_queued_at=now,
+            first_seen_at=now,
             updated_at=now,
         )
     )
-    # Put a valid local file for synced id too
-    (pdf_dir / "synced.pdf").write_bytes(b"%PDF-1.4\n" + (b"y" * 2000))
-    selected = select_for_download(ledger, limit=10, pdf_dir=pdf_dir)
-    assert [s.stable_key for s in selected] == ["mstc:ok"]
+    selected = select_for_download(ledger, limit=10, pdf_dir=tmp_path)
+    assert [s.stable_key for s in selected] == ["mstc:failed"]
 
 
-def test_mark_download_sets_media_synced_false_until_flush():
+def test_mark_download_sets_hostinger_fields_on_success():
     ledger = empty_ledger()
     ledger.items.append(
         LedgerItem(
@@ -369,17 +307,18 @@ def test_mark_download_sets_media_synced_false_until_flush():
             source_auction_id="1",
             download="pending",
             parse="pending",
-            first_queued_at=datetime.now(IST).isoformat(),
+            first_seen_at=datetime.now(IST).isoformat(),
             updated_at=datetime.now(IST).isoformat(),
         )
     )
     mark_download(ledger, "mstc:1", ok=True, pdf_path="pdfs/1.pdf")
     item = ledger.by_key()["mstc:1"]
     assert item.download == "done"
-    assert item.media_synced is False
+    assert item.hostinger_doc_path == "pdfs/1.pdf"
+    assert item.hostinger_doc_url
 
 
-def test_mark_download_content_changed_false_preserves_parse_and_sync():
+def test_mark_download_content_changed_false_preserves_parse():
     now = datetime.now(IST).isoformat()
     ledger = empty_ledger()
     ledger.items.append(
@@ -389,11 +328,10 @@ def test_mark_download_content_changed_false_preserves_parse_and_sync():
             source_auction_id="1",
             download="done",
             parse="done",
-            deploy_ready=True,
-            pdf_path="pdfs/1.pdf",
-            media_synced=True,
-            media_synced_at=now,
-            first_queued_at=now,
+            lots_count=3,
+            hostinger_doc_path="pdfs/1.pdf",
+            hostinger_doc_url="https://example.com/pdfs/1.pdf",
+            first_seen_at=now,
             updated_at=now,
         )
     )
@@ -403,15 +341,13 @@ def test_mark_download_content_changed_false_preserves_parse_and_sync():
         ok=True,
         pdf_path="pdfs/1.pdf",
         content_changed=False,
-        require_media_resync=False,
     )
     item = ledger.by_key()["mstc:1"]
     assert item.parse == "done"
-    assert item.deploy_ready is True
-    assert item.media_synced is True
+    assert item.lots_count == 3
 
 
-def test_mark_download_content_changed_true_resets_parse_and_clears_sync():
+def test_mark_download_content_changed_true_resets_parse():
     now = datetime.now(IST).isoformat()
     ledger = empty_ledger()
     ledger.items.append(
@@ -421,11 +357,10 @@ def test_mark_download_content_changed_true_resets_parse_and_clears_sync():
             source_auction_id="1",
             download="done",
             parse="done",
-            deploy_ready=True,
-            pdf_path="pdfs/1.pdf",
-            media_synced=True,
-            media_synced_at=now,
-            first_queued_at=now,
+            lots_count=3,
+            hostinger_doc_path="pdfs/1.pdf",
+            hostinger_doc_url="https://example.com/pdfs/1.pdf",
+            first_seen_at=now,
             updated_at=now,
         )
     )
@@ -435,16 +370,13 @@ def test_mark_download_content_changed_true_resets_parse_and_clears_sync():
         ok=True,
         pdf_path="pdfs/1.pdf",
         content_changed=True,
-        require_media_resync=True,
     )
     item = ledger.by_key()["mstc:1"]
     assert item.parse == "pending"
-    assert item.deploy_ready is False
-    assert item.media_synced is False
-    assert item.media_synced_at is None
+    assert item.lots_count == 0
 
 
-def test_mark_download_clears_pdf_path_on_failure():
+def test_mark_download_clears_hostinger_on_failure():
     ledger = empty_ledger()
     ledger.items.append(
         LedgerItem(
@@ -453,12 +385,13 @@ def test_mark_download_clears_pdf_path_on_failure():
             source_auction_id="1",
             download="pending",
             parse="pending",
-            pdf_path="pdfs/1.pdf",
-            first_queued_at=datetime.now(IST).isoformat(),
+            hostinger_doc_path="pdfs/1.pdf",
+            first_seen_at=datetime.now(IST).isoformat(),
             updated_at=datetime.now(IST).isoformat(),
         )
     )
-    mark_download(ledger, "mstc:1", ok=False, pdf_path=None, error="missing PDF")
+    mark_download(ledger, "mstc:1", ok=False, error="missing PDF")
     item = ledger.by_key()["mstc:1"]
-    assert item.download == "failed"
-    assert item.pdf_path is None
+    assert item.download == "pending"
+    assert item.hostinger_doc_path is None
+    assert item.download_error == "missing PDF"

@@ -26,6 +26,8 @@ from scraper.config import (
     DEFAULT_THUMBS_DIR,
     DOWNLOAD_FAIL_BUDGET_ABS,
     DOWNLOAD_FAIL_BUDGET_PCT,
+    DOWNLOAD_STEP_ATTEMPTS,
+    DOWNLOAD_STEP_RETRY_SEC,
     DOWNLOAD_SUCCESS_PAUSE_SEC,
     PIPELINE_DOWNLOAD_BATCH_SIZE,
     PIPELINE_DOWNLOAD_MAX_BATCHES,
@@ -39,12 +41,17 @@ from scraper.filters import make_run_id
 from scraper.main import enrich_auction, resolve_auction_listing
 from scraper.media_sync import media_push_required
 from scraper.pdf_downloader import validate_pdf_file
-from scraper.pdf_flush import CataloguePdfFlushQueue, mark_pdfs_hostinger_synced
+from scraper.pdf_flush import (
+    CataloguePdfFlushQueue,
+    _sha256_file,
+    verify_hostinger_doc_url,
+)
 from scraper.pipeline_ledger import (
     estimated_download_runs_to_clear,
     fail_budget_ok,
     load_ledger,
     mark_download,
+    public_doc_url,
     pull_ledger,
     push_ledger,
     select_for_download,
@@ -56,6 +63,7 @@ from scraper.raw_store import (
     has_raw_html,
     pull_public_pdf_files,
     push_public_media,
+    push_public_pdf_files,
     push_raw_store,
     raw_html_rel_path,
     save_raw_html,
@@ -109,10 +117,25 @@ def _github_run_url() -> str | None:
     return None
 
 
+def _retry_call(fn, *, attempts: int, sleep_sec: float, label: str):
+    """Run fn until it returns without raising; sleep between failures."""
+    last_err: BaseException | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            return fn()
+        except BaseException as exc:
+            last_err = exc
+            _phase(f"{label} attempt {attempt}/{attempts} failed: {exc}")
+            if attempt < attempts:
+                time.sleep(max(0.0, sleep_sec))
+    raise RuntimeError(f"{label} failed after {attempts} attempts: {last_err}")
+
+
 def _download_one_mstc(
     *,
     item: Any,
     pdf_dir: Path,
+    public_dir: Path,
     raw_dir: Path,
     docs_dir: Path,
     thumbs_dir: Path,
@@ -123,10 +146,18 @@ def _download_one_mstc(
     stats: dict[str, Any],
     ledger: Any,
 ) -> tuple[bool, int]:
-    """Fetch MSTC HTML+PDF locally. Hostinger durability is marked on flush."""
-    base, _ = resolve_auction_listing(item.source_auction_id)
-    base.source = "mstc"
-    try:
+    """Fetch MSTC PDF, push to Hostinger, verify HTTP 200, then mark download=done."""
+    import shutil
+
+    aid = str(item.source_auction_id)
+    attempts = DOWNLOAD_STEP_ATTEMPTS
+    sleep_sec = DOWNLOAD_STEP_RETRY_SEC
+    docs_left = docs_remaining
+
+    def _fetch() -> None:
+        nonlocal docs_left
+        base, _ = resolve_auction_listing(aid)
+        base.source = "mstc"
         downloaded = enrich_auction(
             base,
             pdf_dir=pdf_dir,
@@ -135,38 +166,90 @@ def _download_one_mstc(
             mode="download_only",
             raw_dir=raw_dir,
         )
-        if not skip_docs and docs_remaining > 0 and downloaded.lots:
-            downloaded, docs_remaining = process_auction_documents(
+        if not skip_docs and docs_left > 0 and downloaded.lots:
+            downloaded, docs_left = process_auction_documents(
                 downloaded,
                 docs_dir=docs_dir,
                 thumbs_dir=thumbs_dir,
                 skip_docs=False,
-                max_docs_remaining=docs_remaining,
+                max_docs_remaining=docs_left,
                 session=session,
                 stats=stats,
             )
-        has_html = has_raw_html("mstc", item.source_auction_id, raw_dir=raw_dir)
-        has_pdf = validate_pdf_file(pdf_dir / f"{item.source_auction_id}.pdf")
-        ok = has_html if skip_pdf else (has_html and has_pdf)
-        if not ok:
+        has_html = has_raw_html("mstc", aid, raw_dir=raw_dir)
+        has_pdf = skip_pdf or validate_pdf_file(pdf_dir / f"{aid}.pdf")
+        if not (has_html and has_pdf):
             parts = list(downloaded.errors or [])
             if not has_html:
                 parts.append("missing raw HTML")
             if not skip_pdf and not has_pdf:
                 parts.append("missing or invalid catalogue PDF")
-            mark_download(
-                ledger,
-                item.stable_key,
-                ok=False,
-                error="; ".join(parts) if parts else "download incomplete",
-            )
-            return False, docs_remaining
-        item.raw_html_path = raw_html_rel_path("mstc", item.source_auction_id)
-        return True, docs_remaining
+            raise RuntimeError("; ".join(parts) if parts else "download incomplete")
+
+    try:
+        _retry_call(_fetch, attempts=attempts, sleep_sec=sleep_sec, label=f"fetch mstc:{aid}")
     except Exception as exc:
-        logger.exception("download failed for %s", item.stable_key)
+        logger.exception("download fetch failed for %s", item.stable_key)
         mark_download(ledger, item.stable_key, ok=False, error=str(exc))
-        return False, docs_remaining
+        return False, docs_left
+
+    item.raw_html_path = raw_html_rel_path("mstc", aid)
+    if skip_pdf:
+        # Local-only mode: cannot claim Hostinger durability.
+        mark_download(
+            ledger,
+            item.stable_key,
+            ok=False,
+            error="skip_pdf set — Hostinger durability required for download=done",
+            raw_html_path=item.raw_html_path,
+        )
+        return False, docs_left
+
+    rel = f"pdfs/{aid}.pdf"
+    local_pdf = pdf_dir / f"{aid}.pdf"
+    public_pdf = public_dir / "pdfs" / f"{aid}.pdf"
+
+    def _push() -> None:
+        public_pdf.parent.mkdir(parents=True, exist_ok=True)
+        if local_pdf.resolve() != public_pdf.resolve():
+            shutil.copy2(local_pdf, public_pdf)
+        result = push_public_pdf_files(public_dir=public_dir, filenames=[f"{aid}.pdf"])
+        if not result.ok:
+            raise RuntimeError(result.message or "Hostinger PDF push failed")
+        pushed = set(result.files or [])
+        if f"{aid}.pdf" not in pushed and media_push_required():
+            raise RuntimeError(f"Hostinger PDF push did not confirm {aid}.pdf")
+
+    try:
+        _retry_call(_push, attempts=attempts, sleep_sec=sleep_sec, label=f"push mstc:{aid}")
+    except Exception as exc:
+        mark_download(ledger, item.stable_key, ok=False, error=str(exc), raw_html_path=item.raw_html_path)
+        return False, docs_left
+
+    url = public_doc_url(rel)
+
+    def _verify() -> None:
+        if not verify_hostinger_doc_url(url):
+            raise RuntimeError(f"Hostinger URL not HTTP 200: {url}")
+
+    try:
+        _retry_call(_verify, attempts=attempts, sleep_sec=sleep_sec, label=f"verify mstc:{aid}")
+    except Exception as exc:
+        mark_download(ledger, item.stable_key, ok=False, error=str(exc), raw_html_path=item.raw_html_path)
+        return False, docs_left
+
+    mark_download(
+        ledger,
+        item.stable_key,
+        ok=True,
+        hostinger_doc_path=rel,
+        hostinger_doc_url=url,
+        doc_sha256=_sha256_file(local_pdf),
+        raw_html_path=item.raw_html_path,
+        content_changed=True,
+    )
+    stats["pdf_hostinger_flushed"] = int(stats.get("pdf_hostinger_flushed") or 0) + 1
+    return True, docs_left
 
 
 def _download_one_gem(
@@ -176,19 +259,23 @@ def _download_one_gem(
     ledger: Any,
     public_dir: Path,
 ) -> bool:
-    """Download GeM portal doc to Hostinger docs/gem/{id}.* (mandatory)."""
+    """Download GeM portal doc → Hostinger → HTTP 200 → mark done."""
     import hashlib
 
     from scraper.gem_forward_client import GemForwardClient
     from scraper.gem_scrap_samples_fetch import _download_binary
-    from scraper.pipeline_ledger import public_doc_url
 
     aid = str(item.source_auction_id or "").strip()
     portal = (getattr(item, "portal_doc_url", None) or "").strip()
+    attempts = DOWNLOAD_STEP_ATTEMPTS
+    sleep_sec = DOWNLOAD_STEP_RETRY_SEC
     if not portal:
         mark_download(ledger, item.stable_key, ok=False, error="missing portal_doc_url")
         return False
-    try:
+
+    body_holder: dict[str, bytes] = {}
+
+    def _fetch() -> None:
         client = GemForwardClient()
         client.init_session()
         detail = getattr(item, "detail_url", None) or ""
@@ -199,45 +286,62 @@ def _download_one_gem(
                 save_raw_html("gem_forward", aid, html, raw_dir=raw_dir)
             except Exception:
                 pass
-
-        # Use same SSH-capable binary path as archive digesters (GHA cannot hit GeM).
         body = _download_binary(client, portal)
         if len(body) < 500:
-            mark_download(
-                ledger, item.stable_key, ok=False, error=f"gem doc too small ({len(body)} bytes)"
-            )
-            return False
-        ext = "pdf" if body[:4] == b"%PDF" else "bin"
-        rel_dir = public_dir / "docs" / "gem"
-        rel_dir.mkdir(parents=True, exist_ok=True)
-        (rel_dir / f"{aid}.{ext}").write_bytes(body)
-        push = push_public_media(public_dir=public_dir, timeout_sec=300)
-        if not push.ok and media_push_required():
-            mark_download(
-                ledger,
-                item.stable_key,
-                ok=False,
-                error=f"Hostinger docs push failed: {push.message}",
-            )
-            return False
-        rel = f"docs/gem/{aid}.{ext}"
-        mark_download(
-            ledger,
-            item.stable_key,
-            ok=True,
-            hostinger_doc_path=rel,
-            hostinger_doc_url=public_doc_url(rel),
-            doc_sha256=hashlib.sha256(body).hexdigest(),
-            raw_html_path=raw_html_rel_path("gem_forward", aid)
-            if has_raw_html("gem_forward", aid, raw_dir=raw_dir)
-            else None,
-            content_changed=True,
-        )
-        return True
+            raise RuntimeError(f"gem doc too small ({len(body)} bytes)")
+        body_holder["body"] = body
+
+    try:
+        _retry_call(_fetch, attempts=attempts, sleep_sec=sleep_sec, label=f"fetch gem:{aid}")
     except Exception as exc:
         logger.exception("gem download failed for %s", item.stable_key)
         mark_download(ledger, item.stable_key, ok=False, error=str(exc))
         return False
+
+    body = body_holder["body"]
+    ext = "pdf" if body[:4] == b"%PDF" else "bin"
+    rel = f"docs/gem/{aid}.{ext}"
+    rel_dir = public_dir / "docs" / "gem"
+    out_path = rel_dir / f"{aid}.{ext}"
+
+    def _push() -> None:
+        rel_dir.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(body)
+        push = push_public_media(public_dir=public_dir, timeout_sec=300)
+        if not push.ok and media_push_required():
+            raise RuntimeError(f"Hostinger docs push failed: {push.message}")
+
+    try:
+        _retry_call(_push, attempts=attempts, sleep_sec=sleep_sec, label=f"push gem:{aid}")
+    except Exception as exc:
+        mark_download(ledger, item.stable_key, ok=False, error=str(exc))
+        return False
+
+    url = public_doc_url(rel)
+
+    def _verify() -> None:
+        if not verify_hostinger_doc_url(url):
+            raise RuntimeError(f"Hostinger URL not HTTP 200: {url}")
+
+    try:
+        _retry_call(_verify, attempts=attempts, sleep_sec=sleep_sec, label=f"verify gem:{aid}")
+    except Exception as exc:
+        mark_download(ledger, item.stable_key, ok=False, error=str(exc))
+        return False
+
+    mark_download(
+        ledger,
+        item.stable_key,
+        ok=True,
+        hostinger_doc_path=rel,
+        hostinger_doc_url=url,
+        doc_sha256=hashlib.sha256(body).hexdigest(),
+        raw_html_path=raw_html_rel_path("gem_forward", aid)
+        if has_raw_html("gem_forward", aid, raw_dir=raw_dir)
+        else None,
+        content_changed=True,
+    )
+    return True
 
 
 def run_pipeline_download(
@@ -349,11 +453,12 @@ def run_pipeline_download(
         attempted_ids: list[str] = []
         batch_reports: list[dict[str, Any]] = []
 
+        # Per-item durable path (fetch→push→HTTP 200); flush queue unused.
         flush_queue = CataloguePdfFlushQueue(
             public_dir=public_dir,
             ledger=ledger,
             flush_every=flush_every,
-            skip=skip_pdf or source != "mstc",
+            skip=True,
             phase=_phase,
             stats=stats,
             warnings=warnings,
@@ -397,17 +502,13 @@ def run_pipeline_download(
                 if source == "mstc":
                     if item.source != "mstc":
                         continue
-                    # Already durable?
-                    if (
-                        item.download == "done"
-                        and (item.hostinger_doc_url or "").strip()
-                        and (item.hostinger_doc_path or "").strip()
-                    ):
+                    if item.download == "done":
                         skipped_existing += 1
                         continue
                     ok, docs_remaining = _download_one_mstc(
                         item=item,
                         pdf_dir=pdf_dir,
+                        public_dir=public_dir,
                         raw_dir=raw_dir,
                         docs_dir=docs_dir,
                         thumbs_dir=thumbs_dir,
@@ -425,11 +526,6 @@ def run_pipeline_download(
                     if ok:
                         ok_count += 1
                         batch_ok += 1
-                        if validate_pdf_file(pdf_dir / f"{item.source_auction_id}.pdf"):
-                            flush_queue.enqueue(item.source_auction_id)
-                            flushed = flush_queue.maybe_flush()
-                            if flushed is not None and flushed.ok:
-                                write_ledger(ledger, ledger_path)
                         time.sleep(DOWNLOAD_SUCCESS_PAUSE_SEC)
                     else:
                         fail_count += 1
@@ -453,11 +549,6 @@ def run_pipeline_download(
 
             stats["batches_completed"] = batch_num
             batch_reports.append({"batch": batch_num, "ok": batch_ok, "fail": batch_fail})
-            push_ledger(local_path=ledger_path)
-
-        if flush_queue is not None and source == "mstc":
-            flush_queue.flush(force=True)
-            write_ledger(ledger, ledger_path)
             push_ledger(local_path=ledger_path)
 
         backlog_left = len(select_for_download(ledger, limit=10**9, pdf_dir=pdf_dir, source=source))

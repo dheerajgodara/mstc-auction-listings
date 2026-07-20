@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+import requests
+
 from scraper.media_sync import media_push_required
 from scraper.pipeline_ledger import PipelineLedger, _replace_item, mark_download, public_doc_url
 from scraper.raw_store import RawSyncResult, push_public_pdf_files
@@ -27,6 +29,35 @@ def _sha256_file(path: Path) -> str | None:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def verify_hostinger_doc_url(url: str, *, timeout_sec: float = 30.0) -> bool:
+    """Return True when the public Hostinger doc URL responds with HTTP 200."""
+    u = (url or "").strip()
+    if not u:
+        return False
+    try:
+        resp = requests.head(u, timeout=timeout_sec, allow_redirects=True)
+        if resp.status_code == 200:
+            return True
+        # Some hosts reject HEAD; fall back to ranged GET.
+        if resp.status_code in (403, 405, 501):
+            resp = requests.get(
+                u, timeout=timeout_sec, allow_redirects=True, stream=True, headers={"Range": "bytes=0-0"}
+            )
+            ok = resp.status_code in (200, 206)
+            resp.close()
+            return ok
+        # Soft fallback GET on other non-200 HEAD results
+        resp = requests.get(
+            u, timeout=timeout_sec, allow_redirects=True, stream=True, headers={"Range": "bytes=0-0"}
+        )
+        ok = resp.status_code in (200, 206)
+        resp.close()
+        return ok
+    except Exception as exc:
+        logger.warning("verify_hostinger_doc_url failed for %s: %s", u, exc)
+        return False
 
 
 def mark_pdfs_hostinger_synced(

@@ -239,6 +239,11 @@ def _replace_item(ledger: PipelineLedger, item: LedgerItem) -> None:
 
 
 def download_eligible(item: LedgerItem, *, source: str | None = None) -> bool:
+    """Queue truth: portal PDF URL present and download status is not done.
+
+    Phantoms are fixed by preflight reset to pending — eligibility does not
+    inspect hostinger paths/sha or attempt caps.
+    """
     if item.removed_from_source:
         return False
     item_src = (item.source or "").strip().lower()
@@ -254,22 +259,8 @@ def download_eligible(item: LedgerItem, *, source: str | None = None) -> bool:
         portal = item.portal_doc_url
     if not portal:
         return False
-    if item.download in ("pending", "failed") and item.download_attempts < MAX_STAGE_ATTEMPTS:
-        return True
-    # Repair: marked done but missing Hostinger URL/path
-    if item.download == "done" and (
-        not (item.hostinger_doc_url or "").strip() or not (item.hostinger_doc_path or "").strip()
-    ):
-        return item.download_attempts < MAX_STAGE_ATTEMPTS
-    # Repair: URL/path stamped without a durable content hash (phantom Hostinger "done")
-    if (
-        item.download == "done"
-        and src == "mstc"
-        and not (item.doc_sha256 or "").strip()
-        and item.download_attempts < MAX_STAGE_ATTEMPTS
-    ):
-        return True
-    return False
+    # Treat failed/blocked as re-queueable pending work.
+    return item.download != "done"
 
 
 def mstc_download_eligible(item: LedgerItem) -> bool:
@@ -294,7 +285,7 @@ def select_for_download(
     eligible = [i for i in ledger.items if download_eligible(i, source=src)]
     eligible.sort(
         key=lambda i: (
-            0 if i.download in ("pending", "failed") else 1,
+            0 if i.download in ("pending", "failed", "blocked") else 1,
             -i.priority_score,
             i.first_seen_at or "",
             i.stable_key,
@@ -304,11 +295,9 @@ def select_for_download(
 
 
 def classify_download_queue_item(item: LedgerItem) -> str:
-    if item.download == "done" and not (item.hostinger_doc_url or "").strip():
-        return "repair"
-    if item.download in ("pending", "failed"):
+    if item.download != "done":
         return "new"
-    return "repair"
+    return "done"
 
 
 def select_for_parse(ledger: PipelineLedger, *, limit: int | None = None) -> list[LedgerItem]:
@@ -531,13 +520,12 @@ def mark_download(
             item.lots_count = 0
             item.deploy = "pending"
     else:
+        # Any failure → pending (status is the only re-queue signal).
         item.download_error = error or "download incomplete — hostinger doc required"
         item.hostinger_doc_path = None
         item.hostinger_doc_url = None
-        if item.download_attempts >= MAX_STAGE_ATTEMPTS:
-            item.download = "blocked"
-        else:
-            item.download = "failed"
+        item.doc_sha256 = None
+        item.download = "pending"
     _replace_item(ledger, item)
     return item
 

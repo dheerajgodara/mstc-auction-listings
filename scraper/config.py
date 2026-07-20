@@ -144,7 +144,8 @@ PIPELINE_DOWNLOAD_BATCH_SIZE = 25
 # Max batches per download drain job (2000 / 25 = 80).
 PIPELINE_DOWNLOAD_MAX_BATCHES = 80
 # Hostinger mid-run PDF flush every N successful catalogue PDFs.
-PIPELINE_PDF_PUSH_EVERY = 25
+# Default 1: durable per-item push+verify (URL+status truth model).
+PIPELINE_PDF_PUSH_EVERY = int(os.getenv("PIPELINE_PDF_PUSH_EVERY", "1"))
 PIPELINE_PARSE_CAP_DEFAULT = 100
 PIPELINE_DRAIN_MAX_CYCLES = 25
 PIPELINE_DRAIN_PARSE_RETRIES = 3
@@ -153,6 +154,9 @@ PIPELINE_DOWNLOAD_AUTO_RETRIES_PER_SLOT = 2
 
 # Six independent GHA lanes
 DOWNLOAD_SUCCESS_PAUSE_SEC = float(os.getenv("DOWNLOAD_SUCCESS_PAUSE_SEC", "5"))
+# Per durable step (fetch / push / HTTP 200): retries with fixed sleep.
+DOWNLOAD_STEP_ATTEMPTS = int(os.getenv("DOWNLOAD_STEP_ATTEMPTS", "5"))
+DOWNLOAD_STEP_RETRY_SEC = float(os.getenv("DOWNLOAD_STEP_RETRY_SEC", "5"))
 PIPELINE_DISCOVER_MSTC_CAP = int(os.getenv("PIPELINE_DISCOVER_MSTC_CAP", "2000"))
 PIPELINE_DISCOVER_GEM_CAP = int(os.getenv("PIPELINE_DISCOVER_GEM_CAP", "2000"))
 PIPELINE_JOB_TIMEBOX_MIN = int(os.getenv("PIPELINE_JOB_TIMEBOX_MIN", "330"))
