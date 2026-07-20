@@ -172,9 +172,11 @@ def verify_public_object_url(
 
         headers = {"User-Agent": "Mozilla/5.0 MSTC-MediaVerify/1.0"}
         resp = requests.head(u, timeout=timeout_sec, allow_redirects=True, headers=headers)
-        if resp.status_code == 200:
+        head_status = resp.status_code
+        resp.close()
+        if head_status == 200:
             return True
-        if resp.status_code in (403, 405, 501):
+        if head_status in (403, 405, 501, 404):
             resp = requests.get(
                 u,
                 timeout=timeout_sec,
@@ -182,9 +184,21 @@ def verify_public_object_url(
                 stream=True,
                 headers={**headers, "Range": "bytes=0-0"},
             )
-            ok = resp.status_code in (200, 206)
+            get_status = resp.status_code
             resp.close()
-            return ok
+            if get_status in (200, 206):
+                return True
+            if get_status == 404:
+                resp = requests.get(
+                    u,
+                    timeout=timeout_sec,
+                    allow_redirects=True,
+                    headers=headers,
+                )
+                ok = resp.status_code == 200 and len(resp.content) > 0
+                resp.close()
+                return ok
+            return False
         resp = requests.get(
             u,
             timeout=timeout_sec,

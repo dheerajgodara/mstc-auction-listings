@@ -39,6 +39,28 @@ def _parse_closing(value: object) -> datetime | None:
     return None
 
 
+def _iter_string_values(obj: object):
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            yield from _iter_string_values(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _iter_string_values(item)
+
+
+def _site_root_asset_prefix(value: str) -> str | None:
+    """Return /pdfs|/docs|/thumbs when value is site-root path, not CDN URL."""
+    s = str(value or "").strip()
+    if not s or s.startswith(("http://", "https://")):
+        return None
+    for bad in ("/pdfs/", "/docs/", "/thumbs/"):
+        if s.startswith(bad):
+            return bad
+    return None
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
@@ -183,8 +205,9 @@ def run_strict_qa(
             errors.append(f"record {auction.get('id')} closes before {min_closing_date}: {closing.isoformat()}")
 
         blob = json.dumps(auction)
-        for bad in ("/pdfs/", "/docs/", "/thumbs/"):
-            if bad in blob:
+        for val in _iter_string_values(auction):
+            bad = _site_root_asset_prefix(val)
+            if bad:
                 errors.append(f"record {auction.get('id')} contains absolute path {bad}")
                 break
 
@@ -206,7 +229,7 @@ def run_strict_qa(
         for lot in auction.get("lots", []):
             for img in lot.get("preview_images") or []:
                 url = img if isinstance(img, str) else (img.get("url") or img.get("thumbnail_url") or "")
-                if url.startswith("/"):
+                if _site_root_asset_prefix(str(url or "")):
                     errors.append(f"absolute preview path on {auction.get('id')}")
 
     report = analyze(path)

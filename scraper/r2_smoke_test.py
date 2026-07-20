@@ -58,10 +58,19 @@ def main() -> int:
         return 1
     url = up.get("url") or public_object_url(key)
     print(f"uploaded {url}")
-    # Brief settle for CDN
-    time.sleep(1.5)
-    if not verify_public_object_url(str(url)):
+    # CDN may need a few seconds after PutObject before custom domain serves the key.
+    verified = False
+    for attempt in range(10):
+        time.sleep(min(2.0 * (attempt + 1), 15.0))
+        if verify_public_object_url(str(url)):
+            verified = True
+            break
+        print(f"verify attempt {attempt + 1}/10 pending…")
+    if not verified:
         print(f"FAIL verify after upload: {url}")
+        print(
+            "Hint: R2_BUCKET must match the bucket behind R2_PUBLIC_BASE_URL custom domain"
+        )
         return 1
     print(f"OK verified {url}")
     print("SMOKE_UPLOAD_OK")

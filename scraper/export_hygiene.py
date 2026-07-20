@@ -197,6 +197,9 @@ def poison_threshold(export_count: int) -> int:
 
 def _rewrite_absolute_asset_string(value: str) -> tuple[str, bool]:
     text = value
+    if text.startswith(("http://", "https://")):
+        # CDN absolute URLs legitimately contain /pdfs/ in the path component.
+        return text, False
     changed = False
     for absolute, relative in _ABSOLUTE_ASSET_PREFIXES:
         if absolute in text:
