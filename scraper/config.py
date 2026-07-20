@@ -166,12 +166,18 @@ DOWNLOAD_FAIL_BUDGET_PCT = float(os.getenv("DOWNLOAD_FAIL_BUDGET_PCT", "0.02"))
 DOWNLOAD_FAIL_BUDGET_ABS = int(os.getenv("DOWNLOAD_FAIL_BUDGET_ABS", "25"))
 PARSE_FAIL_BUDGET_PCT = float(os.getenv("PARSE_FAIL_BUDGET_PCT", "0.01"))
 PARSE_FAIL_BUDGET_ABS = int(os.getenv("PARSE_FAIL_BUDGET_ABS", "20"))
-PARSE_SUCCESS_PAUSE_SEC = float(os.getenv("PARSE_SUCCESS_PAUSE_SEC", "5"))
-PARSE_BATCH_RETRY_ROUNDS = int(os.getenv("PARSE_BATCH_RETRY_ROUNDS", "5"))
+# Fast parse: no inter-item pause by default (wave architecture).
+PARSE_SUCCESS_PAUSE_SEC = float(os.getenv("PARSE_SUCCESS_PAUSE_SEC", "0"))
+PARSE_BATCH_RETRY_ROUNDS = int(os.getenv("PARSE_BATCH_RETRY_ROUNDS", "2"))
 PARSE_BATCH_SIZE = int(os.getenv("PARSE_BATCH_SIZE", "25"))
+PARSE_WAVE_SIZE = int(os.getenv("PARSE_WAVE_SIZE", "100"))
+PARSE_WORKERS = int(os.getenv("PARSE_WORKERS", "0"))  # 0 = auto cpu-1
+PARSE_PDF_TIMEOUT_SEC = int(os.getenv("PARSE_PDF_TIMEOUT_SEC", "60"))
+PARSE_ENGINE = (os.getenv("PARSE_ENGINE", "pymupdf") or "pymupdf").strip().lower()
 PIPELINE_ACTIVE_SOURCES = ("mstc", "gem_forward")
 DEFAULT_PARSED_DIR = REPO_ROOT / "work" / "parsed"
-PARSER_CACHE_VERSION = os.getenv("PARSER_CACHE_VERSION", "1")
+# Bump when MuPDF-primary lot extraction changes semantics.
+PARSER_CACHE_VERSION = os.getenv("PARSER_CACHE_VERSION", "2")
 TELEGRAM_NOOP_SILENT = os.getenv("TELEGRAM_NOOP_SILENT", "1").strip() not in {
     "0",
     "false",

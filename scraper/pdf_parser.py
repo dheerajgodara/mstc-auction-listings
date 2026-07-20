@@ -570,6 +570,19 @@ def parse_lot_block(block: str) -> dict:
 
 
 def parse_pdf_lots(pdf_path: Path) -> list[dict]:
+    # Fast path: PyMuPDF text → lot blocks (same semantics as pypdf text path).
+    try:
+        from scraper.parse_engine import extract_pdf_text_pymupdf
+
+        text = extract_pdf_text_pymupdf(Path(pdf_path))
+        blocks = split_lot_blocks(text)
+        lots = [parse_lot_block(b) for b in blocks]
+        if lots:
+            logger.info("Parsed %d lots from %s via pymupdf blocks", len(lots), pdf_path.name)
+            return lots
+    except Exception as exc:
+        logger.warning("pymupdf block extraction failed for %s: %s", pdf_path.name, exc)
+
     try:
         lots = extract_lots_from_pdfplumber(pdf_path)
         if lots:

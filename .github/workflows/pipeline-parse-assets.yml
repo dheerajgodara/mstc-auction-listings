@@ -33,7 +33,7 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
-      - name: Parse one-by-one
+      - name: Parse wave (PyMuPDF pool + batch flush)
         env:
           PYTHONUNBUFFERED: "1"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -46,8 +46,10 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           AI_ENRICHMENT_DISABLE: "1"
-          PARSE_SUCCESS_PAUSE_SEC: "5"
-          PARSE_BATCH_RETRY_ROUNDS: "5"
+          PARSE_SUCCESS_PAUSE_SEC: "0"
+          PARSE_WAVE_SIZE: "100"
+          PARSE_WORKERS: "2"
+          PARSER_CACHE_VERSION: "2"
         run: |
           EXTRA=""
           if [ -n "${{ github.event.inputs.max_parse }}" ]; then
