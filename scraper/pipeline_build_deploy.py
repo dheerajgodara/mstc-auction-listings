@@ -203,8 +203,17 @@ def run_build_deploy(
     ledger_path = Path(DEFAULT_PIPELINE_LEDGER)
 
     try:
-        pulled = pull_ledger(local_path=ledger_path)
-        pull_parsed_tree(local_root=parsed_root)
+        import os as _os
+
+        if _os.getenv("SKIP_LEDGER_PULL", "").strip().lower() in {"1", "true", "yes"}:
+            _phase("SKIP_LEDGER_PULL=1 — using checkout/local ledger only")
+            pulled = ledger_path.is_file() and ledger_path.stat().st_size > 0
+        else:
+            pulled = pull_ledger(local_path=ledger_path)
+        if _os.getenv("SKIP_PARSED_PULL", "").strip().lower() not in {"1", "true", "yes"}:
+            pull_parsed_tree(local_root=parsed_root)
+        else:
+            _phase("SKIP_PARSED_PULL=1 — using local parsed/ only")
         ledger = load_ledger(ledger_path)
         if not pulled and not ledger.items:
             raise RuntimeError(
@@ -284,7 +293,10 @@ def run_build_deploy(
             key = stable_auction_key(a)
             mark_deploy(ledger, key, ok=True)
         write_ledger(ledger, ledger_path)
-        push_ledger(local_path=ledger_path)
+        if os.getenv("SKIP_LEDGER_PUSH", "").strip().lower() not in {"1", "true", "yes"}:
+            push_ledger(local_path=ledger_path)
+        else:
+            _phase("SKIP_LEDGER_PUSH=1 — local ledger only (smoke)")
 
         future_n = count_publishable_future(ledger, min_closing_date=min_closing)
         future_pending = sum(

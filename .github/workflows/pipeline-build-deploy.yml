@@ -88,6 +88,9 @@ jobs:
           R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
           R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
           MEDIA_R2_ONLY: "1"
+          PARSE_SUCCESS_PAUSE_SEC: "0"
+          PARSE_WORKERS: "2"
+          PARSER_CACHE_VERSION: "2"
         run: |
           EXTRA=""
           if [ "${{ github.event.inputs.no_deploy }}" = "true" ]; then
@@ -98,4 +101,51 @@ jobs:
             EXTRA="$EXTRA --allow-small-export"
             export PIPELINE_ALLOW_SMALL_EXPORT=1
           fi
+
+          # Timed smoke: parse 10 R2 PDFs then time build+deploy of that set.
+          if [ "${{ github.event.inputs.allow_small_export }}" = "true" ] && [ -f tests/fixtures/smoke_ledger_deploy_10.json ]; then
+            mkdir -p work
+            cp tests/fixtures/smoke_ledger_deploy_10.json work/pipeline_ledger.json
+            export SKIP_LEDGER_PULL=1
+            export SKIP_LEDGER_PUSH=1
+            export SKIP_PARSED_PULL=1
+            echo "=== parse smoke (10) ahead of build-deploy ==="
+            PARSE_START=$(date +%s)
+            PYTHONPATH=. python -m scraper.pipeline_parse_assets \
+              --break-stale-lock --max-parse 10 --wave-size 10 \
+              --auction-ids 589371,589184,588623,589235,588927,590494,589397,589379,590546,588456
+            echo "parse_prep_wall_sec=$(( $(date +%s) - PARSE_START ))"
+            # Keep smoke rows in export even if PDF closing already passed.
+            PYTHONPATH=. python - <<'PY'
+import json
+from pathlib import Path
+from datetime import datetime, timedelta, timezone
+root = Path("work/parsed/mstc")
+closing = (datetime.now(timezone.utc) + timedelta(days=45)).isoformat()
+opening = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+n = 0
+for p in root.glob("*.json"):
+    art = json.loads(p.read_text(encoding="utf-8"))
+    rec = art.get("record") or {}
+    rec["closing"] = closing
+    rec["opening"] = opening
+    art["record"] = rec
+    p.write_text(json.dumps(art, indent=2) + "\n", encoding="utf-8")
+    n += 1
+ledger_path = Path("work/pipeline_ledger.json")
+ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+for item in ledger.get("items") or []:
+    item["closing"] = closing
+    item["opening"] = opening
+ledger_path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
+print(f"forced_future_closing artifacts={n}")
+PY
+            EXTRA="$EXTRA --allow-small-export"
+            export PIPELINE_ALLOW_SMALL_EXPORT=1
+          fi
+
+          echo "=== build-deploy timed ==="
+          START=$(date +%s)
           PYTHONPATH=. python -m scraper.pipeline_build_deploy --break-stale-lock $EXTRA
+          END=$(date +%s)
+          echo "build_deploy_smoke_wall_sec=$((END-START))"
