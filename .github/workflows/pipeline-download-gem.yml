@@ -29,7 +29,7 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
-      - name: Download GeM docs
+      - name: Download GeM wave (parallel fetch + batch flush)
         env:
           PYTHONUNBUFFERED: "1"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -41,13 +41,16 @@ jobs:
           HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          DOWNLOAD_SUCCESS_PAUSE_SEC: "5"
-          DOWNLOAD_BATCH_RETRY_ROUNDS: "5"
+          DOWNLOAD_SUCCESS_PAUSE_SEC: "0"
+          DOWNLOAD_BATCH_RETRY_ROUNDS: "2"
+          DOWNLOAD_WAVE_SIZE: "25"
+          DOWNLOAD_FETCH_WORKERS_GEM: "3"
         run: |
           CAP="${{ github.event.inputs.max_download }}"
           if [ -z "$CAP" ]; then CAP=2000; fi
           PYTHONPATH=. python -m scraper.pipeline_download \
             --source gem_forward \
+            --wave-size 25 \
             --batch-size 25 \
             --max-batches 80 \
             --max-download "$CAP" \

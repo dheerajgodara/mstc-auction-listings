@@ -1,8 +1,4 @@
-"""Process 1: Download drain — ledger-only HTML/PDF batches with Hostinger flush.
-
-Discovery/bootstrap live in ``pipeline_discover`` (Process 0). This job loops
-batches of ``batch_size`` (default 25) until the download backlog is clear.
-"""
+"""Fast download lane: parallel portal fetch → batch Hostinger flush → HTTP-200 → done."""
 
 from __future__ import annotations
 
@@ -11,83 +7,51 @@ import json
 import logging
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import requests
-
 from scraper.config import (
-    DEFAULT_DOCS_DIR,
     DEFAULT_PDF_DIR,
     DEFAULT_PIPELINE_LEDGER,
     DEFAULT_RAW_DIR,
-    DEFAULT_THUMBS_DIR,
     DOWNLOAD_BATCH_RETRY_ROUNDS,
     DOWNLOAD_FAIL_BUDGET_ABS,
     DOWNLOAD_FAIL_BUDGET_PCT,
     DOWNLOAD_SUCCESS_PAUSE_SEC,
+    DOWNLOAD_WAVE_SIZE,
     PIPELINE_DOWNLOAD_BATCH_SIZE,
     PIPELINE_DOWNLOAD_CAP_CATCHUP,
     PIPELINE_DOWNLOAD_MAX_BATCHES,
     PIPELINE_JOB_TIMEBOX_MIN,
-    PIPELINE_PDF_PUSH_EVERY,
     REPO_ROOT,
     SITE_BASE_URL,
 )
-from scraper.document_cache import process_auction_documents
+from scraper.download_engine import fetch_gem_to_local, fetch_mstc_to_local, worker_count_for_source
+from scraper.download_flush import flush_download_files
+from scraper.download_journal import DownloadJournal
+from scraper.download_throttle import DownloadThrottle
 from scraper.filters import make_run_id
-from scraper.main import enrich_auction, resolve_auction_listing
+from scraper.lane_resume import dispatch_workflow, record_resume, should_self_resume
 from scraper.media_sync import media_push_required
-from scraper.pdf_downloader import validate_pdf_file
-from scraper.pdf_flush import (
-    CataloguePdfFlushQueue,
-    _sha256_file,
-    verify_hostinger_doc_url,
-)
 from scraper.pipeline_ledger import (
     estimated_download_runs_to_clear,
     fail_budget_ok,
     load_ledger,
     mark_download,
-    public_doc_url,
     pull_ledger,
     push_ledger,
     select_for_download,
     write_ledger,
 )
-from scraper.pipeline_markers import reset_download_retry_state
-from scraper.raw_store import (
-    _hostinger_ssh_config,
-    has_raw_html,
-    pull_public_pdf_files,
-    push_public_media,
-    push_public_pdf_files,
-    push_raw_store,
-    raw_html_rel_path,
-    save_raw_html,
-)
+from scraper.raw_store import _hostinger_ssh_config, pull_public_pdf_files
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
-from scraper.schedule_guard import latest_slot_start
 from scraper.telegram_reporter import send_lane_report, send_telegram_report
-from scraper.lane_resume import dispatch_workflow, record_resume, should_self_resume
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_download")
-
-DEFAULT_PDF_PUSH_EVERY = PIPELINE_PDF_PUSH_EVERY
-
-
-def _pdf_push_every() -> int:
-    import os
-
-    raw = (os.environ.get("PDF_PUSH_EVERY") or str(DEFAULT_PDF_PUSH_EVERY)).strip()
-    try:
-        n = int(raw)
-    except ValueError:
-        return DEFAULT_PDF_PUSH_EVERY
-    return max(1, n)
 
 
 def _phase(msg: str) -> None:
@@ -117,192 +81,65 @@ def _github_run_url() -> str | None:
     return None
 
 
-def _download_one_mstc(
-    *,
-    item: Any,
-    pdf_dir: Path,
-    public_dir: Path,
-    raw_dir: Path,
-    docs_dir: Path,
-    thumbs_dir: Path,
-    skip_pdf: bool,
-    skip_docs: bool,
-    docs_remaining: int,
-    session: requests.Session,
-    stats: dict[str, Any],
-    ledger: Any,
-) -> tuple[bool, int]:
-    """Fetch → save Hostinger → HTTP 200 check (one try each). Fail → pending."""
-    import shutil
+def _pause_between_auctions() -> None:
+    """Legacy hook; default pause is 0 (adaptive throttle owns pacing)."""
+    time.sleep(max(0.0, DOWNLOAD_SUCCESS_PAUSE_SEC))
 
-    aid = str(item.source_auction_id)
-    docs_left = docs_remaining
 
-    try:
-        base, _ = resolve_auction_listing(aid)
-        base.source = "mstc"
-        downloaded = enrich_auction(
-            base,
-            pdf_dir=pdf_dir,
-            skip_pdf=skip_pdf,
-            stats=stats,
-            mode="download_only",
-            raw_dir=raw_dir,
-        )
-        if not skip_docs and docs_left > 0 and downloaded.lots:
-            downloaded, docs_left = process_auction_documents(
-                downloaded,
-                docs_dir=docs_dir,
-                thumbs_dir=thumbs_dir,
-                skip_docs=False,
-                max_docs_remaining=docs_left,
-                session=session,
-                stats=stats,
-            )
-        has_html = has_raw_html("mstc", aid, raw_dir=raw_dir)
-        has_pdf = skip_pdf or validate_pdf_file(pdf_dir / f"{aid}.pdf")
-        if not (has_html and has_pdf):
-            parts = list(downloaded.errors or [])
-            if not has_html:
-                parts.append("missing raw HTML")
-            if not skip_pdf and not has_pdf:
-                parts.append("missing or invalid catalogue PDF")
-            raise RuntimeError("; ".join(parts) if parts else "download incomplete")
-    except Exception as exc:
-        logger.exception("download fetch failed for %s", item.stable_key)
-        mark_download(ledger, item.stable_key, ok=False, error=str(exc))
-        return False, docs_left
-
-    item.raw_html_path = raw_html_rel_path("mstc", aid)
-    if skip_pdf:
+def _apply_fetch_failures(ledger: Any, results: list[dict[str, Any]]) -> None:
+    for r in results:
+        if r.get("ok"):
+            continue
         mark_download(
             ledger,
-            item.stable_key,
+            str(r["stable_key"]),
             ok=False,
-            error="skip_pdf set — Hostinger durability required for download=done",
-            raw_html_path=item.raw_html_path,
+            error=str(r.get("error") or "fetch failed"),
+            raw_html_path=r.get("raw_html_path"),
         )
-        return False, docs_left
-
-    rel = f"pdfs/{aid}.pdf"
-    local_pdf = pdf_dir / f"{aid}.pdf"
-    public_pdf = public_dir / "pdfs" / f"{aid}.pdf"
-
-    try:
-        public_pdf.parent.mkdir(parents=True, exist_ok=True)
-        if local_pdf.resolve() != public_pdf.resolve():
-            shutil.copy2(local_pdf, public_pdf)
-        result = push_public_pdf_files(public_dir=public_dir, filenames=[f"{aid}.pdf"])
-        if not result.ok:
-            raise RuntimeError(result.message or "Hostinger PDF push failed")
-        pushed = set(result.files or [])
-        if f"{aid}.pdf" not in pushed and media_push_required():
-            raise RuntimeError(f"Hostinger PDF push did not confirm {aid}.pdf")
-    except Exception as exc:
-        mark_download(ledger, item.stable_key, ok=False, error=str(exc), raw_html_path=item.raw_html_path)
-        return False, docs_left
-
-    url = public_doc_url(rel)
-    try:
-        if not verify_hostinger_doc_url(url):
-            raise RuntimeError(f"Hostinger URL not HTTP 200: {url}")
-    except Exception as exc:
-        mark_download(ledger, item.stable_key, ok=False, error=str(exc), raw_html_path=item.raw_html_path)
-        return False, docs_left
-
-    mark_download(
-        ledger,
-        item.stable_key,
-        ok=True,
-        hostinger_doc_path=rel,
-        hostinger_doc_url=url,
-        doc_sha256=_sha256_file(local_pdf),
-        raw_html_path=item.raw_html_path,
-        content_changed=True,
-    )
-    stats["pdf_hostinger_flushed"] = int(stats.get("pdf_hostinger_flushed") or 0) + 1
-    return True, docs_left
 
 
-def _download_one_gem(
-    *,
-    item: Any,
-    raw_dir: Path,
+def _commit_verified(
     ledger: Any,
-    public_dir: Path,
-) -> bool:
-    """Fetch → save Hostinger → HTTP 200 check (one try each). Fail → pending."""
-    import hashlib
-
-    from scraper.gem_forward_client import GemForwardClient
-    from scraper.gem_scrap_samples_fetch import _download_binary
-
-    aid = str(item.source_auction_id or "").strip()
-    portal = (getattr(item, "portal_doc_url", None) or "").strip()
-    if not portal:
-        mark_download(ledger, item.stable_key, ok=False, error="missing portal_doc_url")
-        return False
-
-    try:
-        client = GemForwardClient()
-        client.init_session()
-        detail = getattr(item, "detail_url", None) or ""
-        if "/eprocure/" in str(detail):
-            notice_path = "/eprocure/" + str(detail).split("/eprocure/", 1)[-1]
-            try:
-                html = client.get_html(notice_path)
-                save_raw_html("gem_forward", aid, html, raw_dir=raw_dir)
-            except Exception:
-                pass
-        body = _download_binary(client, portal)
-        if len(body) < 500:
-            raise RuntimeError(f"gem doc too small ({len(body)} bytes)")
-    except Exception as exc:
-        logger.exception("gem download failed for %s", item.stable_key)
-        mark_download(ledger, item.stable_key, ok=False, error=str(exc))
-        return False
-
-    ext = "pdf" if body[:4] == b"%PDF" else "bin"
-    rel = f"docs/gem/{aid}.{ext}"
-    rel_dir = public_dir / "docs" / "gem"
-    out_path = rel_dir / f"{aid}.{ext}"
-
-    try:
-        rel_dir.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(body)
-        push = push_public_media(public_dir=public_dir, timeout_sec=300)
-        if not push.ok and media_push_required():
-            raise RuntimeError(f"Hostinger docs push failed: {push.message}")
-    except Exception as exc:
-        mark_download(ledger, item.stable_key, ok=False, error=str(exc))
-        return False
-
-    url = public_doc_url(rel)
-    try:
-        if not verify_hostinger_doc_url(url):
-            raise RuntimeError(f"Hostinger URL not HTTP 200: {url}")
-    except Exception as exc:
-        mark_download(ledger, item.stable_key, ok=False, error=str(exc))
-        return False
-
-    mark_download(
-        ledger,
-        item.stable_key,
-        ok=True,
-        hostinger_doc_path=rel,
-        hostinger_doc_url=url,
-        doc_sha256=hashlib.sha256(body).hexdigest(),
-        raw_html_path=raw_html_rel_path("gem_forward", aid)
-        if has_raw_html("gem_forward", aid, raw_dir=raw_dir)
-        else None,
-        content_changed=True,
-    )
-    return True
+    verified: list[dict[str, Any]],
+    *,
+    stats: dict[str, Any],
+) -> int:
+    n = 0
+    for r in verified:
+        mark_download(
+            ledger,
+            str(r["stable_key"]),
+            ok=True,
+            hostinger_doc_path=str(r["hostinger_doc_path"]),
+            hostinger_doc_url=str(r["hostinger_doc_url"]),
+            doc_sha256=r.get("doc_sha256"),
+            raw_html_path=r.get("raw_html_path"),
+            content_changed=True,
+        )
+        n += 1
+    stats["pdf_hostinger_flushed"] = int(stats.get("pdf_hostinger_flushed") or 0) + n
+    return n
 
 
-def _pause_between_auctions() -> None:
-    """Always wait between auctions (success or fail)."""
-    time.sleep(max(0.0, DOWNLOAD_SUCCESS_PAUSE_SEC))
+def _mark_unverified_pending(
+    ledger: Any,
+    pending_ok: list[dict[str, Any]],
+    verified_keys: set[str],
+    *,
+    error: str,
+) -> None:
+    for r in pending_ok:
+        key = str(r["stable_key"])
+        if key in verified_keys:
+            continue
+        mark_download(
+            ledger,
+            key,
+            ok=False,
+            error=error,
+            raw_html_path=r.get("raw_html_path"),
+        )
 
 
 def run_pipeline_download(
@@ -315,15 +152,17 @@ def run_pipeline_download(
     skip_pdf: bool = False,
     break_stale_lock: bool = True,
     pdf_push_every: int | None = None,
-    # Per-run unique-auction cap (default 2000). Skips self-resume when set.
     max_download: int | None = PIPELINE_DOWNLOAD_CAP_CATCHUP,
     source: str = "mstc",
+    wave_size: int | None = None,
 ) -> dict[str, Any]:
+    del max_docs_per_run, skip_docs, pdf_push_every  # reserved / unused in fast path
     source = (source or "mstc").strip().lower()
     lane_id = "download_mstc" if source == "mstc" else "download_gem"
-    flush_every = max(1, int(pdf_push_every if pdf_push_every is not None else _pdf_push_every()))
+    wave_size = max(1, int(wave_size if wave_size is not None else DOWNLOAD_WAVE_SIZE))
     batch_size = max(1, int(batch_size))
-    # Hard ceiling: never process more than catch-up cap unique auctions per run.
+    wave_size = max(wave_size, batch_size) if batch_size else wave_size
+
     if max_download is None or int(max_download) <= 0:
         run_item_cap = int(PIPELINE_DOWNLOAD_CAP_CATCHUP)
         capped_run = True
@@ -331,13 +170,15 @@ def run_pipeline_download(
         run_item_cap = int(max_download)
         capped_run = True
     batch_size = min(batch_size, run_item_cap)
-    # Enough batches to reach the cap (do not collapse capped runs to max_batches=1).
-    needed = max(1, (run_item_cap + batch_size - 1) // batch_size)
+    wave_size = min(wave_size, run_item_cap)
+    needed = max(1, (run_item_cap + wave_size - 1) // wave_size)
     max_batches = max(1, max(int(max_batches), needed))
+    workers = worker_count_for_source(source)
 
     run_id = f"download_{source}_{make_run_id()}"
     run_dir = repo_root / "work" / "runs" / run_id
     _setup_logging(run_dir)
+    journal = DownloadJournal(run_dir / "download_journal.jsonl")
 
     lock_path = repo_root / "work" / f"download_{source}.lock"
     acquire_refresh_lock(
@@ -349,11 +190,10 @@ def run_pipeline_download(
 
     public_dir = repo_root / "web" / "public"
     pdf_dir = Path(DEFAULT_PDF_DIR)
-    docs_dir = Path(DEFAULT_DOCS_DIR)
-    thumbs_dir = Path(DEFAULT_THUMBS_DIR)
     raw_dir = Path(DEFAULT_RAW_DIR)
     ledger_path = Path(DEFAULT_PIPELINE_LEDGER)
     loop_t0 = time.monotonic()
+    throttle = DownloadThrottle()
 
     started = datetime.now(IST).isoformat()
     payload: dict[str, Any] = {
@@ -363,8 +203,9 @@ def run_pipeline_download(
         "source": source,
         "started_at": started,
         "batch_size": batch_size,
+        "wave_size": wave_size,
+        "fetch_workers": workers,
         "max_batches": max_batches,
-        "pdf_push_every": flush_every,
         "site_base_url": SITE_BASE_URL,
         "github_run_url": _github_run_url(),
         "warnings": [],
@@ -374,16 +215,18 @@ def run_pipeline_download(
 
     warnings: list[str] = []
     errors: list[str] = []
-    flush_queue: CataloguePdfFlushQueue | None = None
     skipped_existing = 0
+    timing = {"fetch_s": 0.0, "flush_s": 0.0}
     try:
-        if source == "mstc" and not skip_pdf and media_push_required() and _hostinger_ssh_config() is None:
+        if media_push_required() and _hostinger_ssh_config() is None:
             raise RuntimeError(
                 "download requires Hostinger SSH (HOSTINGER_*) when MEDIA_PUSH_REQUIRED=1"
             )
 
         pdf_dir.mkdir(parents=True, exist_ok=True)
         raw_dir.mkdir(parents=True, exist_ok=True)
+        (public_dir / "pdfs").mkdir(parents=True, exist_ok=True)
+        (public_dir / "docs" / "gem").mkdir(parents=True, exist_ok=True)
 
         pulled = pull_ledger(local_path=ledger_path)
         ledger = load_ledger(ledger_path)
@@ -395,7 +238,7 @@ def run_pipeline_download(
         eligible_n = len(select_for_download(ledger, limit=10**9, pdf_dir=pdf_dir, source=source))
         _phase(
             f"ledger items={len(ledger.items)} counts={ledger.status_counts()} "
-            f"download_eligible[{source}]={eligible_n}"
+            f"download_eligible[{source}]={eligible_n} wave={wave_size} workers={workers}"
         )
 
         stats: dict[str, Any] = {
@@ -410,80 +253,48 @@ def run_pipeline_download(
             "pdf_hostinger_flush_failures": 0,
             "documents": {},
             "batches_completed": 0,
+            "waves_completed": 0,
         }
-        docs_remaining = max_docs_per_run
-        session = requests.Session()
         ok_count = 0
         fail_count = 0
         attempted_ids: list[str] = []
         attempted_keys: set[str] = set()
         batch_reports: list[dict[str, Any]] = []
 
-        # Per-item durable path (fetch→push→HTTP 200); flush queue unused.
-        flush_queue = CataloguePdfFlushQueue(
-            public_dir=public_dir,
-            ledger=ledger,
-            flush_every=flush_every,
-            skip=True,
-            phase=_phase,
-            stats=stats,
-            warnings=warnings,
-        )
+        gem_client = None
+        if source == "gem_forward":
+            from scraper.gem_forward_client import GemForwardClient
+
+            gem_client = GemForwardClient()
+            gem_client.init_session()
 
         def _unique_attempted() -> int:
             return len(attempted_keys)
 
-        def _download_item(item: Any) -> bool:
-            nonlocal docs_remaining
+        def _fetch_one(item: Any) -> dict[str, Any]:
             if source == "mstc":
-                if item.source != "mstc":
-                    return False
-                if item.download == "done":
-                    return True
-                ok, docs_remaining = _download_one_mstc(
+                return fetch_mstc_to_local(
                     item=item,
                     pdf_dir=pdf_dir,
                     public_dir=public_dir,
                     raw_dir=raw_dir,
-                    docs_dir=docs_dir,
-                    thumbs_dir=thumbs_dir,
                     skip_pdf=skip_pdf,
-                    skip_docs=skip_docs,
-                    docs_remaining=docs_remaining,
-                    session=session,
                     stats=stats,
-                    ledger=ledger,
+                    throttle=throttle,
                 )
-            else:
-                if item.source != "gem_forward":
-                    return False
-                ok = _download_one_gem(
-                    item=item, raw_dir=raw_dir, ledger=ledger, public_dir=public_dir
-                )
-            attempted_ids.append(str(item.source_auction_id))
-            attempted_keys.add(item.stable_key)
-            _phase(f"download_item source={source} id={item.source_auction_id} ok={ok}")
-            write_ledger(ledger, ledger_path)
-            _pause_between_auctions()
-            return bool(ok)
-
-        for batch_num in range(1, max_batches + 1):
-            elapsed_min = (time.monotonic() - loop_t0) / 60.0
-            if elapsed_min >= PIPELINE_JOB_TIMEBOX_MIN:
-                _phase(f"timebox reached ({elapsed_min:.0f}m); stopping batch loop")
-                break
-            if _unique_attempted() >= run_item_cap:
-                _phase(f"max-download cap reached ({run_item_cap})")
-                break
-
-            remaining = run_item_cap - _unique_attempted()
-            select_n = min(batch_size, remaining)
-            selected = select_for_download(
-                ledger, limit=select_n, pdf_dir=pdf_dir, source=source
+            return fetch_gem_to_local(
+                item=item,
+                raw_dir=raw_dir,
+                public_dir=public_dir,
+                client=gem_client,
+                throttle=throttle,
             )
-            if not selected:
-                _phase(f"download backlog clear after {batch_num - 1} batch(es)")
-                break
+
+        def _process_wave(selected: list[Any], *, wave_num: int) -> tuple[int, int, list[str]]:
+            nonlocal ok_count, fail_count
+            batch_ok = 0
+            batch_fail = 0
+            failed_keys: list[str] = []
 
             if source == "mstc" and not skip_pdf:
                 pdf_names = [f"{i.source_auction_id}.pdf" for i in selected]
@@ -491,63 +302,184 @@ def run_pipeline_download(
                 if pull_result.warnings:
                     warnings.extend(pull_result.warnings[:5])
 
-            batch_ok = 0
-            batch_fail = 0
-            failed_keys: list[str] = []
-            _phase(f"batch {batch_num}/{max_batches}: selected={len(selected)} source={source}")
+            # Parallel portal fetch
+            t_fetch = time.monotonic()
+            results: list[dict[str, Any]] = []
+            with ThreadPoolExecutor(max_workers=min(workers, len(selected))) as pool:
+                futs = {pool.submit(_fetch_one, item): item for item in selected}
+                for fut in as_completed(futs):
+                    item = futs[fut]
+                    try:
+                        r = fut.result()
+                    except Exception as exc:
+                        r = {
+                            "stable_key": item.stable_key,
+                            "source": source,
+                            "source_auction_id": str(item.source_auction_id),
+                            "ok": False,
+                            "error": str(exc),
+                        }
+                    results.append(r)
+                    attempted_ids.append(str(item.source_auction_id))
+                    attempted_keys.add(item.stable_key)
+                    journal.append(
+                        {
+                            "stable_key": r.get("stable_key"),
+                            "ok": bool(r.get("ok")),
+                            "phase": "fetch",
+                            "error": r.get("error"),
+                            "bytes": r.get("bytes"),
+                            "sha": r.get("doc_sha256"),
+                        }
+                    )
+            timing["fetch_s"] += time.monotonic() - t_fetch
 
+            _apply_fetch_failures(ledger, results)
+            pending_ok = [r for r in results if r.get("ok")]
+            fetch_fail_n = len(results) - len(pending_ok)
+            fail_count += fetch_fail_n
+            batch_fail += fetch_fail_n
+            for r in results:
+                if not r.get("ok"):
+                    failed_keys.append(str(r["stable_key"]))
+
+            if not pending_ok:
+                write_ledger(ledger, ledger_path)
+                _pause_between_auctions()
+                return batch_ok, batch_fail, failed_keys
+
+            # Batch Hostinger flush + verify
+            t_flush = time.monotonic()
+            flush_ok, flush_msg, verified = flush_download_files(pending_ok, public_dir=public_dir)
+            timing["flush_s"] += time.monotonic() - t_flush
+            stats["pdf_hostinger_flush_batches"] = (
+                int(stats.get("pdf_hostinger_flush_batches") or 0) + 1
+            )
+            _phase(f"wave {wave_num} flush: ok={flush_ok} {flush_msg}")
+
+            if not flush_ok:
+                stats["pdf_hostinger_flush_failures"] = (
+                    int(stats.get("pdf_hostinger_flush_failures") or 0) + 1
+                )
+                _mark_unverified_pending(
+                    ledger,
+                    pending_ok,
+                    set(),
+                    error=f"Hostinger flush failed: {flush_msg}",
+                )
+                fail_count += len(pending_ok)
+                batch_fail += len(pending_ok)
+                failed_keys.extend(str(r["stable_key"]) for r in pending_ok)
+                write_ledger(ledger, ledger_path)
+                return batch_ok, batch_fail, failed_keys
+
+            verified_keys = {str(r["stable_key"]) for r in verified}
+            committed = _commit_verified(ledger, verified, stats=stats)
+            ok_count += committed
+            batch_ok += committed
+            for r in verified:
+                journal.append(
+                    {
+                        "stable_key": r["stable_key"],
+                        "ok": True,
+                        "phase": "flushed",
+                        "flushed": True,
+                        "path": r.get("hostinger_doc_path"),
+                    }
+                )
+
+            unverified = [r for r in pending_ok if str(r["stable_key"]) not in verified_keys]
+            if unverified:
+                _mark_unverified_pending(
+                    ledger,
+                    unverified,
+                    verified_keys,
+                    error="Hostinger URL not HTTP 200 after wave flush",
+                )
+                fail_count += len(unverified)
+                batch_fail += len(unverified)
+                failed_keys.extend(str(r["stable_key"]) for r in unverified)
+
+            write_ledger(ledger, ledger_path)
+            _pause_between_auctions()
+            return batch_ok, batch_fail, failed_keys
+
+        for batch_num in range(1, max_batches + 1):
+            elapsed_min = (time.monotonic() - loop_t0) / 60.0
+            if elapsed_min >= PIPELINE_JOB_TIMEBOX_MIN:
+                _phase(f"timebox reached ({elapsed_min:.0f}m); stopping")
+                break
+            if _unique_attempted() >= run_item_cap:
+                _phase(f"max-download cap reached ({run_item_cap})")
+                break
+
+            remaining = run_item_cap - _unique_attempted()
+            select_n = min(wave_size, remaining)
+            selected = select_for_download(
+                ledger, limit=select_n, pdf_dir=pdf_dir, source=source
+            )
+            if not selected:
+                _phase(f"download backlog clear after {batch_num - 1} wave(s)")
+                break
+
+            # Drop already-done (race with peer)
+            work = []
             for item in selected:
-                if _unique_attempted() >= run_item_cap and item.stable_key not in attempted_keys:
-                    break
                 if item.download == "done":
                     skipped_existing += 1
                     continue
-                ok = _download_item(item)
-                if ok:
-                    ok_count += 1
-                    batch_ok += 1
-                else:
-                    fail_count += 1
-                    batch_fail += 1
-                    failed_keys.append(item.stable_key)
+                work.append(item)
+            if not work:
+                continue
 
-            # Batch-end reattempts: only failed IDs from this batch, up to N rounds.
+            _phase(
+                f"wave {batch_num}/{max_batches}: selected={len(work)} "
+                f"source={source} workers={workers}"
+            )
+            batch_ok, batch_fail, failed_keys = _process_wave(work, wave_num=batch_num)
+
+            # Wave-end retries for failed keys only
             retry_rounds = max(0, int(DOWNLOAD_BATCH_RETRY_ROUNDS))
             for retry_round in range(1, retry_rounds + 1):
                 if not failed_keys:
                     break
                 elapsed_min = (time.monotonic() - loop_t0) / 60.0
                 if elapsed_min >= PIPELINE_JOB_TIMEBOX_MIN:
-                    _phase("timebox during batch-end retry; stopping retries")
                     break
-                _phase(
-                    f"batch {batch_num} retry round {retry_round}/{retry_rounds}: "
-                    f"failed={len(failed_keys)}"
-                )
-                still_failed: list[str] = []
                 by_key = ledger.by_key()
+                retry_items = []
                 for key in failed_keys:
                     item = by_key.get(key)
                     if item is None or item.download == "done":
                         continue
-                    ok = _download_item(item)
-                    if ok:
-                        ok_count += 1
-                        batch_ok += 1
-                        fail_count = max(0, fail_count - 1)
-                        batch_fail = max(0, batch_fail - 1)
-                    else:
-                        still_failed.append(key)
-                failed_keys = still_failed
+                    retry_items.append(item)
+                if not retry_items:
+                    break
+                _phase(
+                    f"wave {batch_num} retry {retry_round}/{retry_rounds}: n={len(retry_items)}"
+                )
+                rok, rfail, failed_keys = _process_wave(
+                    retry_items, wave_num=batch_num * 1000 + retry_round
+                )
+                batch_ok += rok
+                # fail counts already adjusted inside _process_wave
 
             stats["batches_completed"] = batch_num
+            stats["waves_completed"] = batch_num
+            elapsed = max(0.001, time.monotonic() - loop_t0)
+            rate = ok_count / (elapsed / 60.0)
             batch_reports.append(
                 {
-                    "batch": batch_num,
+                    "wave": batch_num,
                     "ok": batch_ok,
                     "fail": batch_fail,
                     "retry_left": len(failed_keys),
+                    "items_per_min": round(rate, 2),
                 }
+            )
+            _phase(
+                f"wave {batch_num} done ok={batch_ok} fail={batch_fail} "
+                f"rate={rate:.1f}/min throttle={throttle.snapshot()}"
             )
             push_ledger(local_path=ledger_path)
 
@@ -560,7 +492,6 @@ def run_pipeline_download(
             absolute=DOWNLOAD_FAIL_BUDGET_ABS,
         )
         elapsed_min = (time.monotonic() - loop_t0) / 60.0
-        # Capped runs (default 2000) do not self-resume; cron/autonomy kick the next drain.
         resume = False
         resume_reason = "capped_run"
         if not capped_run:
@@ -581,6 +512,7 @@ def run_pipeline_download(
                 record_resume(lane_id, {"reason": resume_reason, "backlog_left": backlog_left})
                 dispatch_workflow(wf)
 
+        rate = ok_count / max(0.001, elapsed_min)
         finished = datetime.now(IST).isoformat()
         payload.update(
             {
@@ -598,12 +530,15 @@ def run_pipeline_download(
                 "resume_next": resume,
                 "resume_reason": resume_reason,
                 "stats": stats,
+                "timing": timing,
+                "items_per_min": round(rate, 2),
+                "throttle": throttle.snapshot(),
                 "batches_completed": int(stats.get("batches_completed") or 0),
                 "batch_reports": batch_reports,
                 "ledger": ledger.status_counts(),
                 "warnings": warnings,
                 "estimated_runs_to_clear": estimated_download_runs_to_clear(
-                    ledger, cap=batch_size, pdf_dir=pdf_dir, source=source
+                    ledger, cap=wave_size, pdf_dir=pdf_dir, source=source
                 ),
             }
         )
@@ -623,12 +558,14 @@ def run_pipeline_download(
                 "backlog_left": backlog_left,
                 "fail_budget_ok": budget_ok,
                 "resume_next": resume,
+                "items_per_min": round(rate, 2),
             },
             noop=attempted == 0 and backlog_left == 0,
         )
-        _phase(f"done ok={ok_count} fail={fail_count} backlog={backlog_left}")
-        if attempted_ids:
-            _phase(f"attempted_ids={','.join(attempted_ids)}")
+        _phase(
+            f"done ok={ok_count} fail={fail_count} backlog={backlog_left} "
+            f"rate={rate:.1f}/min fetch_s={timing['fetch_s']:.1f} flush_s={timing['flush_s']:.1f}"
+        )
         return payload
     except Exception as exc:
         logger.exception("pipeline download failed")
@@ -647,6 +584,7 @@ def run_pipeline_download(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Pipeline download lane (MSTC or GeM)")
     parser.add_argument("--batch-size", type=int, default=PIPELINE_DOWNLOAD_BATCH_SIZE)
+    parser.add_argument("--wave-size", type=int, default=DOWNLOAD_WAVE_SIZE)
     parser.add_argument("--max-batches", type=int, default=PIPELINE_DOWNLOAD_MAX_BATCHES)
     parser.add_argument(
         "--max-download",
@@ -663,6 +601,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     run_pipeline_download(
         batch_size=args.batch_size,
+        wave_size=args.wave_size,
         max_batches=args.max_batches,
         max_download=args.max_download,
         max_docs_per_run=args.max_docs_per_run,

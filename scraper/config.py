@@ -152,10 +152,20 @@ PIPELINE_DRAIN_PARSE_RETRIES = 3
 PIPELINE_DRAIN_DEPLOY_RETRIES = 3
 PIPELINE_DOWNLOAD_AUTO_RETRIES_PER_SLOT = 2
 
-# Six independent GHA lanes
-DOWNLOAD_SUCCESS_PAUSE_SEC = float(os.getenv("DOWNLOAD_SUCCESS_PAUSE_SEC", "5"))
-# Batch-end reattempts of failed auctions within a batch (not in-step retries).
-DOWNLOAD_BATCH_RETRY_ROUNDS = int(os.getenv("DOWNLOAD_BATCH_RETRY_ROUNDS", "5"))
+# Six independent GHA lanes — fast download: wave fetch + batch Hostinger flush.
+DOWNLOAD_SUCCESS_PAUSE_SEC = float(os.getenv("DOWNLOAD_SUCCESS_PAUSE_SEC", "0"))
+# Wave-end reattempts of failed auctions (not in-step retries).
+DOWNLOAD_BATCH_RETRY_ROUNDS = int(os.getenv("DOWNLOAD_BATCH_RETRY_ROUNDS", "2"))
+DOWNLOAD_WAVE_SIZE = int(os.getenv("DOWNLOAD_WAVE_SIZE", "25"))
+# Per-source fetch workers (portal concurrency). 0 = use source default.
+DOWNLOAD_FETCH_WORKERS = int(os.getenv("DOWNLOAD_FETCH_WORKERS", "0"))
+DOWNLOAD_FETCH_WORKERS_MSTC = int(os.getenv("DOWNLOAD_FETCH_WORKERS_MSTC", "4"))
+DOWNLOAD_FETCH_WORKERS_GEM = int(os.getenv("DOWNLOAD_FETCH_WORKERS_GEM", "3"))
+DOWNLOAD_THROTTLE_MIN_SEC = float(os.getenv("DOWNLOAD_THROTTLE_MIN_SEC", "0.15"))
+DOWNLOAD_THROTTLE_MAX_SEC = float(os.getenv("DOWNLOAD_THROTTLE_MAX_SEC", "45"))
+DOWNLOAD_CIRCUIT_FAIL_RATIO = float(os.getenv("DOWNLOAD_CIRCUIT_FAIL_RATIO", "0.4"))
+DOWNLOAD_CIRCUIT_WINDOW = int(os.getenv("DOWNLOAD_CIRCUIT_WINDOW", "20"))
+DOWNLOAD_CIRCUIT_COOLDOWN_SEC = float(os.getenv("DOWNLOAD_CIRCUIT_COOLDOWN_SEC", "90"))
 # Deprecated: in-step retries removed; kept for env compatibility (ignored by download lane).
 DOWNLOAD_STEP_ATTEMPTS = int(os.getenv("DOWNLOAD_STEP_ATTEMPTS", "1"))
 DOWNLOAD_STEP_RETRY_SEC = float(os.getenv("DOWNLOAD_STEP_RETRY_SEC", "5"))

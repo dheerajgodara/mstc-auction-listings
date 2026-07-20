@@ -47,7 +47,7 @@ jobs:
           HOSTINGER_SSH_KEY: ~/.ssh/hostinger_key
           HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
         run: PYTHONPATH=. python -m scraper.pipeline_schema_migrate --pull --push
-      - name: Download MSTC PDFs
+      - name: Download MSTC wave (parallel fetch + batch flush)
         env:
           PYTHONUNBUFFERED: "1"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -59,13 +59,16 @@ jobs:
           HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          DOWNLOAD_SUCCESS_PAUSE_SEC: "5"
-          DOWNLOAD_BATCH_RETRY_ROUNDS: "5"
+          DOWNLOAD_SUCCESS_PAUSE_SEC: "0"
+          DOWNLOAD_BATCH_RETRY_ROUNDS: "2"
+          DOWNLOAD_WAVE_SIZE: "25"
+          DOWNLOAD_FETCH_WORKERS_MSTC: "4"
         run: |
           CAP="${{ github.event.inputs.max_download }}"
           if [ -z "$CAP" ]; then CAP=2000; fi
           PYTHONPATH=. python -m scraper.pipeline_download \
             --source mstc \
+            --wave-size 25 \
             --batch-size 25 \
             --max-batches 80 \
             --max-download "$CAP" \
