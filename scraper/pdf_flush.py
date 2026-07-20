@@ -8,9 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-import requests
-
 from scraper.media_sync import media_push_required
+from scraper.object_store import upload_hostinger_rel
 from scraper.pipeline_ledger import PipelineLedger, _replace_item, mark_download, public_doc_url
 from scraper.raw_store import RawSyncResult, push_public_pdf_files
 
@@ -37,52 +36,15 @@ def verify_hostinger_doc_url(
     timeout_sec: float = 30.0,
     sniff_magic: bool = False,
 ) -> bool:
-    """Return True when the public Hostinger doc URL responds with HTTP 200.
+    """Return True when the public CDN/media URL responds with HTTP 200.
 
-    When ``sniff_magic`` is True (GeM docs), also Range-GET the first bytes and
-    reject HTML shells / unknown magic.
+    Name retained for call-site compatibility; verification targets R2 CDN URLs.
     """
-    u = (url or "").strip()
-    if not u:
-        return False
-    try:
-        if sniff_magic or "/docs/gem/" in u:
-            resp = requests.get(
-                u,
-                timeout=timeout_sec,
-                allow_redirects=True,
-                headers={"Range": "bytes=0-4095"},
-            )
-            if resp.status_code not in (200, 206):
-                resp.close()
-                return False
-            from scraper.gem_doc_validate import is_gem_document_bytes
+    from scraper.object_store import verify_public_object_url
 
-            ok, _kind, _err = is_gem_document_bytes(resp.content)
-            resp.close()
-            return ok
-
-        resp = requests.head(u, timeout=timeout_sec, allow_redirects=True)
-        if resp.status_code == 200:
-            return True
-        # Some hosts reject HEAD; fall back to ranged GET.
-        if resp.status_code in (403, 405, 501):
-            resp = requests.get(
-                u, timeout=timeout_sec, allow_redirects=True, stream=True, headers={"Range": "bytes=0-0"}
-            )
-            ok = resp.status_code in (200, 206)
-            resp.close()
-            return ok
-        # Soft fallback GET on other non-200 HEAD results
-        resp = requests.get(
-            u, timeout=timeout_sec, allow_redirects=True, stream=True, headers={"Range": "bytes=0-0"}
-        )
-        ok = resp.status_code in (200, 206)
-        resp.close()
-        return ok
-    except Exception as exc:
-        logger.warning("verify_hostinger_doc_url failed for %s: %s", u, exc)
-        return False
+    return verify_public_object_url(
+        url, timeout_sec=timeout_sec, sniff_magic=sniff_magic
+    )
 
 
 def mark_pdfs_hostinger_synced(
@@ -92,7 +54,7 @@ def mark_pdfs_hostinger_synced(
     synced: bool,
     public_dir: Path | None = None,
 ) -> int:
-    """Confirm Hostinger durability for MSTC PDFs (sets hostinger_doc_*)."""
+    """Confirm CDN durability for MSTC PDFs (sets hostinger_doc_* + object_doc_url)."""
     updated = 0
     pdf_dir = (public_dir / "pdfs") if public_dir else None
     for name in filenames:
@@ -106,12 +68,14 @@ def mark_pdfs_hostinger_synced(
         rel = f"pdfs/{aid}.pdf"
         if synced:
             sha = _sha256_file(pdf_dir / f"{aid}.pdf") if pdf_dir else None
+            cdn = public_doc_url(rel)
             mark_download(
                 ledger,
                 key,
                 ok=True,
                 hostinger_doc_path=rel,
-                hostinger_doc_url=public_doc_url(rel),
+                hostinger_doc_url=cdn,
+                object_doc_url=cdn,
                 doc_sha256=sha,
                 raw_html_path=item.raw_html_path,
                 content_changed=True,
@@ -120,9 +84,10 @@ def mark_pdfs_hostinger_synced(
             # Keep attempts stable: direct field patch, not another mark_download fail
             item.hostinger_doc_path = None
             item.hostinger_doc_url = None
+            item.object_doc_url = None
             if item.download == "done":
                 item.download = "pending"
-            item.download_error = "awaiting Hostinger PDF sync"
+            item.download_error = "awaiting R2 PDF sync"
             _replace_item(ledger, item)
         updated += 1
     return updated
@@ -174,11 +139,37 @@ class CataloguePdfFlushQueue:
         self._pending.clear()
         self._pending_set.clear()
 
-        self.phase(f"media: mid-run PDF flush ({len(batch)} file(s)) -> Hostinger")
-        result = push_public_pdf_files(public_dir=self.public_dir, filenames=batch)
+        self.phase(f"media: mid-run PDF flush ({len(batch)} file(s)) -> R2 CDN")
+        # Prefer R2 upload of local PDFs; Hostinger push only if R2 unavailable.
+        from scraper.object_store import media_r2_only, r2_configured
+
+        pushed: list[str] = []
+        result: RawSyncResult
+        if r2_configured() or media_r2_only():
+            ok_names: list[str] = []
+            err_parts: list[str] = []
+            for name in batch:
+                local = self.public_dir / "pdfs" / name
+                up = upload_hostinger_rel(local, f"pdfs/{name}")
+                if up.get("ok"):
+                    ok_names.append(name)
+                else:
+                    err_parts.append(f"{name}:{up.get('error')}")
+            result = RawSyncResult(
+                attempted=True,
+                ok=bool(ok_names) and not err_parts,
+                message=(
+                    f"r2 uploaded {len(ok_names)}/{len(batch)}"
+                    + (f" errors={';'.join(err_parts[:3])}" if err_parts else "")
+                ),
+                files=ok_names,
+            )
+            pushed = ok_names
+        else:
+            result = push_public_pdf_files(public_dir=self.public_dir, filenames=batch)
+            pushed = list(result.files) if result.ok else []
         self.stats["pdf_hostinger_flush_batches"] = int(self.stats["pdf_hostinger_flush_batches"]) + 1
 
-        pushed = list(result.files) if result.ok else []
         if result.ok and pushed:
             mark_pdfs_hostinger_synced(
                 self.ledger, pushed, synced=True, public_dir=self.public_dir
@@ -187,7 +178,7 @@ class CataloguePdfFlushQueue:
                 pushed
             )
             self.phase(
-                f"Hostinger PDF flush ok +{len(pushed)} "
+                f"R2 PDF flush ok +{len(pushed)} "
                 f"(flushed_total={self.stats['pdf_hostinger_flushed']})"
             )
             leftover = [n for n in batch if n not in set(pushed)]
@@ -209,7 +200,7 @@ class CataloguePdfFlushQueue:
         )
 
         if media_push_required():
-            raise RuntimeError(f"mid-run PDF push to Hostinger failed: {result.message}")
+            raise RuntimeError(f"mid-run PDF push to R2 failed: {result.message}")
         return result
 
     def emergency_flush(self) -> None:

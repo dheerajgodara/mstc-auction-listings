@@ -30,6 +30,7 @@ from scraper.filters import make_run_id
 from scraper.lane_resume import dispatch_workflow, kick_if_needed, record_resume, should_self_resume
 from scraper.media_sync import media_push_required
 from scraper.models import AuctionRecord
+from scraper.object_store import download_object_to_path, media_r2_only
 from scraper.parse_cache import (
     build_parse_artifact,
     file_sha256,
@@ -46,6 +47,8 @@ from scraper.pipeline_ledger import (
     fail_budget_ok,
     load_ledger,
     mark_parse,
+    media_doc_path,
+    media_doc_url,
     pull_ledger,
     push_ledger,
     select_for_parse,
@@ -55,8 +58,6 @@ from scraper.pipeline_ledger import (
 from scraper.pipeline_status import publish_pipeline_status, truth_for_telegram
 from scraper.raw_store import (
     _hostinger_ssh_config,
-    pull_public_pdf_files,
-    pull_public_relative_files,
     pull_raw_files,
 )
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
@@ -93,17 +94,18 @@ def _prefetch_wave(
     pdf_dir: Path,
     raw_dir: Path,
 ) -> None:
+    """Ensure catalogue PDFs/docs are local — prefer CDN/R2 over Hostinger pull."""
     mstc = [i for i in wave if i.source == "mstc"]
     gem = [i for i in wave if i.source == "gem_forward"]
     if mstc:
         pairs = [(i.source, str(i.source_auction_id)) for i in mstc]
-        pull_raw_files(pairs, raw_dir=raw_dir, timeout_sec=300)
+        try:
+            pull_raw_files(pairs, raw_dir=raw_dir, timeout_sec=300)
+        except Exception as exc:
+            logger.warning("raw pull soft-fail: %s", exc)
         pdf_dir.mkdir(parents=True, exist_ok=True)
-        names = []
         for i in mstc:
-            host_rel = (i.hostinger_doc_path or f"pdfs/{i.source_auction_id}.pdf").lstrip("/")
-            names.append(Path(host_rel).name)
-            # Skip pull if local PDF already matches sha
+            host_rel = media_doc_path(i) or f"pdfs/{i.source_auction_id}.pdf"
             local = public_dir / host_rel
             if not local.is_file():
                 local = pdf_dir / f"{i.source_auction_id}.pdf"
@@ -113,12 +115,27 @@ def _prefetch_wave(
                         continue
                 except Exception:
                     pass
-            names.append(Path(host_rel).name)
-        pull_public_pdf_files(public_dir=public_dir, filenames=sorted(set(names)))
+            if local.is_file() and local.stat().st_size > 1000 and not i.doc_sha256:
+                continue
+            dest = public_dir / host_rel
+            download_object_to_path(
+                key=host_rel,
+                url=media_doc_url(i) or None,
+                dest=dest,
+            )
     if gem:
-        rels = [(i.hostinger_doc_path or "").lstrip("/") for i in gem if (i.hostinger_doc_path or "").strip()]
-        if rels:
-            pull_public_relative_files(public_dir=public_dir, relative_paths=rels)
+        for i in gem:
+            rel = media_doc_path(i)
+            if not rel:
+                continue
+            dest = public_dir / rel
+            if dest.is_file() and dest.stat().st_size > 0:
+                continue
+            download_object_to_path(
+                key=rel,
+                url=media_doc_url(i) or None,
+                dest=dest,
+            )
 
 
 def _build_mstc_spec(
@@ -141,8 +158,9 @@ def _build_mstc_spec(
         "source_auction_id": aid,
         "pdf_path": str(local),
         "raw_html_path": str(raw_path) if raw_path.is_file() else None,
-        "hostinger_doc_path": item.hostinger_doc_path,
-        "hostinger_doc_url": item.hostinger_doc_url,
+        "hostinger_doc_path": item.hostinger_doc_path or host_rel,
+        "hostinger_doc_url": media_doc_url(item) or item.hostinger_doc_url,
+        "object_doc_url": getattr(item, "object_doc_url", None) or media_doc_url(item),
         "portal_doc_url": item.portal_doc_url,
         "doc_sha256": item.doc_sha256 or (file_sha256(local) if local.is_file() else None),
         "auction_number": getattr(item, "auction_number", None) or aid,
@@ -215,9 +233,10 @@ def run_parse_assets(
     timing = {"prefetch_s": 0.0, "cpu_s": 0.0, "flush_s": 0.0}
 
     try:
-        if media_push_required() and _hostinger_ssh_config() is None:
+        if media_push_required() and not media_r2_only() and _hostinger_ssh_config() is None:
             raise RuntimeError(
-                "parse requires Hostinger SSH (HOSTINGER_*) when MEDIA_PUSH_REQUIRED=1"
+                "parse requires Hostinger SSH (HOSTINGER_*) when MEDIA_PUSH_REQUIRED=1 "
+                "and MEDIA_R2_ONLY is off"
             )
 
         pulled = pull_ledger(local_path=ledger_path)
@@ -234,8 +253,8 @@ def run_parse_assets(
                     for i in ledger.items
                     if str(i.source_auction_id) in id_filter
                     and i.download == "done"
-                    and (i.hostinger_doc_url or "").strip()
-                    and (i.hostinger_doc_path or "").strip()
+                    and media_doc_url(i)
+                    and media_doc_path(i)
                     and not i.removed_from_source
                 ]
                 for item in queue:
@@ -272,20 +291,18 @@ def run_parse_assets(
             work_specs: list[dict[str, Any]] = []
             gem_items: list[Any] = []
             for item in wave:
-                if not (item.hostinger_doc_url or "").strip() or not (
-                    item.hostinger_doc_path or ""
-                ).strip():
+                if not media_doc_url(item) or not media_doc_path(item):
                     mark_parse(
                         ledger,
                         item.stable_key,
                         ok=False,
-                        error="missing hostinger_doc_url — download required",
+                        error="missing CDN media URL — download required",
                         durability_failed=True,
                     )
                     failed += 1
                     continue
                 out_path = local_parsed_path(item.source, item.source_auction_id, root=parsed_root)
-                host_rel = (item.hostinger_doc_path or "").lstrip("/")
+                host_rel = media_doc_path(item)
                 local_doc = public_dir / host_rel if host_rel else None
                 if item.source == "mstc" and (local_doc is None or not local_doc.is_file()):
                     local_doc = pdf_dir / f"{item.source_auction_id}.pdf"

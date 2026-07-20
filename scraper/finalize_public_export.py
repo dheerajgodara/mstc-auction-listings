@@ -9,6 +9,13 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from scraper.ai_enrichment.hydrate import hydrate_auctions_export
+from scraper.asset_integrity import (
+    auction_has_missing_document_assets,
+    local_asset_kind as _local_asset_kind,
+    normalize_rel as _normalize_rel,
+    preview_url as _preview_url,
+    scrub_export_lot_documents,
+)
 from scraper.config import AI_ENRICHMENT_CACHE_DIR, REPO_ROOT
 from scraper.export_hygiene import repair_absolute_asset_paths
 from scraper.import_tracking import finalize_export_payload
@@ -18,8 +25,6 @@ logger = logging.getLogger("scraper.finalize_public_export")
 
 DEFAULT_JSON = REPO_ROOT / "web" / "public" / "data" / "auctions.json"
 DEFAULT_HISTORY = REPO_ROOT / "web" / "public" / "data" / "import-history.json"
-
-LOCAL_ASSET_PREFIXES = ("pdfs/", "docs/", "thumbs/")
 
 
 def finalize_public_export(
@@ -147,41 +152,17 @@ def remove_missing_local_asset_links(export: dict, *, public_dir: Path) -> dict[
                 _append_warning(auction, f"local {kind} asset not cached yet: {rel}")
                 removed[kind] += 1
             lot["preview_images"] = kept_previews
+
+    # Scrub lot.documents[].cached_url / thumbnail_url and rebuild preview_images.
+    lot_doc_removed = scrub_export_lot_documents(export, public_dir=public_dir)
+    removed["docs"] += lot_doc_removed["docs"]
+    removed["thumbs"] += lot_doc_removed["thumbs"]
     return removed
 
 
 def auction_has_missing_local_assets(auction: dict, *, public_dir: Path) -> bool:
     """True if auction JSON points at a missing local pdfs/docs/thumbs path."""
-    candidates: list[object] = []
-    if auction.get("pdf_url"):
-        candidates.append(auction.get("pdf_url"))
-    candidates.extend(auction.get("document_urls") or [])
-    for lot in auction.get("lots") or []:
-        if not isinstance(lot, dict):
-            continue
-        candidates.extend(lot.get("preview_images") or [])
-    for value in candidates:
-        url = _preview_url(value) if not isinstance(value, str) else value
-        if url is None:
-            url = value if isinstance(value, str) else None
-        kind = _local_asset_kind(url)
-        if kind is None:
-            continue
-        rel = _normalize_rel(url)
-        if not (public_dir / rel).is_file():
-            return True
-    return False
-
-
-def _preview_url(img: object) -> str | None:
-    if isinstance(img, str) and img.strip():
-        return img.strip()
-    if isinstance(img, dict):
-        for key in ("url", "thumbnail_url", "src"):
-            value = img.get(key)
-            if value:
-                return str(value)
-    return None
+    return auction_has_missing_document_assets(auction, public_dir=public_dir)
 
 
 def _append_warning(auction: dict, note: str) -> None:
@@ -191,25 +172,11 @@ def _append_warning(auction: dict, note: str) -> None:
     auction["warnings"] = warnings
 
 
-def _normalize_rel(value: object) -> str:
-    return str(value).lstrip("/")
-
-
 def _is_local_asset_url(value: object, *, prefix: str) -> bool:
     if not value:
         return False
     text = str(value).lstrip("/")
     return text.startswith(prefix)
-
-
-def _local_asset_kind(value: object) -> str | None:
-    if not value:
-        return None
-    text = str(value).lstrip("/")
-    for prefix in LOCAL_ASSET_PREFIXES:
-        if text.startswith(prefix):
-            return prefix.rstrip("/")
-    return None
 
 
 def _is_local_pdf_url(value: object) -> bool:

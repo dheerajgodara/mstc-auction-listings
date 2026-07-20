@@ -254,6 +254,6 @@ def test_ledger_parse_not_done_until_explicit_mark():
     )
     # Gate fail path: never call mark_parse(ok=True)
     assert ledger.items[0].parse == "pending"
-    mark_parse(ledger, "mstc:1", ok=True, deploy_ready=True)
+    mark_parse(ledger, "mstc:1", ok=True, lots_count=1, deploy_ready=True)
     assert ledger.items[0].parse == "done"
-    assert ledger.items[0].deploy_ready is True
+    assert ledger.items[0].lots_count == 1

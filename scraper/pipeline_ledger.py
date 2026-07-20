@@ -1,4 +1,8 @@
-"""Pipeline ledger v3 — mandatory portal PDF/doc → Hostinger → parse → deploy."""
+"""Pipeline ledger v3 — portal PDF/doc → R2 CDN → parse → deploy.
+
+Media durability is R2 (`object_doc_url` on files.scrapauctionindia.com).
+`hostinger_doc_path` remains the stable relative media key (pdfs/…, docs/…).
+"""
 
 from __future__ import annotations
 
@@ -15,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-from scraper.config import PDF_DETAIL_URL, REPO_ROOT, SITE_BASE_URL
+from scraper.config import PDF_DETAIL_URL, REPO_ROOT, R2_PUBLIC_BASE_URL, SITE_BASE_URL
 from scraper.import_tracking import stable_auction_key
 from scraper.incremental_queue import priority_score
 from scraper.raw_store import _hostinger_ssh_config, _ssh_cmd, remote_pipeline_root
@@ -41,12 +45,14 @@ class LedgerItem(BaseModel):
     source_auction_id: str
 
     portal_doc_url: Optional[str] = None
-    hostinger_doc_url: Optional[str] = None
+    # Relative media key under CDN (pdfs/…, docs/gem/…). Name kept for ledger compat.
     hostinger_doc_path: Optional[str] = None
+    # Legacy absolute Hostinger URL — deprecated; prefer object_doc_url.
+    hostinger_doc_url: Optional[str] = None
     doc_sha256: Optional[str] = None
-    # Local staging path after portal fetch, before Hostinger/R2 publish (Phase B).
+    # Local staging path after portal fetch, before R2 publish.
     local_doc_path: Optional[str] = None
-    # Optional durable object-store URL (R2) when configured.
+    # Canonical public CDN URL (R2 / files.scrapauctionindia.com).
     object_doc_url: Optional[str] = None
 
     discover: StageStatus = "pending"
@@ -118,8 +124,9 @@ class PipelineLedger(BaseModel):
             "publishable": sum(1 for i in self.items if compute_publishable(i)),
             "missing_portal_doc": sum(1 for i in self.items if not (i.portal_doc_url or "").strip()),
             "missing_hostinger_doc": sum(
-                1 for i in self.items if not (i.hostinger_doc_url or "").strip()
+                1 for i in self.items if not media_doc_url(i)
             ),
+            "missing_cdn_doc": sum(1 for i in self.items if not media_doc_url(i)),
             "removed_from_source": sum(1 for i in self.items if i.removed_from_source),
             "by_source": dict(Counter(i.source for i in self.items)),
             "total": len(self.items),
@@ -139,17 +146,36 @@ def empty_ledger() -> PipelineLedger:
     )
 
 
+def media_doc_url(item: LedgerItem) -> str:
+    """Canonical public media URL: prefer R2 CDN, fall back to legacy Hostinger URL."""
+    obj = (item.object_doc_url or "").strip()
+    if obj:
+        return obj
+    legacy = (item.hostinger_doc_url or "").strip()
+    if legacy:
+        return legacy
+    rel = (item.hostinger_doc_path or "").strip()
+    if rel:
+        return public_doc_url(rel)
+    return ""
+
+
+def media_doc_path(item: LedgerItem) -> str:
+    """Relative media key (pdfs/… or docs/…)."""
+    return (item.hostinger_doc_path or "").strip().lstrip("/")
+
+
 def compute_publishable(item: LedgerItem) -> bool:
-    """True only when Hostinger doc exists and parse produced lots."""
+    """True when durable CDN doc exists and parse produced lots."""
     if item.removed_from_source:
         return False
     if item.source not in ACTIVE_SOURCES:
         return False
     if item.download != "done":
         return False
-    if not (item.hostinger_doc_url or "").strip():
+    if not media_doc_url(item):
         return False
-    if not (item.hostinger_doc_path or "").strip():
+    if not media_doc_path(item):
         return False
     if item.parse != "done":
         return False
@@ -165,7 +191,15 @@ def refresh_publishable(item: LedgerItem) -> LedgerItem:
 
 
 def public_doc_url(relative_path: str, *, site_base: str | None = None) -> str:
-    base = (site_base if site_base is not None else SITE_BASE_URL or "").strip().rstrip("/")
+    """Build absolute media URL for a relative key.
+
+    Prefers R2_PUBLIC_BASE_URL (files.scrapauctionindia.com). Explicit site_base
+    overrides for callers that still need SITE_BASE_URL joins.
+    """
+    if site_base is not None:
+        base = site_base.strip().rstrip("/")
+    else:
+        base = (R2_PUBLIC_BASE_URL or SITE_BASE_URL or "").strip().rstrip("/")
     rel = str(relative_path or "").strip().lstrip("/")
     if not rel:
         return base
@@ -243,7 +277,7 @@ def _replace_item(ledger: PipelineLedger, item: LedgerItem) -> None:
 
 
 def download_eligible(item: LedgerItem, *, source: str | None = None) -> bool:
-    """Queue truth: portal PDF URL present and download not yet durable on Hostinger.
+    """Queue truth: portal PDF URL present and download not yet durable on CDN.
 
     ``fetched_local`` waits for the publish lane — not re-fetched from portal.
     Attempt-capped poison items become blocked.
@@ -270,7 +304,7 @@ def download_eligible(item: LedgerItem, *, source: str | None = None) -> bool:
 
 
 def publish_eligible(item: LedgerItem, *, source: str | None = None) -> bool:
-    """Local file staged; needs Hostinger/R2 publish to become download=done."""
+    """Local file staged; needs R2 publish to become download=done."""
     if item.removed_from_source:
         return False
     item_src = (item.source or "").strip().lower()
@@ -338,8 +372,8 @@ def select_for_parse(ledger: PipelineLedger, *, limit: int | None = None) -> lis
         i
         for i in ledger.items
         if i.download == "done"
-        and (i.hostinger_doc_url or "").strip()
-        and (i.hostinger_doc_path or "").strip()
+        and media_doc_url(i)
+        and media_doc_path(i)
         and i.parse in ("pending", "failed")
         and i.parse_attempts < MAX_STAGE_ATTEMPTS
         and not i.removed_from_source
@@ -585,8 +619,8 @@ def upsert_from_work_plan(
             existing.download = "pending"
         if existing.parse == "blocked" and existing.parse_attempts < MAX_STAGE_ATTEMPTS:
             existing.parse = "pending"
-        # Missing Hostinger doc → must download again
-        if existing.download == "done" and not (existing.hostinger_doc_url or "").strip():
+        # Missing CDN doc → must download / publish again
+        if existing.download == "done" and not media_doc_url(existing):
             existing.download = "pending"
         existing.updated_at = now.isoformat()
         by_key[key] = existing
@@ -644,11 +678,15 @@ def mark_download(
     # Map legacy pdf_path arg
     if hostinger_doc_path is None and pdf_path:
         hostinger_doc_path = pdf_path
+    # Prefer explicit CDN URL; else build from relative key via R2_PUBLIC_BASE_URL.
+    if ok and hostinger_doc_path and not object_doc_url:
+        object_doc_url = public_doc_url(hostinger_doc_path)
     if ok and hostinger_doc_path and not hostinger_doc_url:
-        hostinger_doc_url = public_doc_url(hostinger_doc_path)
+        # Keep field populated for legacy readers; value is now CDN URL.
+        hostinger_doc_url = object_doc_url or public_doc_url(hostinger_doc_path)
 
     if ok and fetched_local_only and local_doc_path:
-        # Phase B: portal fetch succeeded; publish lane will flush to Hostinger/R2.
+        # Portal fetch succeeded; publish lane will flush to R2.
         item.download = "fetched_local"
         item.download_error = None
         item.local_doc_path = local_doc_path
@@ -660,14 +698,13 @@ def mark_download(
             item.raw_html_path = raw_html_path
         if object_doc_url:
             item.object_doc_url = object_doc_url
-    elif ok and hostinger_doc_path and hostinger_doc_url:
+    elif ok and hostinger_doc_path and (object_doc_url or hostinger_doc_url):
         item.download = "done"
         item.download_error = None
         item.hostinger_doc_path = hostinger_doc_path
-        item.hostinger_doc_url = hostinger_doc_url
+        item.object_doc_url = object_doc_url or hostinger_doc_url
+        item.hostinger_doc_url = item.object_doc_url
         item.local_doc_path = local_doc_path or item.local_doc_path
-        if object_doc_url:
-            item.object_doc_url = object_doc_url
         if doc_sha256:
             item.doc_sha256 = doc_sha256
         if raw_html_path:
@@ -678,17 +715,18 @@ def mark_download(
             item.deploy = "pending"
     else:
         # Any failure → pending (status is the only re-queue signal), unless capped.
-        item.download_error = error or "download incomplete — hostinger doc required"
+        item.download_error = error or "download incomplete — CDN doc required"
         # Keep local staging on transport/flush failure so publish can retry.
         if not (local_doc_path or item.local_doc_path):
             item.hostinger_doc_path = None
             item.hostinger_doc_url = None
+            item.object_doc_url = None
             item.doc_sha256 = None
             item.download = "pending"
         else:
             item.local_doc_path = local_doc_path or item.local_doc_path
             item.download = "fetched_local"
-            item.download_error = error or "awaiting Hostinger/R2 publish"
+            item.download_error = error or "awaiting R2 publish"
         if item.download_attempts >= MAX_STAGE_ATTEMPTS and item.download != "fetched_local":
             item.download = "blocked"
     _replace_item(ledger, item)

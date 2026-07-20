@@ -3,7 +3,8 @@ import {
   formatQuantityUnit,
   getLotSectionDisplayText,
 } from "@/lib/format";
-import { formatDateTime, resolvePublicUrl } from "@/lib/utils";
+import { formatDateTime } from "@/lib/utils";
+import { resolveMediaUrl } from "@/lib/listing-pdf";
 import type { LotRecord } from "@/types/auction";
 function LotField({
   label,
@@ -83,9 +84,7 @@ function LotCard({ lot, index }: { lot: LotRecord; index: number }) {
         <ul className="flex flex-wrap gap-2 text-sm">
           {" "}
           {lot.documents.map((doc, i) => {
-            const href = doc.cached_url
-              ? resolvePublicUrl(doc.cached_url)
-              : (doc.source_url ?? null);
+            const href = doc.cached_url ? resolveMediaUrl(doc.cached_url) : null;
             if (!href) return null;
             return (
               <li key={`${doc.filename}-${i}`}>

@@ -169,13 +169,27 @@ DOWNLOAD_DECOUPLE_FLUSH = os.getenv("DOWNLOAD_DECOUPLE_FLUSH", "1").strip() not 
     "False",
     "no",
 )
-# Cloudflare R2 (optional durable SoR).
+# Cloudflare R2 (canonical public media SoR — PDFs/docs/thumbs).
 R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "").strip()
 R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "").strip()
 R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
 R2_BUCKET = os.getenv("R2_BUCKET", "").strip()
 R2_ENDPOINT_URL = os.getenv("R2_ENDPOINT_URL", "").strip()
-R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL", "").strip()
+# Public CDN origin for media (custom domain). Prefer files.* over r2.dev.
+R2_PUBLIC_BASE_URL = (
+    os.getenv("R2_PUBLIC_BASE_URL", "").strip()
+    or os.getenv("MEDIA_CDN_BASE_URL", "").strip()
+    or "https://files.csmg.in"
+)
+# Alias used by frontend/build docs.
+MEDIA_CDN_BASE_URL = R2_PUBLIC_BASE_URL
+# When 1 (default), media durability is R2-only; Hostinger media rsync is skipped.
+MEDIA_R2_ONLY = os.getenv("MEDIA_R2_ONLY", "1").strip() not in (
+    "0",
+    "false",
+    "False",
+    "no",
+)
 # Wave-end reattempts of failed auctions (not in-step retries).
 DOWNLOAD_BATCH_RETRY_ROUNDS = int(os.getenv("DOWNLOAD_BATCH_RETRY_ROUNDS", "2"))
 DOWNLOAD_WAVE_SIZE = int(os.getenv("DOWNLOAD_WAVE_SIZE", "25"))

@@ -186,16 +186,29 @@ if (fs.existsSync(jsonPath)) {
   ok(
     "no absolute /pdfs/ links in JSON",
     badPdf.length === 0,
-    badPdf.length ? `${badPdf.length} still absolute` : "all relative or base-path safe",
+    badPdf.length ? `${badPdf.length} still absolute` : "all relative or CDN",
   );
 
+  const isCdn = (u) =>
+    typeof u === "string" &&
+    (u.startsWith("https://files.csmg.in/") ||
+      u.startsWith("https://files.scrapauctionindia.com/") ||
+      /https:\/\/pub-[a-f0-9]+\.r2\.dev\//.test(u) ||
+      /^https:\/\/[^/]+\/(?:pdfs|docs|thumbs)\//.test(u));
+
   const missingPdfRefs = (data.auctions || []).filter((a) => {
-    if (!a.pdf_url || !String(a.pdf_url).startsWith("pdfs/")) return false;
+    const u = String(a.pdf_url || "");
+    if (!u) return false;
+    if (isCdn(u)) {
+      localPdfLinkCount += 1;
+      return false;
+    }
+    if (!u.startsWith("pdfs/")) return false;
     localPdfLinkCount += 1;
-    return !fs.existsSync(path.join(outDir, a.pdf_url));
+    return !fs.existsSync(path.join(outDir, u));
   });
   ok(
-    "all relative auction PDF links exist in output",
+    "all relative/CDN auction PDF links valid",
     missingPdfRefs.length === 0,
     missingPdfRefs.length
       ? missingPdfRefs.slice(0, 10).map((a) => `${a.id}:${a.pdf_url}`).join(", ")
@@ -206,7 +219,12 @@ if (fs.existsSync(jsonPath)) {
   const missingThumbRefs = [];
   for (const auction of data.auctions || []) {
     for (const url of auction.document_urls || []) {
-      const rel = String(url || "").replace(/^\//, "");
+      const raw = String(url || "");
+      if (isCdn(raw)) {
+        if (raw.includes("/pdfs/")) localPdfLinkCount += 1;
+        continue;
+      }
+      const rel = raw.replace(/^\//, "");
       if (rel.startsWith("docs/") || rel.startsWith("pdfs/")) {
         if (rel.startsWith("pdfs/")) localPdfLinkCount += 1;
         if (!fs.existsSync(path.join(outDir, rel))) {
@@ -220,6 +238,7 @@ if (fs.existsSync(jsonPath)) {
           typeof img === "string"
             ? img
             : img?.url || img?.thumbnail_url || img?.src || "";
+        if (isCdn(url)) continue;
         const rel = String(url || "").replace(/^\//, "");
         if (!rel.startsWith("thumbs/") && !rel.startsWith("docs/")) continue;
         if (!fs.existsSync(path.join(outDir, rel))) {
@@ -231,7 +250,9 @@ if (fs.existsSync(jsonPath)) {
           continue;
         }
         for (const field of ["cached_url", "thumbnail_url"]) {
-          const rel = String(doc?.[field] || "").replace(/^\//, "");
+          const raw = String(doc?.[field] || "");
+          if (isCdn(raw)) continue;
+          const rel = raw.replace(/^\//, "");
           if (
             !rel.startsWith("thumbs/") &&
             !rel.startsWith("docs/") &&
@@ -251,12 +272,12 @@ if (fs.existsSync(jsonPath)) {
     }
   }
   ok(
-    "all relative docs/pdf document links exist in output",
+    "all relative docs/pdf document links exist in output (CDN exempt)",
     missingDocRefs.length === 0,
     missingDocRefs.slice(0, 10).join(", "),
   );
   ok(
-    "all relative thumbs links exist in output",
+    "all relative thumbs links exist in output (CDN exempt)",
     missingThumbRefs.length === 0,
     missingThumbRefs.slice(0, 10).join(", "),
   );

@@ -1,7 +1,8 @@
-"""Publish lane: flush fetched_local docs to R2 (optional) + Hostinger → download=done.
+"""Publish lane: flush fetched_local docs to R2 CDN → download=done.
 
 Decouples portal fetch from Hostinger SSH so download backlog can drain even when
-Hostinger is flaky (Phase B). Kick from download lane or cron.
+Hostinger is flaky. Media durability is R2-only (files.scrapauctionindia.com).
+Ledger pull/push may still use Hostinger for private pipeline state.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from scraper.download_flush import flush_download_files
 from scraper.filters import make_run_id
 from scraper.hostinger_ssh import clear_stale_control_sockets, preflight_hostinger, push_heartbeat
 from scraper.lane_resume import kick_if_needed
-from scraper.object_store import r2_configured, upload_hostinger_rel
+from scraper.object_store import media_r2_only, r2_configured
 from scraper.pipeline_ledger import (
     load_ledger,
     mark_download,
@@ -78,7 +79,6 @@ def _resolve_local(item: Any, public_dir: Path) -> Path | None:
         p = Path(raw)
         if p.is_file():
             return p
-        # Relative to repo
         cand = REPO_ROOT / raw
         if cand.is_file():
             return cand
@@ -87,7 +87,6 @@ def _resolve_local(item: Any, public_dir: Path) -> Path | None:
         cand = public_dir / rel
         if cand.is_file():
             return cand
-        # MSTC convention
         aid = str(getattr(item, "source_auction_id", "") or "")
         if aid and (public_dir / "pdfs" / f"{aid}.pdf").is_file():
             return public_dir / "pdfs" / f"{aid}.pdf"
@@ -122,16 +121,19 @@ def run_publish_media(
     ok_count = 0
     fail_count = 0
     try:
+        if not r2_configured():
+            raise RuntimeError("R2 not configured — set R2_* secrets for media publish")
+        _phase(
+            f"R2 media publish mode={'r2_only' if media_r2_only() else 'r2'} "
+            f"cdn configured={bool(r2_configured())}"
+        )
+
         clear_stale_control_sockets()
+        # Ledger still lives on Hostinger; preflight is best-effort for ledger sync.
         ok_pf, pf_msg = preflight_hostinger()
         _phase(pf_msg)
         if not ok_pf:
-            send_lane_report(
-                "publish_media",
-                "failed",
-                {"error": f"Hostinger preflight failed: {pf_msg}", "github_run_url": _github_run_url()},
-            )
-            raise RuntimeError(f"Hostinger preflight failed: {pf_msg}")
+            _phase(f"Hostinger preflight soft-fail (ledger sync may use local): {pf_msg}")
 
         pulled = pull_ledger(local_path=ledger_path)
         ledger = load_ledger(ledger_path)
@@ -152,7 +154,6 @@ def run_publish_media(
                 local = _resolve_local(item, public_dir)
                 rel = (item.hostinger_doc_path or "").strip()
                 if not rel and local:
-                    # Infer relative path under public/
                     try:
                         rel = str(local.resolve().relative_to(public_dir.resolve())).replace(
                             "\\", "/"
@@ -170,14 +171,6 @@ def run_publish_media(
                     fail_count += 1
                     continue
 
-                object_url = None
-                if r2_configured():
-                    up = upload_hostinger_rel(local, rel)
-                    if up.get("ok"):
-                        object_url = up.get("url")
-                    else:
-                        _phase(f"R2 upload warn {item.stable_key}: {up.get('error')}")
-
                 flush_items.append(
                     {
                         "stable_key": item.stable_key,
@@ -185,7 +178,6 @@ def run_publish_media(
                         "local_path": local,
                         "raw_html_path": item.raw_html_path,
                         "doc_sha256": item.doc_sha256,
-                        "object_doc_url": object_url,
                     }
                 )
 
@@ -206,12 +198,16 @@ def run_publish_media(
                     str(v["stable_key"]),
                     ok=True,
                     hostinger_doc_path=str(v["hostinger_doc_path"]),
-                    hostinger_doc_url=str(v["hostinger_doc_url"]),
+                    hostinger_doc_url=str(v.get("hostinger_doc_url") or v.get("object_doc_url") or ""),
                     doc_sha256=v.get("doc_sha256"),
                     raw_html_path=v.get("raw_html_path"),
                     local_doc_path=str(v.get("local_path") or ""),
-                    object_doc_url=v.get("object_doc_url")
-                    or by_key.get(str(v["stable_key"]), {}).get("object_doc_url"),
+                    object_doc_url=str(
+                        v.get("object_doc_url")
+                        or by_key.get(str(v["stable_key"]), {}).get("object_doc_url")
+                        or v.get("hostinger_doc_url")
+                        or ""
+                    ),
                     content_changed=True,
                 )
                 ok_count += 1
@@ -251,56 +247,48 @@ def run_publish_media(
                 backlog=ok_count,
             )
 
-        publish_pipeline_status(
-            lane="publish_media",
-            wake_reason="complete",
-            ledger=ledger,
-            extra={"published": ok_count, "failed": fail_count, "remaining": remaining},
-        )
-        status = "success" if fail_count == 0 or ok_count > 0 else "failed"
-        send_lane_report(
-            "publish_media",
-            status,
-            {
-                "ok_count": ok_count,
-                "fail_count": fail_count,
-                "ready for site": remaining,
-                "github_run_url": _github_run_url(),
-                "site_base_url": SITE_BASE_URL,
-            },
-        )
-        return {
-            "run_id": run_id,
-            "status": status,
+        report = {
             "ok_count": ok_count,
             "fail_count": fail_count,
+            "downloaded": ok_count,
+            "failed": fail_count,
+            "ready_for_site": remaining,
             "remaining": remaining,
-            "parse_kick": kicked_parse,
+            "github_run_url": _github_run_url(),
+            "site_base_url": SITE_BASE_URL,
+            "started_at": started,
+            "elapsed_sec": round(time.monotonic() - t0, 1),
+            "kick_parse": kicked_parse,
         }
-    except Exception as exc:
-        logger.exception("publish_media failed")
-        send_lane_report(
-            "publish_media",
-            "failed",
-            {"error": str(exc), "github_run_url": _github_run_url()},
+        send_lane_report("publish_media", "completed" if fail_count == 0 else "partial", report)
+        publish_pipeline_status(
+            ledger,
+            lane="publish_media",
+            wake_reason="publish_complete",
+            extra=report,
         )
-        raise
+        (run_dir / "summary.json").write_text(
+            json.dumps(report, indent=2, default=str), encoding="utf-8"
+        )
+        _phase(f"done ok={ok_count} fail={fail_count} remaining={remaining}")
+        return report
     finally:
-        release_refresh_lock(lock_path)
+        release_refresh_lock(lock_path=lock_path, run_id=run_id)
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description="Publish fetched_local docs to Hostinger/R2")
-    ap.add_argument("--source", default=None, help="mstc | gem_forward | omit for all")
-    ap.add_argument("--wave-size", type=int, default=50)
-    ap.add_argument("--max-waves", type=int, default=40)
-    ap.add_argument("--break-stale-lock", action="store_true")
-    args = ap.parse_args()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Publish fetched_local media to R2 CDN")
+    parser.add_argument("--source", default="", help="mstc | gem_forward | empty=all")
+    parser.add_argument("--wave-size", type=int, default=50)
+    parser.add_argument("--max-waves", type=int, default=40)
+    parser.add_argument("--break-stale-lock", action="store_true")
+    args = parser.parse_args(argv)
+    src = (args.source or "").strip() or None
     run_publish_media(
-        source=args.source,
-        wave_size=args.wave_size,
-        max_waves=args.max_waves,
-        break_stale_lock=args.break_stale_lock,
+        source=src,
+        wave_size=max(1, int(args.wave_size)),
+        max_waves=max(1, int(args.max_waves)),
+        break_stale_lock=bool(args.break_stale_lock),
     )
     return 0
 

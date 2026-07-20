@@ -1,22 +1,13 @@
-/** Local cached listing media only — never MSTC source_url / detail_url. */
+/** Cached listing media — CDN (files.scrapauctionindia.com) or relative keys. */
 
-import { resolvePublicUrl } from "@/lib/utils";
+import { isMediaAssetPath } from "@/lib/auction-documents";
+import { resolveMediaUrl } from "@/lib/listing-pdf";
 import type { AuctionRecord } from "@/types/auction";
 
 export type ListingMediaItem = {
   thumb: string;
   alt: string;
 };
-
-function isLocalAssetPath(path: string | null | undefined): boolean {
-  if (!path) return false;
-  const rel = path.replace(/^\//, "");
-  return (
-    rel.startsWith("thumbs/") ||
-    rel.startsWith("docs/") ||
-    rel.startsWith("pdfs/")
-  );
-}
 
 /** First marketplace photo for listing-card hero. */
 export function resolveListingHero(
@@ -27,10 +18,10 @@ export function resolveListingHero(
       if (
         doc.thumbnail_url &&
         doc.status === "thumbnail_ready" &&
-        isLocalAssetPath(doc.thumbnail_url)
+        isMediaAssetPath(doc.thumbnail_url)
       ) {
         return {
-          src: resolvePublicUrl(doc.thumbnail_url),
+          src: resolveMediaUrl(doc.thumbnail_url),
           alt: doc.filename || "Auction photo",
         };
       }
@@ -45,9 +36,9 @@ export function resolveListingHero(
               ?.url ||
             (img as { thumbnail_url?: string })?.thumbnail_url ||
             (img as { src?: string })?.src;
-      if (url && isLocalAssetPath(url)) {
+      if (url && isMediaAssetPath(url)) {
         return {
-          src: resolvePublicUrl(url),
+          src: resolveMediaUrl(url),
           alt: lot.item_title || "Auction photo",
         };
       }
@@ -66,10 +57,10 @@ export function listingPreviewItems(
       if (
         doc.thumbnail_url &&
         doc.status === "thumbnail_ready" &&
-        isLocalAssetPath(doc.thumbnail_url)
+        isMediaAssetPath(doc.thumbnail_url)
       ) {
         items.push({
-          thumb: resolvePublicUrl(doc.thumbnail_url),
+          thumb: resolveMediaUrl(doc.thumbnail_url),
           alt: doc.filename || lot.item_title || "Auction photo",
         });
       }
@@ -80,9 +71,9 @@ export function listingPreviewItems(
     for (const lot of auction.lots ?? []) {
       for (const img of lot.preview_images ?? []) {
         const url = typeof img === "string" ? img : null;
-        if (url && isLocalAssetPath(url)) {
+        if (url && isMediaAssetPath(url)) {
           items.push({
-            thumb: resolvePublicUrl(url),
+            thumb: resolveMediaUrl(url),
             alt: lot.item_title || "Auction photo",
           });
         }

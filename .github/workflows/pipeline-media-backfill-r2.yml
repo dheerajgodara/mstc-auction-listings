@@ -1,0 +1,108 @@
+name: Pipeline Media Backfill (R2 CDN)
+
+# Upload local/Hostinger-mirrored pdfs/docs/thumbs to R2 and rewrite CDN URLs.
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Max files to upload (0 = all)"
+        required: false
+        default: "0"
+      rewrite_ledger:
+        description: "Rewrite ledger object_doc_url to CDN"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      rewrite_export:
+        description: "Rewrite auctions.json media fields to CDN"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      dry_run:
+        description: "Dry run only"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  r2-media-backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    concurrency:
+      group: auction-pipeline-serial
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Configure SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
+          chmod 600 ~/.ssh/hostinger_key
+
+      - name: Bootstrap local media + backfill to R2
+        env:
+          PYTHONUNBUFFERED: "1"
+          HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
+          HOSTINGER_PORT: ${{ secrets.HOSTINGER_PORT }}
+          HOSTINGER_USERNAME: ${{ secrets.HOSTINGER_USERNAME }}
+          HOSTINGER_SSH_KEY: ~/.ssh/hostinger_key
+          HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
+          SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+          MEDIA_R2_ONLY: "1"
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. python - <<'PY'
+          from scraper.asset_bootstrap import bootstrap_production_assets
+          from scraper.config import REPO_ROOT
+          from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
+          from scraper.config import DEFAULT_JSON_OUT, SITE_BASE_URL
+          warnings = []
+          _bootstrap_previous_production_from_live(
+              production_json=DEFAULT_JSON_OUT,
+              base_url=SITE_BASE_URL or None,
+              warnings=warnings,
+          )
+          bootstrap_production_assets(public_dir=REPO_ROOT / "web" / "public")
+          print("bootstrap warnings:", warnings)
+          PY
+          ARGS=()
+          LIMIT="${{ inputs.limit }}"
+          if [ -n "$LIMIT" ] && [ "$LIMIT" != "0" ]; then
+            ARGS+=(--limit "$LIMIT")
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS+=(--dry-run)
+          fi
+          if [ "${{ inputs.rewrite_ledger }}" = "true" ]; then
+            ARGS+=(--rewrite-ledger --pull-ledger --push-ledger)
+          fi
+          if [ "${{ inputs.rewrite_export }}" = "true" ]; then
+            ARGS+=(--rewrite-export)
+          fi
+          PYTHONPATH=. python -m scraper.media_backfill_r2 "${ARGS[@]}"

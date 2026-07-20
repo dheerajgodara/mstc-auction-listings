@@ -55,6 +55,7 @@ jobs:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
           R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+          MEDIA_R2_ONLY: "1"
         run: |
           SRC="${{ github.event.inputs.source }}"
           WAVE="${{ github.event.inputs.wave_size }}"

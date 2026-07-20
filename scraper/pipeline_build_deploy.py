@@ -18,6 +18,8 @@ from scraper.export_hygiene import repair_absolute_asset_paths, strip_aged_out_a
 from scraper.filters import make_run_id, tomorrow_min_closing_date
 from scraper.import_tracking import stable_auction_key
 from scraper.lane_resume import kick_if_needed, record_resume
+from scraper.media_urls import absolutize_auction_media, absolutize_export_media
+from scraper.object_store import media_key_from_url
 from scraper.parse_cache import iter_local_parsed, load_parse_artifact, pull_parsed_tree
 from scraper.pipeline_deploy import run_pipeline_deploy
 from scraper.pipeline_ledger import (
@@ -25,6 +27,8 @@ from scraper.pipeline_ledger import (
     count_publishable_future,
     load_ledger,
     mark_deploy,
+    media_doc_path,
+    media_doc_url,
     public_doc_url,
     pull_ledger,
     push_ledger,
@@ -35,7 +39,6 @@ from scraper.pipeline_ledger import (
 from scraper.pipeline_markers import pull_pipeline_json
 from scraper.pipeline_status import publish_pipeline_status, truth_for_telegram
 from scraper.promote_export import promote_export
-from scraper.raw_store import pull_public_relative_files
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
 from scraper.telegram_reporter import send_lane_report
 
@@ -98,9 +101,11 @@ def materialize_publishable_only(
         lots = rec.get("lots") or []
         if not isinstance(lots, list) or not lots:
             continue
-        # Require Hostinger doc on the record
-        host_url = item.hostinger_doc_url or rec.get("hostinger_doc_url")
-        host_path = item.hostinger_doc_path or rec.get("pdf_url")
+        # Require durable CDN doc on the record
+        host_url = media_doc_url(item) or rec.get("object_doc_url") or rec.get("hostinger_doc_url")
+        host_path = media_doc_path(item) or media_key_from_url(str(rec.get("pdf_url") or "")) or rec.get(
+            "hostinger_doc_path"
+        ) or rec.get("pdf_url")
         if not host_url or not host_path:
             continue
 
@@ -129,16 +134,18 @@ def materialize_publishable_only(
         merged["source"] = item.source
         merged["source_auction_id"] = item.source_auction_id
         host_path_rel = str(host_path).lstrip("/")
-        # Always publish relative pdf_url + canonical Hostinger absolute URL.
-        merged["pdf_url"] = host_path_rel
-        merged["hostinger_doc_path"] = host_path_rel
-        merged["hostinger_doc_url"] = public_doc_url(host_path_rel)
+        key = media_key_from_url(host_path_rel) or host_path_rel
+        cdn = public_doc_url(key) if key.startswith(("pdfs/", "docs/")) else str(host_url)
+        # Canonical public media: absolute CDN URL; keep relative key for ops.
+        merged["hostinger_doc_path"] = key if key.startswith(("pdfs/", "docs/")) else host_path_rel
+        merged["object_doc_url"] = cdn
+        merged["hostinger_doc_url"] = cdn
+        merged["pdf_url"] = cdn
         merged["source_pdf_url"] = item.portal_doc_url or merged.get("source_pdf_url")
-        # Drop stale absolute asset paths from parse cache before QA.
-        for key in ("document_urls",):
-            docs = merged.get(key)
+        for key_docs in ("document_urls",):
+            docs = merged.get(key_docs)
             if isinstance(docs, list):
-                merged[key] = [
+                merged[key_docs] = [
                     (d.lstrip("/") if isinstance(d, str) else d) for d in docs
                 ]
         merged["status"] = "complete"
@@ -148,11 +155,12 @@ def materialize_publishable_only(
             "parsed_at": meta.get("parsed_at") or item.parsed_at,
             "doc_sha256": item.doc_sha256 or meta.get("pdf_sha256"),
             "parser_version": meta.get("parser_version") or item.parser_version,
-            "hostinger_doc_url": host_url,
+            "object_doc_url": cdn,
+            "hostinger_doc_url": cdn,
         }
-        # Strip listing_only shells markers
         warnings = [w for w in (merged.get("warnings") or []) if "deep_enrichment" not in str(w)]
         merged["warnings"] = warnings
+        absolutize_auction_media(merged)
         records.append(merged)
 
     records = [a for a in records if str(a.get("source") or "") != "eauction"]
@@ -216,7 +224,7 @@ def run_build_deploy(
         for a in export.get("auctions") or []:
             if not (a.get("lots") or []):
                 continue
-            if not (a.get("hostinger_doc_url") or a.get("pdf_url")):
+            if not (a.get("object_doc_url") or a.get("hostinger_doc_url") or a.get("pdf_url")):
                 continue
             cleaned.append(a)
         export["auctions"] = cleaned
@@ -231,23 +239,15 @@ def run_build_deploy(
         export = strip.export
         repair = repair_absolute_asset_paths(export)
         export = repair.export
+        absolutize_export_media(export)
         export["count"] = len(export.get("auctions") or [])
         _phase(
             f"export_ready={export['count']} "
             f"(stripped_aged={len(strip.dropped)} repaired_paths={len(repair.repaired)})"
         )
 
-        # Pull durable Hostinger docs for this export so promote scrub keeps pdf_url.
-        public_dir = production_json.parent.parent
-        asset_rels = []
-        for a in export.get("auctions") or []:
-            for key in ("pdf_url", "hostinger_doc_path"):
-                val = str(a.get(key) or "").lstrip("/")
-                if val.startswith("pdfs/") or val.startswith("docs/"):
-                    asset_rels.append(val)
-        if asset_rels:
-            pull = pull_public_relative_files(public_dir=public_dir, relative_paths=asset_rels)
-            _phase(pull.message)
+        # Media lives on CDN — no Hostinger media pull required for export correctness.
+        _phase("media: CDN mode — skipping Hostinger asset pull")
 
         candidate = run_dir / "candidate_auctions.json"
         write_auctions_json(candidate, export, allow_small_output=True)

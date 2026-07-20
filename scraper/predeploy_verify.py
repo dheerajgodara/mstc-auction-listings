@@ -40,9 +40,22 @@ def _count_files(directory: Path) -> int:
     return sum(1 for p in directory.rglob("*") if p.is_file())
 
 
+def _is_cdn_media_url(url: str) -> bool:
+    raw = str(url or "").strip()
+    if not raw.startswith(("http://", "https://")):
+        return False
+    from scraper.config import R2_PUBLIC_BASE_URL
+
+    base = (R2_PUBLIC_BASE_URL or "").rstrip("/")
+    if base and raw.startswith(base + "/"):
+        return True
+    return "files.csmg.in/" in raw or "files.scrapauctionindia.com/" in raw or ".r2.dev/" in raw
+
+
 def _relative_asset_exists(out_dir: Path, rel_url: str) -> bool:
     rel = rel_url.split("?", 1)[0].split("#", 1)[0].lstrip("/")
     if rel.startswith(("http://", "https://")):
+        # Absolute media URLs live on CDN; local file not required in build out.
         return True
     return (out_dir / rel).is_file()
 
@@ -131,15 +144,22 @@ def verify_predeploy_build(
             lots = auction.get("lots") or []
             if not isinstance(lots, list) or not lots:
                 missing_lots.append(str(aid))
-            host = auction.get("hostinger_doc_url") or auction.get("pdf_url")
+            host = (
+                auction.get("object_doc_url")
+                or auction.get("hostinger_doc_url")
+                or auction.get("pdf_url")
+            )
             if not host:
                 missing_hostinger.append(str(aid))
             pdf_url = auction.get("pdf_url")
-            if pdf_url and str(pdf_url).startswith("pdfs/") and not _relative_asset_exists(
+            pdf_s = str(pdf_url or "")
+            if _is_cdn_media_url(pdf_s):
+                pass
+            elif pdf_url and str(pdf_url).startswith("pdfs/") and not _relative_asset_exists(
                 out_dir, str(pdf_url)
             ):
                 missing_pdfs.append(f"{aid}:{pdf_url}")
-            if pdf_url and str(pdf_url).startswith("docs/") and not _relative_asset_exists(
+            elif pdf_url and str(pdf_url).startswith("docs/") and not _relative_asset_exists(
                 out_dir, str(pdf_url)
             ):
                 missing_pdfs.append(f"{aid}:{pdf_url}")
@@ -149,7 +169,7 @@ def verify_predeploy_build(
         if missing_hostinger:
             sample = ", ".join(missing_hostinger[:10])
             errors.append(
-                f"v3 gate: auctions without Hostinger doc URL (not publishable): {sample}"
+                f"v3 gate: auctions without CDN/media doc URL (not publishable): {sample}"
             )
         if missing_pdfs:
             sample = ", ".join(missing_pdfs[:10])

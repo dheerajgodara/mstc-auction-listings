@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { enrichAuctionDisplay } from "@/lib/display-enrichment";
 import { formatCountdown, parseClosingMs } from "@/lib/auction-filters";
+import { resolveMediaUrl } from "@/lib/listing-pdf";
 import { auctionDetailPath } from "@/lib/seo/auction-url";
 import { resolvePublicUrl } from "@/lib/utils";
 import type { AuctionRecord } from "@/types/auction";
@@ -11,7 +12,7 @@ function endingThumb(auction: AuctionRecord): string | null {
   for (const lot of auction.lots ?? []) {
     for (const doc of lot.documents ?? []) {
       if (doc.thumbnail_url && doc.status === "thumbnail_ready") {
-        return resolvePublicUrl(doc.thumbnail_url);
+        return resolveMediaUrl(doc.thumbnail_url);
       }
     }
   }

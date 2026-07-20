@@ -3,12 +3,27 @@
 import { useState } from "react";
 import { ExternalLink, FileText } from "lucide-react";
 import { Chip } from "@/components/ui/primitives";
-import { resolvePublicUrl } from "@/lib/utils";
+import { resolveMediaUrl } from "@/lib/listing-pdf";
 import type { LotDocument, LotRecord } from "@/types/auction";
 
+/** Cached docs on CDN or relative keys — never MSTC source_url. */
 function docOpenUrl(doc: LotDocument): string | null {
-  const path = doc.cached_url || doc.source_url;
-  return path ? resolvePublicUrl(path) : null;
+  if (!doc.cached_url) return null;
+  if (
+    doc.cached_url.startsWith("http://") ||
+    doc.cached_url.startsWith("https://")
+  ) {
+    return resolveMediaUrl(doc.cached_url);
+  }
+  const rel = doc.cached_url.replace(/^\//, "");
+  if (
+    !rel.startsWith("docs/") &&
+    !rel.startsWith("pdfs/") &&
+    !rel.startsWith("thumbs/")
+  ) {
+    return null;
+  }
+  return resolveMediaUrl(doc.cached_url);
 }
 
 function docTypeLabel(type: LotDocument["type"]): string {
@@ -59,9 +74,9 @@ export function LotPreviewStrip({
   for (const lot of lots) {
     for (const doc of lot.documents || []) {
       if (doc.thumbnail_url && doc.status === "thumbnail_ready") {
-        const href = docOpenUrl(doc) || resolvePublicUrl(doc.thumbnail_url);
+        const href = docOpenUrl(doc) || resolveMediaUrl(doc.thumbnail_url);
         items.push({
-          thumb: resolvePublicUrl(doc.thumbnail_url),
+          thumb: resolveMediaUrl(doc.thumbnail_url),
           href,
           label: `${docTypeLabel(doc.type)} ${doc.filename}`,
         });
@@ -73,8 +88,8 @@ export function LotPreviewStrip({
     for (const lot of lots) {
       for (const thumb of lot.preview_images || []) {
         items.push({
-          thumb: resolvePublicUrl(thumb),
-          href: resolvePublicUrl(thumb),
+          thumb: resolveMediaUrl(thumb),
+          href: resolveMediaUrl(thumb),
           label: lot.item_title,
         });
       }
@@ -127,7 +142,7 @@ export function LotDocumentsPanel({ lot }: { lot: LotRecord }) {
         <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
           {thumbs.map((doc) => {
             const href =
-              docOpenUrl(doc) || resolvePublicUrl(doc.thumbnail_url!);
+              docOpenUrl(doc) || resolveMediaUrl(doc.thumbnail_url!);
             return <ThumbnailCard key={doc.filename} doc={doc} href={href} />;
           })}
         </div>
@@ -161,7 +176,7 @@ export function LotDocumentsPanel({ lot }: { lot: LotRecord }) {
                     className="btn-secondary inline-flex w-fit items-center gap-1 px-2 py-1 text-xs"
                   >
                     <ExternalLink className="h-3 w-3" />
-                    Open original
+                    Open file
                   </a>
                 ) : (
                   <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
@@ -180,7 +195,7 @@ export function LotDocumentsPanel({ lot }: { lot: LotRecord }) {
 
 function ThumbnailCard({ doc, href }: { doc: LotDocument; href: string }) {
   const [broken, setBroken] = useState(false);
-  const thumb = resolvePublicUrl(doc.thumbnail_url!);
+  const thumb = resolveMediaUrl(doc.thumbnail_url!);
   return (
     <a
       href={href}

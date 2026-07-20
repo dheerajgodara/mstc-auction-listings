@@ -67,9 +67,20 @@ def _http_status(url: str, *, timeout: int = 60) -> tuple[int | None, bytes, str
 
 
 def _asset_exists(output_assets_dir: Path | None, rel_url: str) -> bool:
+    raw = str(rel_url or "").strip()
+    if raw.startswith(("http://", "https://")):
+        from scraper.config import R2_PUBLIC_BASE_URL
+
+        base = (R2_PUBLIC_BASE_URL or "").rstrip("/")
+        if base and raw.startswith(base + "/"):
+            return True
+        if "files.csmg.in/" in raw or "files.scrapauctionindia.com/" in raw or ".r2.dev/" in raw:
+            return True
+        # Non-CDN absolute URLs are not local build assets.
+        return False
     if output_assets_dir is None:
         return True
-    rel = rel_url.split("?", 1)[0].split("#", 1)[0].lstrip("/")
+    rel = raw.split("?", 1)[0].split("#", 1)[0].lstrip("/")
     return (output_assets_dir / rel).is_file()
 
 
@@ -103,6 +114,36 @@ def _pick_sample_urls(
                     thumb_candidates.append(url_s)
                 else:
                     skipped_missing_assets.append(url_s)
+            for doc in lot.get("documents") or []:
+                if not isinstance(doc, dict):
+                    continue
+                if doc.get("status") != "thumbnail_ready":
+                    continue
+                thumb = doc.get("thumbnail_url")
+                if thumb:
+                    url_s = str(thumb)
+                    if _asset_exists(output_assets_dir, url_s):
+                        thumb_candidates.append(url_s)
+                    else:
+                        skipped_missing_assets.append(url_s)
+                cached = doc.get("cached_url")
+                if cached:
+                    url_s = str(cached)
+                    is_media = url_s.startswith(("docs/", "pdfs/")) or (
+                        url_s.startswith("http")
+                        and (
+                            "files.scrapauctionindia.com/" in url_s
+                            or "files.csmg.in/" in url_s
+                            or ".r2.dev/" in url_s
+                            or "/docs/" in url_s
+                            or "/pdfs/" in url_s
+                        )
+                    )
+                    if is_media:
+                        if _asset_exists(output_assets_dir, url_s):
+                            pdf_candidates.append(url_s)
+                        else:
+                            skipped_missing_assets.append(url_s)
 
     def _prefer_clean(urls: list[str]) -> str | None:
         if not urls:
@@ -183,7 +224,10 @@ def verify_live_site(
         )
     pdf_status = thumb_status = None
     if pdf_rel:
-        pdf_url = f"{site}/{pdf_rel.lstrip('/')}"
+        if str(pdf_rel).startswith("http://") or str(pdf_rel).startswith("https://"):
+            pdf_url = str(pdf_rel)
+        else:
+            pdf_url = f"{site}/{pdf_rel.lstrip('/')}"
         pdf_status, _, pdf_note = _http_status(pdf_url)
         checked["pdf"] = pdf_url
         if pdf_status is None:
@@ -194,13 +238,17 @@ def verify_live_site(
         warnings.append("no sample PDF URL available for HTTP check")
 
     if thumb_rel:
-        thumb_url = f"{site}/{thumb_rel.lstrip('/')}"
+        if str(thumb_rel).startswith("http://") or str(thumb_rel).startswith("https://"):
+            thumb_url = str(thumb_rel)
+        else:
+            thumb_url = f"{site}/{thumb_rel.lstrip('/')}"
         thumb_status, _, thumb_note = _http_status(thumb_url)
         checked["thumb"] = thumb_url
         if thumb_status is None:
             warnings.append(f"sample thumbnail URL skipped (invalid): {thumb_note or thumb_url}")
         elif thumb_status != 200:
-            warnings.append(f"sample thumbnail returned HTTP {thumb_status}: {thumb_url}")
+            # Lot document thumbs are first-class media; treat 404 as deploy failure.
+            errors.append(f"sample thumbnail returned HTTP {thumb_status}: {thumb_url}")
 
     sitemap_url = f"{site}/sitemap.xml"
     sitemap_status, sitemap_body, sitemap_note = _http_status(sitemap_url)

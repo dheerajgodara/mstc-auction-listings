@@ -142,9 +142,11 @@ def _commit_verified(
             str(r["stable_key"]),
             ok=True,
             hostinger_doc_path=str(r["hostinger_doc_path"]),
-            hostinger_doc_url=str(r["hostinger_doc_url"]),
+            hostinger_doc_url=str(r.get("hostinger_doc_url") or r.get("object_doc_url") or ""),
+            object_doc_url=str(r.get("object_doc_url") or r.get("hostinger_doc_url") or ""),
             doc_sha256=r.get("doc_sha256"),
             raw_html_path=r.get("raw_html_path"),
+            local_doc_path=str(r.get("local_path") or ""),
             content_changed=True,
         )
         n += 1
@@ -267,9 +269,14 @@ def run_pipeline_download(
             raise RuntimeError(f"Hostinger preflight failed: {pf_msg}")
 
         if media_push_required() and _hostinger_ssh_config() is None:
-            raise RuntimeError(
-                "download requires Hostinger SSH (HOSTINGER_*) when MEDIA_PUSH_REQUIRED=1"
-            )
+            from scraper.object_store import media_r2_only, r2_configured
+
+            if not (media_r2_only() and r2_configured()):
+                raise RuntimeError(
+                    "download requires Hostinger SSH (HOSTINGER_*) when MEDIA_PUSH_REQUIRED=1 "
+                    "unless MEDIA_R2_ONLY=1 with R2 configured"
+                )
+            _phase("MEDIA_R2_ONLY: Hostinger SSH optional for media (ledger sync may still use it)")
 
         pdf_dir.mkdir(parents=True, exist_ok=True)
         raw_dir.mkdir(parents=True, exist_ok=True)
@@ -381,7 +388,7 @@ def run_pipeline_download(
                             }
                         )
                     _phase(
-                        f"wave {wave_num}: Hostinger flush failed — staged "
+                        f"wave {wave_num}: R2 flush failed — staged "
                         f"{len(pending_ok)} as fetched_local for publish lane"
                     )
                     write_ledger(ledger, ledger_path)
@@ -390,7 +397,7 @@ def run_pipeline_download(
                     ledger,
                     pending_ok,
                     set(),
-                    error=f"Hostinger flush failed: {flush_msg}",
+                    error=f"R2 flush failed: {flush_msg}",
                 )
                 fail_count += len(pending_ok)
                 batch_fail += len(pending_ok)
@@ -433,7 +440,7 @@ def run_pipeline_download(
                         ledger,
                         unverified,
                         verified_keys,
-                        error="Hostinger URL not HTTP 200 after wave flush",
+                        error="CDN URL not HTTP 200 after wave flush",
                     )
                     fail_count += len(unverified)
                     batch_fail += len(unverified)

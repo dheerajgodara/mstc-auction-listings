@@ -312,7 +312,43 @@ def push_raw_store(*, raw_dir: Path | None = None, timeout_sec: int = 600) -> Ra
 
 
 def push_public_media(*, public_dir: Path, timeout_sec: int = 900) -> RawSyncResult:
-    """Push local pdfs/docs/thumbs to Hostinger auctions media dirs (no --delete)."""
+    """Push local pdfs/docs/thumbs to R2 CDN (canonical). Hostinger mirror skipped in R2-only mode."""
+    from scraper.object_store import media_r2_only, r2_configured, upload_file
+
+    if r2_configured() or media_r2_only():
+        if not r2_configured():
+            return RawSyncResult(
+                True, False, "R2 not configured for media push", ["R2 secrets missing"]
+            )
+        warnings: list[str] = []
+        uploaded = 0
+        for name in ("pdfs", "docs", "thumbs"):
+            local_root = public_dir / name
+            if not local_root.is_dir():
+                continue
+            for path in local_root.rglob("*"):
+                if not path.is_file():
+                    continue
+                try:
+                    rel = str(path.relative_to(public_dir)).replace("\\", "/")
+                except ValueError:
+                    continue
+                up = upload_file(path, key=rel)
+                if up.get("ok"):
+                    uploaded += 1
+                else:
+                    warnings.append(f"{rel}: {up.get('error')}")
+        if warnings and uploaded == 0:
+            return RawSyncResult(True, False, "R2 media push failed", warnings[:20])
+        if warnings:
+            return RawSyncResult(
+                True,
+                True,
+                f"R2 media pushed ({uploaded} files, partial errors)",
+                warnings[:20],
+            )
+        return RawSyncResult(True, True, f"R2 media pushed ({uploaded} files)")
+
     cfg = _hostinger_ssh_config()
     if cfg is None:
         return RawSyncResult(False, False, "Hostinger SSH incomplete; skip media push", ["media push skipped"])
@@ -320,7 +356,7 @@ def push_public_media(*, public_dir: Path, timeout_sec: int = 900) -> RawSyncRes
         return RawSyncResult(False, False, "rsync unavailable", ["media push skipped"])
 
     target = f"{cfg['username']}@{cfg['host']}"
-    warnings: list[str] = []
+    warnings = []
     for name in ("pdfs", "docs", "thumbs"):
         local = public_dir / name
         if not local.is_dir():
@@ -335,7 +371,6 @@ def push_public_media(*, public_dir: Path, timeout_sec: int = 900) -> RawSyncRes
             "rsync",
             "-az",
             *rsync_mkpath_args(),
-            # CI umask often creates 600 files; web server needs world-readable.
             "--chmod=F644",
             "-e",
             _ssh_cmd(cfg),
