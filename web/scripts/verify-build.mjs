@@ -199,10 +199,8 @@ if (fs.existsSync(jsonPath)) {
   const missingPdfRefs = (data.auctions || []).filter((a) => {
     const u = String(a.pdf_url || "");
     if (!u) return false;
-    if (isCdn(u)) {
-      localPdfLinkCount += 1;
-      return false;
-    }
+    // CDN-only media (R2): do not treat as local pdfs/ requirements.
+    if (isCdn(u)) return false;
     if (!u.startsWith("pdfs/")) return false;
     localPdfLinkCount += 1;
     return !fs.existsSync(path.join(outDir, u));
@@ -221,7 +219,6 @@ if (fs.existsSync(jsonPath)) {
     for (const url of auction.document_urls || []) {
       const raw = String(url || "");
       if (isCdn(raw)) {
-        if (raw.includes("/pdfs/")) localPdfLinkCount += 1;
         continue;
       }
       const rel = raw.replace(/^\//, "");
@@ -288,9 +285,9 @@ if (fs.existsSync(jsonPath)) {
 }
 
 ok(
-  "pdfs/ directory has PDFs or export has no local PDF links",
+  "relative pdfs/ links require local files (CDN-only exports exempt)",
   pdfCount > 0 || localPdfLinkCount === 0,
-  `${pdfCount} files, ${localPdfLinkCount} local PDF links`,
+  `${pdfCount} local files, ${localPdfLinkCount} relative pdfs/ links`,
 );
 
 if (fs.existsSync(indexPath)) {
