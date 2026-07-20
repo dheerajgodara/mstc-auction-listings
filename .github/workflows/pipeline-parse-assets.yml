@@ -65,4 +65,15 @@ jobs:
           if [ -n "${{ github.event.inputs.auction_ids }}" ]; then
             EXTRA="$EXTRA --auction-ids ${{ github.event.inputs.auction_ids }}"
           fi
-          PYTHONPATH=. python -m scraper.pipeline_parse_assets --break-stale-lock $EXTRA
+          # Timed smoke: seed 5 R2-backed rows when fixture present + max_parse set.
+          if [ -n "${{ github.event.inputs.max_parse }}" ] && [ -f tests/fixtures/smoke_ledger_parse_5.json ]; then
+            mkdir -p work
+            cp tests/fixtures/smoke_ledger_parse_5.json work/pipeline_ledger.json
+            export SKIP_LEDGER_PULL=1
+            export SKIP_LEDGER_PUSH=1
+            echo "seeded parse smoke ledger (5 R2 PDFs); ledger pull/push skipped"
+          fi
+          START=$(date +%s)
+          PYTHONPATH=. python -m scraper.pipeline_parse_assets --break-stale-lock --wave-size 5 $EXTRA
+          END=$(date +%s)
+          echo "parse_smoke_wall_sec=$((END-START))"

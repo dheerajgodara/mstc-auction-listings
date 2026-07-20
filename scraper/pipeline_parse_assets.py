@@ -233,13 +233,19 @@ def run_parse_assets(
     timing = {"prefetch_s": 0.0, "cpu_s": 0.0, "flush_s": 0.0}
 
     try:
+        import os
+
         if media_push_required() and not media_r2_only() and _hostinger_ssh_config() is None:
             raise RuntimeError(
                 "parse requires Hostinger SSH (HOSTINGER_*) when MEDIA_PUSH_REQUIRED=1 "
                 "and MEDIA_R2_ONLY is off"
             )
 
-        pulled = pull_ledger(local_path=ledger_path)
+        if os.getenv("SKIP_LEDGER_PULL", "").strip().lower() in {"1", "true", "yes"}:
+            _phase("SKIP_LEDGER_PULL=1 — using checkout/local ledger only")
+            pulled = ledger_path.is_file() and ledger_path.stat().st_size > 0
+        else:
+            pulled = pull_ledger(local_path=ledger_path)
         ledger = load_ledger(ledger_path)
         if not pulled and not ledger.items:
             raise RuntimeError("ledger pull failed and local ledger is empty — refusing parse")
@@ -487,7 +493,8 @@ def run_parse_assets(
                             )
                 timing["cpu_s"] += time.perf_counter() - tc
 
-            # Flush then mark done (reliability: no done without Hostinger when required)
+            # Flush then mark done. Under MEDIA_R2_ONLY, Hostinger parse rsync is best-effort
+            # (PDF source of truth is R2; parsed JSON is still written locally + ledger).
             if wave_flush and media_push_required():
                 tf = time.perf_counter()
                 unique = sorted(set(wave_flush), key=str)
@@ -495,8 +502,12 @@ def run_parse_assets(
                 timing["flush_s"] += time.perf_counter() - tf
                 _phase(f"wave flush: {msg}")
                 if not ok:
-                    raise RuntimeError(f"Hostinger parse flush failed: {msg}")
-                journal.append({"event": "wave_flushed", "wave": wave_num, "ok": True})
+                    if media_r2_only():
+                        _phase(f"Hostinger parse flush soft-fail (R2-only continue): {msg}")
+                    else:
+                        raise RuntimeError(f"Hostinger parse flush failed: {msg}")
+                else:
+                    journal.append({"event": "wave_flushed", "wave": wave_num, "ok": True})
             elif wave_flush and not media_push_required():
                 _phase(f"wave flush skipped (MEDIA_PUSH_REQUIRED=0) files={len(wave_flush)}")
 
@@ -516,7 +527,16 @@ def run_parse_assets(
                     parsed_n += 1
 
             write_ledger(ledger, ledger_path)
-            push_ledger(local_path=ledger_path)
+            import os as _os
+
+            if _os.getenv("SKIP_LEDGER_PUSH", "").strip().lower() not in {
+                "1",
+                "true",
+                "yes",
+            }:
+                push_ledger(local_path=ledger_path)
+            else:
+                _phase("SKIP_LEDGER_PUSH=1 — local ledger only (smoke)")
 
             elapsed = time.monotonic() - t0
             rate = (parsed_n + skipped) / elapsed if elapsed > 0 else 0
