@@ -27,7 +27,7 @@ from scraper.config import (
     REPO_ROOT,
 )
 from scraper.filters import make_run_id
-from scraper.lane_resume import dispatch_workflow, record_resume, should_self_resume
+from scraper.lane_resume import dispatch_workflow, kick_if_needed, record_resume, should_self_resume
 from scraper.media_sync import media_push_required
 from scraper.models import AuctionRecord
 from scraper.parse_cache import (
@@ -42,14 +42,17 @@ from scraper.parse_engine import worker_parse_mstc
 from scraper.parse_flush import flush_parsed_files
 from scraper.parse_journal import ParseJournal
 from scraper.pipeline_ledger import (
+    count_publishable_future,
     fail_budget_ok,
     load_ledger,
     mark_parse,
     pull_ledger,
     push_ledger,
     select_for_parse,
+    select_publishable_future,
     write_ledger,
 )
+from scraper.pipeline_status import publish_pipeline_status, truth_for_telegram
 from scraper.raw_store import (
     _hostinger_ssh_config,
     pull_public_pdf_files,
@@ -529,6 +532,41 @@ def run_parse_assets(
                 record_resume("parse", {"reason": reason, "backlog_left": backlog})
                 dispatch_workflow("pipeline-parse-assets.yml")
 
+        # Event chain: wake deploy when new future-closing publishable rows exist
+        ledger_final = load_ledger(ledger_path)
+        future_n = count_publishable_future(ledger_final)
+        future_pending_deploy = sum(
+            1 for i in select_publishable_future(ledger_final) if i.deploy != "done"
+        )
+        kicked_deploy = False
+        deploy_kick_reason = ""
+        if (parsed_n > 0 or skipped > 0) and future_pending_deploy > 0:
+            kicked_deploy, deploy_kick_reason = kick_if_needed(
+                "pipeline-build-deploy.yml",
+                reason="parse_done_future_publishable",
+                backlog=future_pending_deploy,
+                inputs={"allow_small_export": "true"},
+            )
+            if kicked_deploy:
+                record_resume(
+                    "deploy_kick",
+                    {
+                        "reason": deploy_kick_reason,
+                        "future_pending_deploy": future_pending_deploy,
+                    },
+                )
+
+        truth = publish_pipeline_status(
+            ledger_final,
+            lane="parse",
+            wake_reason=deploy_kick_reason or reason or "complete",
+            extra={
+                "parsed": parsed_n,
+                "deploy_kick": kicked_deploy,
+                "future_pending_deploy": future_pending_deploy,
+            },
+        )
+
         elapsed = time.monotonic() - t0
         status = "Complete" if backlog == 0 else "Paused · timebox"
         send_lane_report(
@@ -542,6 +580,9 @@ def run_parse_assets(
                 "backlog_left": backlog,
                 "resume_next": resume,
                 "items_per_sec": round((parsed_n + skipped) / elapsed, 3) if elapsed else 0,
+                "publishable_future": future_n,
+                "deploy_kick": kicked_deploy,
+                **truth_for_telegram(truth),
             },
             noop=attempted == 0 and skipped == 0 and backlog == 0,
         )
@@ -561,13 +602,16 @@ def run_parse_assets(
             "timing": timing,
             "elapsed_s": round(elapsed, 2),
             "items_per_sec": round((parsed_n + skipped) / elapsed, 3) if elapsed else 0,
+            "publishable_future": future_n,
+            "deploy_kick": kicked_deploy,
+            "truth": truth_for_telegram(truth),
         }
         if attempted_ids:
             _phase(f"attempted_ids={','.join(attempted_ids[:50])}{'…' if len(attempted_ids)>50 else ''}")
         _phase(
             f"done parsed={parsed_n} skipped={skipped} failed={failed} "
             f"elapsed={elapsed:.1f}s rate={payload['items_per_sec']}/s "
-            f"timing={timing}"
+            f"future={future_n} kick_deploy={kicked_deploy} timing={timing}"
         )
         (run_dir / "parse_assets_report.json").write_text(
             json.dumps(payload, indent=2) + "\n", encoding="utf-8"

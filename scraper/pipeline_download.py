@@ -34,9 +34,10 @@ from scraper.download_flush import flush_download_files
 from scraper.download_journal import DownloadJournal
 from scraper.download_throttle import DownloadThrottle
 from scraper.filters import make_run_id
-from scraper.lane_resume import dispatch_workflow, record_resume, should_self_resume
+from scraper.lane_resume import dispatch_workflow, kick_if_needed, record_resume, should_self_resume
 from scraper.media_sync import media_push_required
 from scraper.pipeline_ledger import (
+    count_parse_eligible,
     estimated_download_runs_to_clear,
     fail_budget_ok,
     load_ledger,
@@ -46,6 +47,7 @@ from scraper.pipeline_ledger import (
     select_for_download,
     write_ledger,
 )
+from scraper.pipeline_status import publish_pipeline_status, truth_for_telegram
 from scraper.raw_store import _hostinger_ssh_config, pull_public_pdf_files
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
 from scraper.telegram_reporter import send_lane_report, send_telegram_report
@@ -547,6 +549,31 @@ def run_pipeline_download(
         )
         send_telegram_report(payload, event="download_done")
         status = "Complete" if backlog_left == 0 else "Paused · timebox"
+        # Event chain: wake parse when new downloads created eligible work
+        parse_eligible = count_parse_eligible(ledger)
+        kicked_parse = False
+        kick_reason = ""
+        if ok_count > 0 and parse_eligible > 0:
+            kicked_parse, kick_reason = kick_if_needed(
+                "pipeline-parse-assets.yml",
+                reason="download_done_parse_eligible",
+                backlog=parse_eligible,
+            )
+            if kicked_parse:
+                record_resume(
+                    "parse_kick",
+                    {"reason": kick_reason, "parse_eligible": parse_eligible, "from": lane_id},
+                )
+        truth = publish_pipeline_status(
+            ledger,
+            lane=lane_id,
+            wake_reason=kick_reason or ("idle" if parse_eligible == 0 else "cron_or_manual"),
+            extra={
+                "ok_count": ok_count,
+                "parse_kick": kicked_parse,
+                "parse_kick_reason": kick_reason,
+            },
+        )
         send_lane_report(
             lane_id,
             "finished",
@@ -559,12 +586,19 @@ def run_pipeline_download(
                 "fail_budget_ok": budget_ok,
                 "resume_next": resume,
                 "items_per_min": round(rate, 2),
+                "parse_eligible": parse_eligible,
+                "parse_kick": kicked_parse,
+                **truth_for_telegram(truth),
             },
             noop=attempted == 0 and backlog_left == 0,
         )
+        payload["parse_eligible"] = parse_eligible
+        payload["parse_kick"] = kicked_parse
+        payload["truth"] = truth_for_telegram(truth)
         _phase(
             f"done ok={ok_count} fail={fail_count} backlog={backlog_left} "
-            f"rate={rate:.1f}/min fetch_s={timing['fetch_s']:.1f} flush_s={timing['flush_s']:.1f}"
+            f"rate={rate:.1f}/min parse_eligible={parse_eligible} kick_parse={kicked_parse} "
+            f"fetch_s={timing['fetch_s']:.1f} flush_s={timing['flush_s']:.1f}"
         )
         return payload
     except Exception as exc:

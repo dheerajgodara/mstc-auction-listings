@@ -17,19 +17,23 @@ from scraper.export_guard import write_auctions_json
 from scraper.export_hygiene import repair_absolute_asset_paths, strip_aged_out_auctions
 from scraper.filters import make_run_id, tomorrow_min_closing_date
 from scraper.import_tracking import stable_auction_key
+from scraper.lane_resume import kick_if_needed, record_resume
 from scraper.parse_cache import iter_local_parsed, load_parse_artifact, pull_parsed_tree
 from scraper.pipeline_deploy import run_pipeline_deploy
 from scraper.pipeline_ledger import (
     compute_publishable,
+    count_publishable_future,
     load_ledger,
     mark_deploy,
     public_doc_url,
     pull_ledger,
     push_ledger,
     select_publishable,
+    select_publishable_future,
     write_ledger,
 )
 from scraper.pipeline_markers import pull_pipeline_json
+from scraper.pipeline_status import publish_pipeline_status, truth_for_telegram
 from scraper.promote_export import promote_export
 from scraper.raw_store import pull_public_relative_files
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
@@ -282,6 +286,49 @@ def run_build_deploy(
         write_ledger(ledger, ledger_path)
         push_ledger(local_path=ledger_path)
 
+        future_n = count_publishable_future(ledger, min_closing_date=min_closing)
+        future_pending = sum(
+            1
+            for i in select_publishable_future(ledger, min_closing_date=min_closing)
+            if i.deploy != "done"
+        )
+        # Self-resume when future publishable still not reflected as deploy=done
+        kicked = False
+        kick_reason = ""
+        if future_pending > 0 and export["count"] > 0:
+            # Avoid infinite loop on unmaterializable rows: only resume once per marker window
+            prior = pull_pipeline_json("build_deploy_resume.json") or {}
+            prior_pending = int(prior.get("future_pending") or -1)
+            if prior_pending != future_pending:
+                kicked, kick_reason = kick_if_needed(
+                    "pipeline-build-deploy.yml",
+                    reason="future_publishable_pending_deploy",
+                    backlog=future_pending,
+                    inputs={"allow_small_export": "true"},
+                )
+                if kicked:
+                    record_resume(
+                        "build_deploy",
+                        {
+                            "reason": kick_reason,
+                            "future_pending": future_pending,
+                            "published": export["count"],
+                        },
+                    )
+
+        truth = publish_pipeline_status(
+            ledger,
+            lane="build_deploy",
+            wake_reason=kick_reason or "complete",
+            live_n=export["count"],
+            extra={
+                "published": export["count"],
+                "stripped_aged": len(strip.dropped),
+                "future_pending_deploy": future_pending,
+                "self_resume": kicked,
+            },
+        )
+
         send_lane_report(
             "build_deploy",
             "finished",
@@ -289,7 +336,12 @@ def run_build_deploy(
                 "status": "Complete",
                 "published": export["count"],
                 "publishable_ledger": len(publishable),
+                "publishable_future": future_n,
+                "aged_out_stripped": len(strip.dropped),
+                "future_pending_deploy": future_pending,
+                "self_resume": kicked,
                 "site_base_url": SITE_BASE_URL,
+                **truth_for_telegram(truth),
             },
             noop=export["count"] == 0 and not allow_small_export,
         )
@@ -297,9 +349,17 @@ def run_build_deploy(
             "run_id": run_id,
             "published": export["count"],
             "allow_small_export": allow_small_export,
+            "publishable_future": future_n,
+            "future_pending_deploy": future_pending,
+            "self_resume": kicked,
+            "truth": truth_for_telegram(truth),
         }
         (run_dir / "build_deploy_report.json").write_text(
             json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+        )
+        _phase(
+            f"done published={export['count']} future={future_n} "
+            f"pending_deploy={future_pending} self_resume={kicked}"
         )
         return payload
     except Exception as exc:

@@ -35,12 +35,67 @@ def should_self_resume(
     return True, "timebox_near_limit"
 
 
-def dispatch_workflow(workflow_file: str, inputs: dict[str, str] | None = None) -> bool:
+def _github_auth() -> tuple[str, str] | None:
     repo = os.environ.get("GITHUB_REPOSITORY")
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if not repo or not token:
+        return None
+    return repo, token
+
+
+def workflow_in_progress(workflow_file: str) -> bool:
+    """True when any in_progress/queued run exists for this workflow file."""
+    auth = _github_auth()
+    if auth is None:
+        return False
+    repo, token = auth
+    url = (
+        f"https://api.github.com/repos/{repo}/actions/workflows/{workflow_file}/runs"
+        f"?status=in_progress&per_page=5"
+    )
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        total = int(data.get("total_count") or 0)
+        if total > 0:
+            return True
+        # Also treat queued as busy
+        url_q = (
+            f"https://api.github.com/repos/{repo}/actions/workflows/{workflow_file}/runs"
+            f"?status=queued&per_page=5"
+        )
+        req_q = urllib.request.Request(
+            url_q,
+            method="GET",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {token}",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        with urllib.request.urlopen(req_q, timeout=30) as resp:
+            data_q = json.loads(resp.read().decode("utf-8"))
+        return int(data_q.get("total_count") or 0) > 0
+    except Exception as exc:
+        logger.info("workflow_in_progress check failed for %s: %s", workflow_file, exc)
+        return False
+
+
+def dispatch_workflow(workflow_file: str, inputs: dict[str, str] | None = None) -> bool:
+    auth = _github_auth()
+    if auth is None:
         logger.warning("cannot dispatch %s: missing GITHUB_REPOSITORY/TOKEN", workflow_file)
         return False
+    repo, token = auth
     url = f"https://api.github.com/repos/{repo}/actions/workflows/{workflow_file}/dispatches"
     payload = {"ref": os.environ.get("GITHUB_REF_NAME") or "main", "inputs": inputs or {}}
     req = urllib.request.Request(
@@ -62,6 +117,27 @@ def dispatch_workflow(workflow_file: str, inputs: dict[str, str] | None = None) 
     except Exception as exc:
         logger.warning("dispatch %s failed: %s", workflow_file, exc)
         return False
+
+
+def kick_if_needed(
+    workflow_file: str,
+    *,
+    reason: str,
+    backlog: int,
+    inputs: dict[str, str] | None = None,
+    force: bool = False,
+) -> tuple[bool, str]:
+    """Dispatch downstream lane when backlog > 0, debounced if already running."""
+    if backlog <= 0:
+        return False, "backlog_clear"
+    if not force and workflow_in_progress(workflow_file):
+        logger.info("skip kick %s reason=%s backlog=%s (already in_progress)", workflow_file, reason, backlog)
+        return False, "already_in_progress"
+    ok = dispatch_workflow(workflow_file, inputs=inputs)
+    if ok:
+        logger.info("kicked %s reason=%s backlog=%s", workflow_file, reason, backlog)
+        return True, reason
+    return False, "dispatch_failed"
 
 
 def record_resume(lane: str, meta: dict[str, Any]) -> None:

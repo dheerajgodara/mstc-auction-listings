@@ -330,6 +330,111 @@ def select_publishable(ledger: PipelineLedger) -> list[LedgerItem]:
     return [i for i in ledger.items if compute_publishable(i) and not i.removed_from_source]
 
 
+def count_parse_eligible(ledger: PipelineLedger) -> int:
+    return len(select_for_parse(ledger, limit=None))
+
+
+def count_download_pending(ledger: PipelineLedger, *, source: str | None = None) -> int:
+    if source:
+        return sum(1 for i in ledger.items if download_eligible(i, source=source))
+    return sum(
+        1
+        for i in ledger.items
+        if download_eligible(i, source="mstc") or download_eligible(i, source="gem_forward")
+    )
+
+
+def _item_closing_dt(item: LedgerItem) -> datetime | None:
+    from scraper.qa_summary import _parse_closing
+
+    return _parse_closing(item.closing)
+
+
+def item_passes_min_closing(item: LedgerItem, *, min_closing_date: str) -> bool:
+    """True when closing is missing (kept like strip) or closing >= min_closing IST midnight."""
+    from scraper.filters import parse_min_closing_date
+
+    min_closing = parse_min_closing_date(min_closing_date)
+    closing = _item_closing_dt(item)
+    if closing is None:
+        return True
+    return closing >= min_closing
+
+
+def select_publishable_future(
+    ledger: PipelineLedger,
+    *,
+    min_closing_date: str | None = None,
+) -> list[LedgerItem]:
+    from scraper.filters import tomorrow_min_closing_date
+
+    boundary = min_closing_date or tomorrow_min_closing_date()
+    return [
+        i
+        for i in select_publishable(ledger)
+        if item_passes_min_closing(i, min_closing_date=boundary)
+    ]
+
+
+def count_publishable_future(
+    ledger: PipelineLedger,
+    *,
+    min_closing_date: str | None = None,
+) -> int:
+    return len(select_publishable_future(ledger, min_closing_date=min_closing_date))
+
+
+def pipeline_truth_snapshot(
+    ledger: PipelineLedger,
+    *,
+    pdf_disk_n: int | None = None,
+    parsed_disk_n: int | None = None,
+    live_n: int | None = None,
+    min_closing_date: str | None = None,
+) -> dict[str, Any]:
+    """Ledger-truth backlog vs optional Hostinger/live inventory counts."""
+    from scraper.filters import tomorrow_min_closing_date
+
+    boundary = min_closing_date or tomorrow_min_closing_date()
+    publishable_all = sum(1 for i in ledger.items if compute_publishable(i))
+    publishable_future = count_publishable_future(ledger, min_closing_date=boundary)
+    parse_done = sum(1 for i in ledger.items if i.parse == "done")
+    parse_eligible = count_parse_eligible(ledger)
+    download_pending = count_download_pending(ledger)
+    aged_out_parsed = max(0, publishable_all - publishable_future)
+    orphan_pdf_estimate = None
+    if pdf_disk_n is not None:
+        linked = sum(
+            1
+            for i in ledger.items
+            if (i.hostinger_doc_path or "").strip().startswith("pdfs/")
+            and i.download == "done"
+        )
+        orphan_pdf_estimate = max(0, int(pdf_disk_n) - linked)
+    return {
+        "schema_version": 1,
+        "min_closing_date": boundary,
+        "pdfs_on_disk": pdf_disk_n,
+        "parsed_on_disk": parsed_disk_n,
+        "live_export_count": live_n,
+        "download_pending": download_pending,
+        "download_pending_mstc": count_download_pending(ledger, source="mstc"),
+        "download_pending_gem": count_download_pending(ledger, source="gem_forward"),
+        "parse_eligible": parse_eligible,
+        "parse_done": parse_done,
+        "publishable_all": publishable_all,
+        "publishable_future": publishable_future,
+        "aged_out_parsed": aged_out_parsed,
+        "orphan_pdf_estimate": orphan_pdf_estimate,
+        "naive_pdf_minus_parsed": (
+            (int(pdf_disk_n) - int(parsed_disk_n))
+            if pdf_disk_n is not None and parsed_disk_n is not None
+            else None
+        ),
+        "note": "Backlog = parse_eligible / publishable_future; disk counts are inventory only",
+    }
+
+
 def upsert_from_work_plan(
     ledger: PipelineLedger,
     *,
