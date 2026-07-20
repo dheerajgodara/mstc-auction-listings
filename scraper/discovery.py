@@ -15,7 +15,7 @@ from scraper.category_map import should_exclude_category
 from scraper.config import GEM_FORWARD_PER_PAGE, OFFICE_CODES
 from scraper.eauction_scraper import scrape_eauction_tabs
 from scraper.export_guard import write_auctions_json
-from scraper.filters import apply_future_filter, parse_min_closing_date
+from scraper.filters import apply_future_filter, parse_min_closing_boundary
 from scraper.gem_forward_client import GemForwardClient
 from scraper.gem_forward_scraper import scrape_gem_forward
 from scraper.main import listing_to_base
@@ -41,7 +41,7 @@ def discover_mstc(
     office_codes: list[str] | None = None,
     min_closing_date: str | None = None,
 ) -> tuple[list[AuctionRecord], dict]:
-    min_closing = parse_min_closing_date(min_closing_date) if min_closing_date else None
+    min_closing = parse_min_closing_boundary(min_closing_date) if min_closing_date else None
     records: list[AuctionRecord] = []
     office_counts: dict[str, int] = {}
     requested_offices = list(office_codes or OFFICE_CODES)
@@ -72,7 +72,7 @@ def discover_gem_forward(
     limit: int | None = None,
     transport: str = "auto",
 ) -> tuple[list[AuctionRecord], dict]:
-    min_closing = parse_min_closing_date(min_closing_date) if min_closing_date else None
+    min_closing = parse_min_closing_boundary(min_closing_date) if min_closing_date else None
     client = GemForwardClient(transport=transport)
     auctions = scrape_gem_forward(
         client=client,
@@ -102,7 +102,7 @@ def discover_eauction(
     limit: int | None = None,
     max_pages: int | None = None,
 ) -> tuple[list[AuctionRecord], dict]:
-    min_closing = parse_min_closing_date(min_closing_date) if min_closing_date else None
+    min_closing = parse_min_closing_boundary(min_closing_date) if min_closing_date else None
     rows, stats = scrape_eauction_tabs(
         tabs=list(EAUCTION_TABS),
         max_pages=max_pages,

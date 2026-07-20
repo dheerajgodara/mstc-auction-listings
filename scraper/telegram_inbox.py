@@ -17,7 +17,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from scraper.telegram_reporter import send_telegram_message
+from scraper.telegram_reporter import send_ops_note
 
 logger = logging.getLogger(__name__)
 
@@ -133,13 +133,17 @@ def poll_inbox(
     out_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
     if ack_telegram and instructions:
-        lines = ["📩 Received Deep instruction(s) — acting on next poll wake:"]
+        bullets = []
         for item in instructions:
             preview = item["text"]
-            if len(preview) > 200:
-                preview = preview[:197] + "…"
-            lines.append(f"• {preview}")
-        send_telegram_message("\n".join(lines), parse_mode="")
+            if len(preview) > 120:
+                preview = preview[:117] + "…"
+            bullets.append(preview)
+        send_ops_note(
+            "Deep instructions received",
+            "Acting on next poll wake",
+            bullets=bullets,
+        )
 
     return result
 

@@ -2,14 +2,14 @@ name: Lane Download MSTC
 
 on:
   schedule:
-    # Temporary backlog drain: every 30m (UTC)
-    - cron: "5,35 * * * *"
+    # Steady-state: hourly at :41 UTC (IST ≈ :11); odd offset avoids :00/:30 congestion
+    - cron: "41 * * * *"
   workflow_dispatch:
     inputs:
       max_download:
-        description: "Per-run download cap (default 2000)"
+        description: "Per-run download cap (default 150 steady-state)"
         required: false
-        default: "2000"
+        default: "150"
       migrate_ledger:
         description: "Run ledger schema migrate before download"
         required: false
@@ -22,7 +22,7 @@ on:
 jobs:
   download-mstc:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 120
     concurrency:
       group: pipeline-download-mstc
       cancel-in-progress: false
@@ -68,7 +68,9 @@ jobs:
           DOWNLOAD_FETCH_TIMEOUT_SEC: "180"
           DOWNLOAD_STALL_ABORT_MIN: "20"
           DOWNLOAD_STREAM_FLUSH_EVERY: "10"
-          DOWNLOAD_DECOUPLE_FLUSH: "1"
+          # Publish Media is manual-only; fail R2 flush → retry portal→R2 next hour
+          DOWNLOAD_DECOUPLE_FLUSH: "0"
+          PIPELINE_JOB_TIMEBOX_MIN: "100"
           SSH_CONNECT_TIMEOUT: "15"
           SSH_SERVER_ALIVE_INTERVAL: "30"
           RSYNC_IO_TIMEOUT: "120"
@@ -80,12 +82,13 @@ jobs:
           R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
           MEDIA_R2_ONLY: "1"
         run: |
+          echo "cron_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ) event=${{ github.event_name }}"
           CAP="${{ github.event.inputs.max_download }}"
-          if [ -z "$CAP" ]; then CAP=2000; fi
+          if [ -z "$CAP" ]; then CAP=150; fi
           PYTHONPATH=. python -m scraper.pipeline_download \
             --source mstc \
             --wave-size 25 \
             --batch-size 25 \
-            --max-batches 80 \
+            --max-batches 20 \
             --max-download "$CAP" \
             --break-stale-lock

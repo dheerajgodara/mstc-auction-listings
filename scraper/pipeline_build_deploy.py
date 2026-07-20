@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from scraper.config import DEFAULT_JSON_OUT, DEFAULT_PARSED_DIR, DEFAULT_PIPELINE_LEDGER, REPO_ROOT, SITE_BASE_URL
 from scraper.export_guard import write_auctions_json
 from scraper.export_hygiene import repair_absolute_asset_paths, strip_aged_out_auctions
-from scraper.filters import make_run_id, tomorrow_min_closing_date
+from scraper.filters import make_run_id, resolve_min_closing
 from scraper.import_tracking import stable_auction_key
 from scraper.lane_resume import kick_if_needed, record_resume
 from scraper.media_urls import absolutize_auction_media, absolutize_export_media
@@ -229,11 +229,12 @@ def run_build_deploy(
             cleaned.append(a)
         export["auctions"] = cleaned
         export["count"] = len(cleaned)
-        min_closing = tomorrow_min_closing_date()
+        min_closing_dt = resolve_min_closing()
+        min_closing = min_closing_dt.isoformat()
         strip = strip_aged_out_auctions(
             export,
             min_closing_date=min_closing,
-            # Cutover / growth: closing>=tomorrow can age out >poison_threshold in one pass.
+            # Cutover / growth: runway floor can age out >poison_threshold in one pass.
             allow_large_aged_out_strip=bool(allow_small_export),
         )
         export = strip.export

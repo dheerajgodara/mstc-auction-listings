@@ -17,13 +17,14 @@ from scraper.config import (
     DEFAULT_PDF_DIR,
     DEFAULT_PIPELINE_LEDGER,
     DEFAULT_RAW_DIR,
+    MIN_CLOSING_HOURS_AHEAD,
     PIPELINE_DOWNLOAD_BATCH_SIZE,
     PIPELINE_DOWNLOAD_CAP_CATCHUP,
     REPO_ROOT,
     SITE_BASE_URL,
 )
 from scraper.discovery import run_discovery
-from scraper.filters import make_run_id, tomorrow_min_closing_date
+from scraper.filters import make_run_id, resolve_min_closing
 from scraper.incremental import load_export
 from scraper.incremental_plan import build_work_plan
 from scraper.import_tracking import stable_auction_key
@@ -100,7 +101,8 @@ def run_pipeline_discover(
         break_stale_lock=break_stale_lock,
     )
 
-    min_closing = force_min_closing_date or tomorrow_min_closing_date()
+    min_closing_dt = resolve_min_closing(force_min_closing_date)
+    min_closing = min_closing_dt.isoformat()
     production_json = repo_root / "web" / "public" / "data" / "auctions.json"
     public_dir = repo_root / "web" / "public"
     pdf_dir = Path(DEFAULT_PDF_DIR)
@@ -116,6 +118,10 @@ def run_pipeline_discover(
         "pipeline": "discover",
         "started_at": started,
         "min_closing_date": min_closing,
+        "min_closing_at": min_closing,
+        "min_closing_hours_ahead": (
+            None if (force_min_closing_date or "").strip() else MIN_CLOSING_HOURS_AHEAD
+        ),
         "queue_cap": queue_cap,
         "batch_size": batch_size,
         "sources": sources,

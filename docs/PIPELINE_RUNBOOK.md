@@ -1,15 +1,56 @@
 # Pipeline runbook (v3 — mandatory PDF/doc)
 
-> **Law:** No MSTC/GeM listing goes live without Hostinger PDF/doc **and** parse with lots.
+> **Law:** No MSTC/GeM listing goes live without CDN PDF/doc **and** parse with lots.
 > Six GHA lanes: Discover-MSTC/GeM, Download-MSTC/GeM, Parse, Build-Deploy.
-> Schema: [`PIPELINE_DATA_MODEL.md`](PIPELINE_DATA_MODEL.md). AI enricher **held**.
+> Media SoR: R2 (`files.csmg.in`). Schema: [`PIPELINE_DATA_MODEL.md`](PIPELINE_DATA_MODEL.md). AI enricher **held**.
+
+## Steady-state schedules (set-and-forget)
+
+All crons are **UTC**. IST = UTC+5:30. Schedules live on the **default branch** only.
+
+| Lane | Cron (UTC) | IST (approx) | Interval | Cap / batch | Timeout | Concurrency |
+|------|------------|--------------|----------|-------------|---------|-------------|
+| Discover MSTC | `17 */3 * * *` | :47 | 3h | queue_cap **500** | 90m | `pipeline-discover-mstc` |
+| Discover GeM | `23 */3 * * *` | :53 | 3h | queue_cap **500** | 90m | `pipeline-discover-gem` |
+| Download MSTC | `41 * * * *` | :11 | 1h | max **150**; wave 25; workers 4; max-batches 20 | 120m / step 90m | `pipeline-download-mstc` |
+| Download GeM | `47 * * * *` | :17 | 1h | max **100**; wave 25; workers 3 | 120m / step 90m | `pipeline-download-gem` |
+| Parse Assets | `11 * * * *` | :41 | 1h | max_parse **200**; wave 100; workers 2 | 120m | `pipeline-parse-assets` |
+| Build Deploy | `19 */2 * * *` | :49 | 2h | normal export (no scheduled `allow_small`) | 180m | `pipeline-build-deploy` |
+| Publish Media | *(none)* | — | manual | wave 50 | 60m | `pipeline-publish-media` |
+
+Shared rules:
+
+- Writers use `cancel-in-progress: false`.
+- Closing floor: `MIN_CLOSING_HOURS_AHEAD=12` (closing ≥ now+12h IST).
+- Download: `MEDIA_R2_ONLY=1`, `DOWNLOAD_DECOUPLE_FLUSH=0` (R2 flush failure → fail item; next hour retries).
+- Prefer odd cron minutes (avoid :00/:15/:30 GHA congestion).
+- Manual `workflow_dispatch` still accepts higher caps for smoke/drain.
+
+### Drain mode (temporary backlog)
+
+If download eligible backlog grows for ~48h, temporarily bump cadence/caps, then revert to the table above. Example drain snippets (do **not** leave permanently):
+
+```yaml
+# Discover: every 2h, queue_cap 2000
+# Download MSTC: "5,35 * * * *", max_download 2000, max-batches 80
+# Parse: "10,40 * * * *", max_parse empty/unbounded under timebox
+# Build: "7,22,37,52 * * * *" + allow_small only while cutover
+```
+
+### Cutover / small export
+
+Scheduled Build Deploy does **not** pass `--allow-small-export`. For empty→first fill only:
+
+```bash
+gh workflow run pipeline-build-deploy.yml -f allow_small_export=true
+```
 
 ## Production flow
 
-1. **Discover** — require `portal_doc_url`; snapshot only
-2. **Download** — Hostinger `hostinger_doc_url` required before parse
-3. **Parse** — Hostinger copy only; `lots_count > 0` for publishable
-4. **Build-Deploy** — export **only** publishable rows (no listing shells)
+1. **Discover** — require `portal_doc_url`; snapshot only; upsert ledger
+2. **Download** — portal → R2 CDN; `download=done` before parse
+3. **Parse** — R2 prefetch; `lots_count > 0` for publishable
+4. **Build-Deploy** — export **only** publishable future-closing rows
 
 ### Cutover (unpublish shells + ledger v3)
 
@@ -46,8 +87,6 @@ gh workflow run pipeline-drain.yml -f max_parse=100 -f max_cycles=25
 
 ---
 
-## Aged-out closing dates
-
 ## Fast retries
 
 If **Discover** hard-fails: `pipeline-discover-retry.yml` (+15m / +45m, max 2/slot).
@@ -56,18 +95,18 @@ If **Download** hard-fails:
 
 1. Same job retries once (~2 min).
 2. `pipeline-download-retry.yml` schedules auto re-dispatch at **+15 min** then **+45 min** (max **2** per 6h slot).
-3. Only then wait for the next scheduled 6h discover.
+3. Only then wait for the next scheduled discover.
 
-Telegram: `discover_retry_*`, `download_retry_scheduled`, `download_retries_exhausted`.
+Telegram: retries send **action** / **critical** cards (Needs attention / FAILED) via `send_action_card` — lane card only, no legacy event spam.
 
 ## Aged-out closing dates
 
-Discovery already filters to `tomorrow` (IST). **Materialize used to reuse yesterday’s production rows verbatim**, so after midnight those rows poison QA (`closes before …`) and stop drain on the same IDs every retry.
+Discovery and download use **min runway** `closing >= now + 12h` (IST), env `MIN_CLOSING_HOURS_AHEAD`. CLI `--min-closing-date YYYY-MM-DD` still overrides for ops/tests.
 
 Pipeline now:
 
-1. Materialize excludes aged-out / quarantined keys when `min_closing_date` is set.
-2. `export_hygiene.strip_aged_out_auctions` runs after materialize (parse + legacy refresh).
+1. Materialize excludes aged-out / quarantined keys when min closing is set.
+2. `export_hygiene.strip_aged_out_auctions` runs after materialize (parse + legacy refresh); missing closing is dropped.
 3. Poison guard: dropping more than `max(50, 5% of export)` hard-fails (wrong filter) unless ops override.
 4. Ledger `parse=done` is marked **only after** safety gates pass.
 
@@ -109,7 +148,7 @@ python -m scraper.quarantine_tool list
 python -m scraper.quarantine_tool remove --key mstc:588636
 ```
 
-Auto-quarantine: residual record-poison after repair/strip is quarantined **48h** (Telegram: `Quarantine added` / parked N bad items). Quarantine cannot take the export below `min_count`.
+Auto-quarantine: residual record-poison after repair/strip is quarantined **48h** (ops JSON / run reports; not a Telegram progress ping). Quarantine cannot take the export below `min_count`.
 
 ### Recovery after poison drain stop
 
@@ -169,8 +208,52 @@ Before any nav/route/chrome edit + force deploy:
 cd web && pnpm run verify-design
 ```
 
-Deploy-failed Telegram messages prefer extracted `FAIL …` lines instead of the OK tail of verify-build output.
-Pipeline Telegram copy is plain language (e.g. “Nothing new to download”, “waiting to process N”, “Catch-up finished”).
+## Telegram ops cards
+
+One HTML card protocol (`scraper/telegram_reporter.py`). **Lane card only** — no emoji-event dual reporting.
+
+| Severity | When | Suppressible? |
+|----------|------|-----------------|
+| `silent` | credentials missing, true noop, zero delta, AI held | n/a (no send) |
+| `progress` | lane finished with meaningful delta | quiet hours + 10m dedupe |
+| `digest` | daily catalogue summary (cron `7 3 * * *` UTC ≈ 08:37 IST) | never |
+| `action` | retries exhausted, high fail ratio | never |
+| `critical` | site promote fail, pipeline silent / deadman | never |
+
+Typography (HTML): **Title** → outcome → `metrics · metrics` → soft context → optional `Open run`.
+
+Lane display names: Discover MSTC/GeM · Download MSTC/GeM · Process catalogues · Update site · Upload media.
+
+Env:
+
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | — | required to send |
+| `TELEGRAM_NOOP_SILENT` | `1` | noop lanes stay silent (`0` to debug) |
+| `TELEGRAM_QUIET_HOURS_IST` | unset | e.g. `23-07` suppresses **progress** only |
+
+Examples:
+
+```
+<b>Discover MSTC</b>
+Found 2,192 live · 480 new · 500 queued
+Still need files: 1,820 · Ready to process: 140
+
+<b>Update site</b>
+FAILED — promote refused
+<code>count floor not met</code>
+<a href="…">Open run</a>
+
+<b>Daily catalogue</b>
+20 Jul · 09:00 IST
+Live on site: 375 · Ready for site: 40 · Still need files: 120
+Yesterday: +180 downloaded · +160 processed · 3 failed
+All clear
+```
+
+Manual ping: workflow `telegram-status.yml` → `send_ops_note`. Daily: `scripts/telegram_daily_digest.py` / `telegram-daily-digest.yml`.
+
+Deploy-failed cards prefer extracted `FAIL …` lines (via verify-fail extract) clipped into `<code>`, not the OK tail of verify-build.
 
 ## GeM / eAuction
 

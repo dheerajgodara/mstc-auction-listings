@@ -2,8 +2,8 @@ name: Lane Build Deploy
 
 on:
   schedule:
-    # Temporary backlog drain: every 15m (UTC), staggered off :00/:15/:30/:45
-    - cron: "7,22,37,52 * * * *"
+    # Steady-state: every 2h at :19 UTC (IST ≈ :49)
+    - cron: "19 */2 * * *"
   workflow_dispatch:
     inputs:
       no_deploy:
@@ -31,7 +31,7 @@ on:
 jobs:
   build-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 180
     concurrency:
       group: pipeline-build-deploy
       cancel-in-progress: false
@@ -81,6 +81,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           AI_ENRICHMENT_DISABLE: "1"
+          PIPELINE_JOB_TIMEBOX_MIN: "150"
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -89,12 +90,13 @@ jobs:
           R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
           MEDIA_R2_ONLY: "1"
         run: |
+          echo "cron_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ) event=${{ github.event_name }}"
           EXTRA=""
           if [ "${{ github.event.inputs.no_deploy }}" = "true" ]; then
             EXTRA="$EXTRA --no-deploy"
           fi
-          # Temporary cutover: schedule + manual allow_small until GeM is regularly in export
-          if [ "${{ github.event.inputs.allow_small_export }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+          # Steady-state: allow_small only via manual dispatch (not on schedule)
+          if [ "${{ github.event.inputs.allow_small_export }}" = "true" ]; then
             EXTRA="$EXTRA --allow-small-export"
             export PIPELINE_ALLOW_SMALL_EXPORT=1
           fi

@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from scraper.filters import parse_min_closing_date
+from scraper.filters import parse_min_closing_boundary
 from scraper.incremental import stable_listing_key
 from scraper.qa_summary import _parse_closing
 
@@ -280,8 +280,8 @@ def strip_aged_out_auctions(
     min_closing_date: str,
     allow_large_aged_out_strip: bool = False,
 ) -> HygieneResult:
-    """Drop auctions whose closing is strictly before min_closing_date (IST midnight)."""
-    min_closing = parse_min_closing_date(min_closing_date)
+    """Drop auctions whose closing is strictly before min_closing_date (YYYY-MM-DD or ISO)."""
+    min_closing = parse_min_closing_boundary(min_closing_date)
     auctions = list(export.get("auctions") or [])
     kept: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
@@ -289,7 +289,7 @@ def strip_aged_out_auctions(
 
     for auction in auctions:
         closing = _parse_closing(auction.get("closing"))
-        if closing is not None and closing < min_closing:
+        if closing is None or closing < min_closing:
             dropped.append(
                 {
                     "id": auction.get("id") or auction.get("source_auction_id"),

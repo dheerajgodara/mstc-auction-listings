@@ -10,13 +10,13 @@ Operational monitoring for the auction listings site combines CI notifications, 
 | Post-deploy HTTP | `scraper/http_verify.py` in refresh pipeline | Re-run deploy or rollback from last good export |
 | Freshness | `scraper/freshness_check.py` (36h default) | Re-run `refresh-and-deploy` workflow |
 | Weekly cron | `.github/workflows/freshness-check.yml` | Same as freshness failure |
-| Uptime (optional) | UptimeRobot free tier | Page owner; verify Hostinger + DNS |
+| Uptime (optional) | UptimeRobot free tier | Page owner; verify DNS and production domain |
 
 ## Freshness check
 
 ```bash
 PYTHONPATH=. python -m scraper.freshness_check \
-  --base-url "https://lightcyan-camel-979846.hostingersite.com/auctions"
+  --base-url "https://scrapauctionindia.com/auctions"
 ```
 
 Flags:
@@ -29,8 +29,8 @@ Flags:
 
 1. Create a free account at [UptimeRobot](https://uptimerobot.com/).
 2. Add HTTP(s) monitors:
-   - `https://lightcyan-camel-979846.hostingersite.com/auctions/` — keyword `auctions` optional
-   - `https://lightcyan-camel-979846.hostingersite.com/auctions/data/export-meta.json` — expect JSON with `automation_ran_at`
+   - `https://scrapauctionindia.com/auctions/` — keyword `auctions` optional
+   - `https://scrapauctionindia.com/auctions/data/export-meta.json` — expect JSON with `automation_ran_at`
 3. Alert contacts: email + optional Slack webhook.
 4. Interval: 5 minutes (free tier).
 

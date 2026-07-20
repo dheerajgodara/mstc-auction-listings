@@ -150,8 +150,7 @@ def test_verify_live_site_invalid_thumb_is_warning(monkeypatch, tmp_path: Path):
 def test_drain_continues_when_parse_succeeds_after_quarantine(tmp_path, monkeypatch):
     monkeypatch.setattr("scraper.pipeline_drain.REPO_ROOT", tmp_path)
     monkeypatch.setattr("scraper.pipeline_drain.DEFAULT_PIPELINE_LEDGER", tmp_path / "pipeline_ledger.json")
-    monkeypatch.setattr("scraper.pipeline_drain.pull_ledger", lambda **kw: False)
-    monkeypatch.setattr("scraper.pipeline_drain.send_telegram_report", lambda *a, **k: True)
+    monkeypatch.setattr("scraper.pipeline_drain.pull_ledger", lambda **kw: True)
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
@@ -168,6 +167,8 @@ def test_drain_continues_when_parse_succeeds_after_quarantine(tmp_path, monkeypa
                 source_auction_id=str(i),
                 download="done",
                 parse="pending",
+                hostinger_doc_path=f"pdfs/{i}.pdf",
+                object_doc_url=f"https://files.csmg.in/pdfs/{i}.pdf",
                 priority_score=10,
                 first_queued_at=now,
                 updated_at=now,

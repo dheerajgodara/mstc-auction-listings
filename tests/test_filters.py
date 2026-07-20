@@ -1,13 +1,35 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from scraper.filters import apply_future_filter, parse_min_closing_date, passes_min_closing
+from scraper.filters import (
+    apply_future_filter,
+    min_closing_datetime,
+    parse_min_closing_date,
+    passes_min_closing,
+    resolve_min_closing,
+)
 from scraper.models import AuctionRecord, LotRecord
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 def test_parse_min_closing_date_ist():
     dt = parse_min_closing_date("2026-07-04")
     assert dt == datetime(2026, 7, 4, 0, 0, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+
+def test_min_closing_datetime_hours_ahead():
+    now = datetime(2026, 7, 20, 18, 0, tzinfo=IST)
+    boundary = min_closing_datetime(now=now, hours_ahead=12)
+    assert boundary == datetime(2026, 7, 21, 6, 0, tzinfo=IST)
+
+
+def test_resolve_min_closing_force_date_and_default():
+    now = datetime(2026, 7, 20, 18, 0, tzinfo=IST)
+    forced = resolve_min_closing("2026-07-22", now=now)
+    assert forced == datetime(2026, 7, 22, 0, 0, tzinfo=IST)
+    default = resolve_min_closing(now=now, hours_ahead=12)
+    assert default == datetime(2026, 7, 21, 6, 0, tzinfo=IST)
 
 
 def test_apply_future_filter_excludes_past_and_missing():
@@ -53,6 +75,41 @@ def test_apply_future_filter_excludes_past_and_missing():
     assert stats["excluded_missing_closing"] == 1
     assert stats["kept"] == 2
     assert {r.id for r in kept} == {"2", "3"}
+
+
+def test_apply_future_filter_12h_runway():
+    now = datetime(2026, 7, 20, 12, 0, tzinfo=IST)
+    boundary = min_closing_datetime(now=now, hours_ahead=12)
+    records = [
+        AuctionRecord(
+            id="near",
+            auction_number="near",
+            region="JPR",
+            office="JPR",
+            closing=now + timedelta(hours=11, minutes=59),
+            lots=[LotRecord(lot_id="1", item_title="near")],
+        ),
+        AuctionRecord(
+            id="edge",
+            auction_number="edge",
+            region="JPR",
+            office="JPR",
+            closing=now + timedelta(hours=12),
+            lots=[LotRecord(lot_id="1", item_title="edge")],
+        ),
+        AuctionRecord(
+            id="far",
+            auction_number="far",
+            region="JPR",
+            office="JPR",
+            closing=now + timedelta(hours=24),
+            lots=[LotRecord(lot_id="1", item_title="far")],
+        ),
+    ]
+    kept, stats = apply_future_filter(records, boundary)
+    assert stats["excluded_past_closing"] == 1
+    assert stats["kept"] == 2
+    assert {r.id for r in kept} == {"edge", "far"}
 
 
 def test_passes_min_closing_naive_datetime():

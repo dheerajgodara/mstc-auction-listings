@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from scraper.filters import parse_min_closing_date
+from scraper.filters import parse_min_closing_boundary
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -190,7 +190,7 @@ def run_strict_qa(
             if by_source.get(source, 0) <= 0:
                 warnings.append(f"optional source missing: {source}")
 
-    min_closing = parse_min_closing_date(min_closing_date) if min_closing_date else None
+    min_closing = parse_min_closing_boundary(min_closing_date) if min_closing_date else None
     earliest: datetime | None = None
     for auction in auctions:
         if not auction.get("source"):

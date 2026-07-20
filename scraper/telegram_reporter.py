@@ -1,12 +1,8 @@
-"""Plain-language Telegram status for Scrap Auction India pipelines.
+"""World-class Telegram ops cards for Scrap Auction India.
 
-Design rules (readable on a phone without decoding jargon):
-- Title: emoji + what happened
-- Body: short sentences a non-engineer can follow
-- Queue line: downloaded / waiting to process / ready for site
-- Optional GitHub log link
-- Soft limit ~550 chars; no run_id / timestamp dumps
-- Quiet events (started/selection/cycle) are not sent
+Severity: silent | progress | digest | action | critical
+Typography: HTML only — title → outcome → metrics · metrics → context → link
+Lane card only — no legacy emoji event spam.
 """
 
 from __future__ import annotations
@@ -14,34 +10,66 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from html import escape
-from typing import Any
+from typing import Any, Literal
 
 logger = logging.getLogger("scraper.telegram_reporter")
 
-# Intermediate noise — callers may still invoke send_telegram_report; we no-op.
-QUIET_EVENTS: frozenset[str] = frozenset(
+Severity = Literal["silent", "progress", "digest", "action", "critical"]
+
+LANE_LABELS: dict[str, str] = {
+    "discover_mstc": "Discover MSTC",
+    "discover_gem": "Discover GeM",
+    "download_mstc": "Download MSTC",
+    "download_gem": "Download GeM",
+    "publish_media": "Upload media",
+    "parse": "Process catalogues",
+    "build_deploy": "Update site",
+    "pipeline": "Catalogue pipeline",
+}
+
+LANE_BANNED_PHRASES: frozenset[str] = frozenset(
     {
-        "started",
-        "comparison_done",
-        "deep_scrape_done",
-        "discover_started",
-        "download_started",
-        "download_selection",
-        "parse_started",
-        "parse_selection",
-        "deploy_started",
-        "drain_started",
-        "drain_cycle",
-        "selection_done",  # AI
+        "fail budget",
+        "timebox",
+        "pdfs_on_disk",
+        "parsed_on_disk",
+        "parse_eligible",
+        "publishable",
+        "backlog left",
+        "auto-resume",
+        "snapshot",
+        "schema",
+        "workers",
+        "wave",
+        "hostinger",
+        "ready merged",
+        "material-searchable",
+        "ledger",
+        "batch",
+        "rsync",
+        "flush",
+        "eligible",
+        "fetched_local",
+        "pipeline_",
+        "quarantine",
     }
 )
 
-MAX_MESSAGE_CHARS = 550
+PROGRESS_MAX_CHARS = 320
+ACTION_MAX_CHARS = 480
+DIGEST_MAX_CHARS = 700
+LANE_MAX_CHARS = PROGRESS_MAX_CHARS
+MAX_MESSAGE_CHARS = ACTION_MAX_CHARS
+
+_last_send_mono = 0.0
+_recent_fingerprints: dict[str, float] = {}
 
 
 def _credentials() -> tuple[str, str] | None:
@@ -54,6 +82,10 @@ def _credentials() -> tuple[str, str] | None:
 
 def _h(value: object) -> str:
     return escape(str(value), quote=False)
+
+
+def _fmt_int(n: int) -> str:
+    return f"{n:,}"
 
 
 def _fmt_duration(seconds: object) -> str:
@@ -72,479 +104,41 @@ def _fmt_duration(seconds: object) -> str:
     return f"{hours}h {minutes}m"
 
 
-def _clip(text: str, max_chars: int = 160) -> str:
+def _fmt_rate(ok: int, wall_seconds: object) -> str:
+    try:
+        wall = float(wall_seconds)
+    except (TypeError, ValueError):
+        return ""
+    if wall < 30 or ok < 3:
+        return ""
+    rate = ok / (wall / 60.0)
+    if rate >= 10:
+        return f"{rate:.0f}/min"
+    return f"{rate:.1f}/min"
+
+
+def _clip(text: str, max_chars: int = 120) -> str:
     value = " ".join(str(text or "").split())
     if len(value) <= max_chars:
         return value
-    return value[: max_chars - 1].rstrip() + "…"
-
-
-def _run_link(payload: dict[str, Any]) -> str:
-    url = str(payload.get("github_run_url") or "").strip()
-    if not url:
-        return ""
-    return f'<a href="{escape(url, quote=True)}">full log</a>'
-
-
-def _queue_line(ledger: dict[str, Any] | None) -> str:
-    """Human queue snapshot: downloaded / waiting / ready for site."""
-    if not ledger:
-        return ""
-    parts: list[str] = []
-    dl = ledger.get("download")
-    if isinstance(dl, dict) and dl:
-        done = int(dl.get("done") or 0)
-        pending = int(dl.get("pending") or 0)
-        failed = int(dl.get("failed") or 0)
-        bit = f"downloaded {done}"
-        if pending:
-            bit += f" · still need files {pending}"
-        if failed:
-            bit += f" · download failed {failed}"
-        parts.append(bit)
-    awaiting = ledger.get("awaiting_hostinger_sync")
-    if awaiting:
-        parts.append(f"waiting on server sync {int(awaiting)}")
-    parse = ledger.get("parse")
-    if isinstance(parse, dict) and parse:
-        done = int(parse.get("done") or 0)
-        waiting = int(parse.get("pending") or 0) + int(parse.get("failed") or 0)
-        if waiting:
-            parts.append(f"waiting to process {waiting}")
-        else:
-            parts.append(f"processed {done} · nothing waiting")
-    ready = ledger.get("deploy_ready")
-    if ready is None:
-        ready = ledger.get("publishable")
-    if ready not in (None, ""):
-        parts.append(f"ready for site {ready}")
-    if not parts:
-        return ""
-    return "Queue: " + " · ".join(parts)
-
-
-def _finish(lines: list[str], payload: dict[str, Any]) -> str:
-    link = _run_link(payload)
-    if link:
-        lines.append(link)
-    text = "\n".join(line for line in lines if line is not None and str(line).strip() != "")
-    if len(text) > MAX_MESSAGE_CHARS:
-        text = text[: MAX_MESSAGE_CHARS - 1].rstrip() + "…"
-    return text
-
-
-def _title(emoji: str, headline: str) -> str:
-    return f"<b>{_h(emoji)} {_h(headline)}</b>"
-
-
-def _prefer_fail_summary(raw: str) -> str:
-    """Keep FAIL check labels when present; otherwise return cleaned error text."""
-    from scraper.verify_fail_extract import extract_fail_lines
-
-    text = str(raw or "").strip()
-    if not text:
-        return ""
-    # Already a short summary from pipeline_deploy._run
-    if "FAIL " in text and "\n" not in text:
-        return text
-    fails = extract_fail_lines(text, limit=3)
-    if fails:
-        return "; ".join(f"FAIL {label}" for label in fails)
-    # Drop huge OK tails: keep first line of RuntimeError-style messages
-    first = text.splitlines()[0].strip()
-    return first or text
-
-
-def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
-    """Build a short HTML Telegram message for pipeline / legacy refresh events."""
-    pipeline = str(payload.get("pipeline") or "job")
-    errors = payload.get("errors") or []
-    raw_err = str(errors[0] if errors else payload.get("error") or "")
-    # Prefer FAIL labels so deploy_failed is not drowned by OK verify tails.
-    err = _clip(_prefer_fail_summary(raw_err), 140)
-
-    # --- Discover family ---
-    if event == "discover_done":
-        queued = int(payload.get("queued_count") or 0)
-        batches = payload.get("estimated_download_batches")
-        disc = payload.get("discovery") or {}
-        total = disc.get("total") if isinstance(disc, dict) else None
-        q_new = payload.get("queued_new")
-        q_sync = payload.get("queued_sync")
-        q_repair = payload.get("queued_repair")
-        if q_new is not None and q_sync is not None and q_repair is not None:
-            line2 = (
-                f"Queued {queued} (new {int(q_new)} · sync {int(q_sync)} · "
-                f"repair {int(q_repair)})"
-            )
-        else:
-            line2 = f"Queued {queued} for download"
-        if batches is not None:
-            line2 += f" · ~{batches} batch" + ("es" if int(batches) != 1 else "") + " of 25"
-        if total is not None:
-            line2 += f" · found {total} live"
-        return _finish(
-            [_title("🔎", "Discover finished"), line2, _queue_line(payload.get("ledger"))],
-            payload,
-        )
-    if event == "discover_empty":
-        disc = payload.get("discovery") or {}
-        total = disc.get("total") if isinstance(disc, dict) else None
-        line2 = "Nothing new to queue for download"
-        if total is not None:
-            line2 += f" · scanned {total}"
-        return _finish(
-            [_title("🔎", "Discover finished"), line2, _queue_line(payload.get("ledger"))],
-            payload,
-        )
-    if event == "discover_failed":
-        return _finish(
-            [
-                _title("❌", "Discover failed"),
-                err or "See full log for details",
-                _queue_line(payload.get("ledger")),
-            ],
-            payload,
-        )
-    if event == "discover_retry_scheduled":
-        attempt = payload.get("retry_attempt") or "?"
-        wait = payload.get("wait_minutes") or "?"
-        return _finish(
-            [
-                _title("🔁", "Discover will retry"),
-                f"Attempt {attempt} · waiting {wait} minutes",
-            ],
-            payload,
-        )
-    if event == "discover_retries_exhausted":
-        return _finish(
-            [
-                _title("🛑", "Discover retries used up"),
-                "Will try again on the next 6-hour slot",
-            ],
-            payload,
-        )
-
-    # --- Download family ---
-    if event == "download_batch_done":
-        batch = payload.get("batch_number") or "?"
-        ok = int(payload.get("batch_ok") or 0)
-        fail = int(payload.get("batch_failed") or 0)
-        flushed = int(payload.get("batch_flushed") or 0)
-        left = payload.get("backlog_left")
-        line2 = f"Batch {batch}: downloaded {ok}"
-        if fail:
-            line2 += f" · {fail} failed"
-        if flushed:
-            line2 += f" · +{flushed} PDFs on server"
-        if left is not None:
-            line2 += f" · {left} left"
-        return _finish(
-            [_title("⬇️", "Download batch"), line2, _queue_line(payload.get("ledger"))],
-            payload,
-        )
-    if event == "download_done":
-        ok = int(payload.get("download_ok") or 0)
-        fail = int(payload.get("download_failed") or 0)
-        batches = payload.get("batches_completed")
-        dur = _fmt_duration(payload.get("wall_seconds"))
-        left = payload.get("backlog_left")
-        if ok == 0 and fail == 0:
-            line2 = "Nothing new to download"
-        elif ok == 0 and fail > 0:
-            line2 = f"No new files · {fail} failed"
-        else:
-            line2 = f"Downloaded {ok} new file" + ("s" if ok != 1 else "")
-            if fail:
-                line2 += f" · {fail} failed"
-        if batches:
-            line2 += f" · {batches} batch" + ("es" if int(batches) != 1 else "")
-        if left is not None and int(left) == 0:
-            line2 += " · catch-up clear"
-        if dur:
-            line2 += f" · took {dur}"
-        return _finish(
-            [_title("⬇️", "Download finished"), line2, _queue_line(payload.get("ledger"))],
-            payload,
-        )
-    if event == "download_failed":
-        return _finish(
-            [
-                _title("❌", "Download failed"),
-                err or "See full log for details",
-                _queue_line(payload.get("ledger")),
-            ],
-            payload,
-        )
-    if event == "download_retry_scheduled":
-        attempt = payload.get("retry_attempt") or "?"
-        wait = payload.get("wait_minutes") or "?"
-        return _finish(
-            [
-                _title("🔁", "Download will retry"),
-                f"Attempt {attempt} · waiting {wait} minutes",
-            ],
-            payload,
-        )
-    if event == "download_retries_exhausted":
-        return _finish(
-            [
-                _title("🛑", "Download retries used up"),
-                "Will try again on the next 6-hour slot",
-            ],
-            payload,
-        )
-
-    # --- Parse ---
-    if event == "parse_done":
-        ok = int(payload.get("parse_ok") or 0)
-        fail = int(payload.get("parse_failed") or 0)
-        auctions = payload.get("auctions")
-        if ok == 0 and fail == 0:
-            line2 = "No auctions processed this round"
-        else:
-            line2 = f"Processed {ok} OK"
-            if fail:
-                line2 += f" · {fail} failed"
-        if auctions is not None:
-            line2 += f" · site list now {auctions} auctions"
-        lines = [_title("🧩", "Processing finished"), line2]
-        note = str(payload.get("hygiene_note") or "").strip()
-        if not note and int(payload.get("dropped_aged_out") or 0) > 0:
-            n = int(payload.get("dropped_aged_out") or 0)
-            note = f"Removed {n} aged-out auction" + ("s" if n != 1 else "")
-        if note:
-            lines.append(note)
-        media = payload.get("media_push") or {}
-        if isinstance(media, dict) and media.get("attempted"):
-            if media.get("ok"):
-                lines.append("Uploaded photos/PDFs to the server")
-            else:
-                lines.append("Photo upload failed — will retry next drain")
-        lines.append(_queue_line(payload.get("ledger")))
-        return _finish(lines, payload)
-    if event == "parse_failed":
-        return _finish(
-            [
-                _title("❌", "Processing failed"),
-                err or "See full log for details",
-                _queue_line(payload.get("ledger")),
-            ],
-            payload,
-        )
-    if event == "quarantine_added":
-        n = payload.get("quarantine_added") or "?"
-        hours = payload.get("quarantine_hours") or 48
-        klass = payload.get("quarantine_error_class") or "poison"
-        return _finish(
-            [
-                _title("⚠️", "Quarantine added"),
-                f"Parked {n} bad item(s) ({klass}) for {hours}h",
-            ],
-            payload,
-        )
-
-    # --- Deploy ---
-    if event == "deploy_done":
-        n = payload.get("auctions")
-        if payload.get("deploy_skipped_unchanged"):
-            line2 = (
-                f"No change — site already has {n} auctions"
-                if n is not None
-                else "No change — site already up to date"
-            )
-            return _finish([_title("🚀", "Site update skipped"), line2], payload)
-        line2 = f"Pushed {n} auctions live" if n is not None else "Live site updated"
-        return _finish([_title("🚀", "Site updated"), line2], payload)
-    if event == "deploy_failed":
-        return _finish(
-            [_title("❌", "Site update failed"), err or "See full log for details"],
-            payload,
-        )
-
-    # --- Drain ---
-    if event == "drain_done":
-        cycles = int(payload.get("cycles_completed") or 0)
-        left = payload.get("parse_backlog_end")
-        if cycles == 0:
-            line2 = "Nothing was waiting — already clear"
-        elif cycles == 1:
-            line2 = "Cleared the backlog in 1 round"
-        else:
-            line2 = f"Cleared the backlog in {cycles} rounds"
-        if left is not None:
-            left_n = int(left)
-            if left_n == 0:
-                line2 += " · nothing left to process"
-            else:
-                line2 += f" · still waiting: {left_n}"
-        return _finish(
-            [_title("✅", "Catch-up finished"), line2, _queue_line(payload.get("ledger"))],
-            payload,
-        )
-    if event == "drain_stopped":
-        line2 = str(payload.get("message") or "").strip()
-        if line2 != "ledger pull failed":
-            line2 = err or "See full log for details"
-        return _finish(
-            [
-                _title("🛑", "Catch-up stopped"),
-                line2,
-                _queue_line(payload.get("ledger")),
-            ],
-            payload,
-        )
-
-    # --- Legacy refresh / UI deploy ---
-    if event in {"success", "completed"}:
-        n = payload.get("total_auctions") or payload.get("auctions")
-        line2 = f"{n} auctions on site" if n is not None else "Finished OK"
-        by = payload.get("by_source") or {}
-        if by:
-            line2 += " · " + ", ".join(f"{k}={v}" for k, v in sorted(by.items())[:4])
-        return _finish([_title("✅", "Refresh finished"), line2], payload)
-    if event in {"failed", "blocked"}:
-        system = "Refresh" if pipeline != "deploy_ui" else "UI deploy"
-        word = "failed" if event == "failed" else "blocked"
-        return _finish(
-            [
-                _title("❌" if event == "failed" else "🚫", f"{system} {word}"),
-                err or "See full log for details",
-            ],
-            payload,
-        )
-
-    # Quiet / unknown: still return a tiny stub (may be unused when QUIET filters)
-    return _finish([_title("ℹ️", f"{pipeline.title()} · {event}")], payload)
-
-
-def build_ai_enrichment_message(payload: dict[str, Any], *, event: str = "report") -> str:
-    """Short AI enrichment Telegram card."""
-    if event == "started":
-        return _finish([_title("🤖", "AI enrichment started")], payload)
-    if event == "skipped":
-        reason = _clip(payload.get("error") or payload.get("skip_reason") or "skipped", 120)
-        return _finish([_title("⏭️", "AI enrichment skipped"), reason], payload)
-    if event == "failed":
-        return _finish(
-            [_title("❌", "AI enrichment failed"), _clip(payload.get("error") or "see log", 140)],
-            payload,
-        )
-
-    # complete / report
-    ready = payload.get("ready", 0)
-    failed = payload.get("failed", 0)
-    skipped = payload.get("skipped", 0)
-    processed = payload.get("processed", 0)
-    budget = payload.get("budget") or {}
-    selection = payload.get("selection") or {}
-    line2 = f"{ready} ready · {failed} failed · {skipped} skipped · {processed} ran"
-    line3_parts: list[str] = []
-    if budget:
-        rem = budget.get("remaining_today")
-        if rem is not None:
-            line3_parts.append(f"budget left today: {rem}")
-    rem_sel = selection.get("remaining_after_selection")
-    if rem_sel is not None:
-        line3_parts.append(f"still in queue: {rem_sel}")
-    dur = _fmt_duration(payload.get("duration_sec"))
-    if dur:
-        line3_parts.append(f"took {dur}")
-    lines = [
-        _title("🤖", "AI enrichment finished" if event in {"complete", "report"} else f"AI · {event}"),
-        line2,
-    ]
-    if line3_parts:
-        lines.append(" · ".join(line3_parts))
-    return _finish(lines, payload)
-
-
-def send_telegram_message(text: str, *, timeout: int = 15, parse_mode: str = "HTML") -> bool:
-    creds = _credentials()
-    if not creds:
-        return False
-    token, chat_id = creds
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = urllib.parse.urlencode(
-        {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": parse_mode,
-            "disable_web_page_preview": "true",
-        }
-    ).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="POST")
-    ctx = ssl.create_default_context()
-    try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-            ok = bool(payload.get("ok"))
-            if not ok:
-                logger.warning("telegram send returned non-ok response")
-            return ok
-    except urllib.error.URLError as exc:
-        logger.warning("telegram send failed: %s", exc)
-        return False
-    except Exception as exc:
-        logger.warning("telegram send error: %s", exc)
-        return False
-
-
-def send_telegram_report(payload: dict[str, Any], *, event: str) -> bool:
-    if event in QUIET_EVENTS:
-        logger.debug("telegram quiet event skipped: %s", event)
-        return True
-    return send_telegram_message(build_telegram_message(payload, event=event))
-
-
-def send_ai_enrichment_report(payload: dict[str, Any], *, event: str = "report") -> bool:
-    if event in QUIET_EVENTS:
-        logger.debug("telegram quiet AI event skipped: %s", event)
-        return True
-    # AI enricher held — do not send operational AI Telegram spam.
-    logger.info("AI telegram suppressed (enricher held): event=%s", event)
-    return True
-
-
-LANE_LABELS: dict[str, str] = {
-    "discover_mstc": "Discover MSTC",
-    "discover_gem": "Discover GeM",
-    "download_mstc": "Downloads (MSTC)",
-    "download_gem": "Downloads (GeM)",
-    "publish_media": "Uploading files",
-    "parse": "Processing",
-    "build_deploy": "Site update",
-}
-
-# Words that must never appear in lane Telegram (jargon / inventory traps).
-LANE_BANNED_PHRASES: frozenset[str] = frozenset(
-    {
-        "fail budget",
-        "timebox",
-        "pdfs_on_disk",
-        "parsed_on_disk",
-        "parse_eligible",
-        "publishable",
-        "backlog left",
-        "auto-resume",
-        "snapshot",
-        "schema",
-        "workers",
-        "wave",
-        "hostinger",
-        "ready merged",
-        "material-searchable",
-    }
-)
-
-LANE_MAX_CHARS = 350
+    cut = value[: max_chars - 1].rsplit(" ", 1)[0]
+    return (cut or value[: max_chars - 1]).rstrip() + "…"
 
 
 def _ist_now_short() -> str:
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    return datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %H:%M IST")
+    return datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b · %H:%M IST")
+
+
+def _github_run_url_from_env() -> str:
+    server = os.environ.get("GITHUB_SERVER_URL")
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if server and repo and run_id:
+        return f"{server}/{repo}/actions/runs/{run_id}"
+    return ""
 
 
 def _i(stats: dict[str, Any], *keys: str, default: int = 0) -> int:
@@ -557,33 +151,99 @@ def _i(stats: dict[str, Any], *keys: str, default: int = 0) -> int:
     return default
 
 
-def _github_run_url_from_env() -> str:
-    server = os.environ.get("GITHUB_SERVER_URL")
-    repo = os.environ.get("GITHUB_REPOSITORY")
-    run_id = os.environ.get("GITHUB_RUN_ID")
-    if server and repo and run_id:
-        return f"{server}/{repo}/actions/runs/{run_id}"
-    return ""
+def _in_quiet_hours() -> bool:
+    raw = (os.environ.get("TELEGRAM_QUIET_HOURS_IST") or "").strip()
+    if not raw or "-" not in raw:
+        return False
+    try:
+        start_s, end_s = raw.split("-", 1)
+        start, end = int(start_s), int(end_s)
+    except ValueError:
+        return False
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    hour = datetime.now(ZoneInfo("Asia/Kolkata")).hour
+    if start == end:
+        return False
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
 
 
-def build_lane_message(lane: str, event: str, stats: dict[str, Any]) -> str:
-    """Minimal human-readable lane card (Progress or Action only)."""
-    label = LANE_LABELS.get(lane, lane)
+def _trim(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    cut = text[: max_chars - 1].rsplit("\n", 1)[0]
+    return (cut or text[: max_chars - 1]).rstrip() + "…"
+
+
+def _open_run_link(url: str) -> str:
+    url = (url or "").strip()
+    if not url:
+        return ""
+    return f'<a href="{escape(url, quote=True)}">Open run</a>'
+
+
+def _join_metrics(parts: list[str]) -> str:
+    return " · ".join(p for p in parts if p)
+
+
+def build_lane_card(
+    lane: str,
+    severity: Severity,
+    stats: dict[str, Any] | None = None,
+    *,
+    error: str | None = None,
+    run_url: str | None = None,
+) -> str:
+    if severity == "silent":
+        return ""
+    stats = dict(stats or {})
+    label = LANE_LABELS.get(lane, lane.replace("_", " ").title())
+    url = (run_url or stats.get("github_run_url") or _github_run_url_from_env() or "").strip()
+    err = _clip(error or str(stats.get("error") or ""), 120)
+
+    if severity in {"action", "critical"} or str(stats.get("event") or "") == "failed":
+        return _build_failure_or_action(label, severity, err, url, stats)
+
+    if severity == "digest" or lane == "digest":
+        return build_daily_digest_message(stats)
+
+    return _build_progress(lane, label, stats, url)
+
+
+def _build_failure_or_action(
+    label: str,
+    severity: Severity,
+    err: str,
+    url: str,
+    stats: dict[str, Any],
+) -> str:
+    lines = [f"<b>{_h(label)}</b>", ""]
+    if severity == "critical" or str(stats.get("event") or "") == "failed":
+        outcome = str(stats.get("outcome") or "").strip()
+        if outcome:
+            lines.append(f"<b>FAILED</b> — {_h(_clip(outcome, 80))}")
+        else:
+            lines.append("<b>FAILED</b>")
+    else:
+        outcome = str(stats.get("outcome") or "Needs attention").strip()
+        lines.append(f"<b>Needs attention</b> — {_h(_clip(outcome, 100))}")
+    if err:
+        lines.append(f"<code>{_h(err)}</code>")
+    context = str(stats.get("context") or "").strip()
+    if context:
+        lines.append(_h(_clip(context, 160)))
+    link = _open_run_link(url)
+    if link:
+        lines.append(link)
+    return _trim("\n".join(lines), ACTION_MAX_CHARS)
+
+
+def _build_progress(lane: str, label: str, stats: dict[str, Any], url: str) -> str:
     lines: list[str] = [f"<b>{_h(label)}</b>"]
 
-    if event == "failed":
-        lines.append("FAILED")
-        err = _clip(str(stats.get("error") or "Something went wrong"), 140)
-        lines.append(_h(err))
-        url = str(stats.get("github_run_url") or _github_run_url_from_env()).strip()
-        if url:
-            lines.append(f'<a href="{escape(url, quote=True)}">Open log</a>')
-        text = "\n".join(lines)
-        if len(text) > LANE_MAX_CHARS:
-            text = text[: LANE_MAX_CHARS - 1].rstrip() + "…"
-        return text
-
-    # --- Progress ---
     if lane.startswith("discover_"):
         listed = _i(stats, "listed")
         new = _i(stats, "new")
@@ -591,104 +251,329 @@ def build_lane_message(lane: str, event: str, stats: dict[str, Any]) -> str:
         if listed == 0 and new == 0 and queued == 0:
             lines.append("Nothing new to queue")
         else:
-            lines.append(f"Found {listed} live · {new} new · {queued} queued for download")
-        need = _i(stats, "download_pending", "still_need_files")
+            lines.append(
+                _join_metrics(
+                    [
+                        f"Found {_fmt_int(listed)} live",
+                        f"{_fmt_int(new)} new",
+                        f"{_fmt_int(queued)} queued",
+                    ]
+                )
+            )
+        ctx_parts = []
+        need = _i(stats, "still_need_files", "download_pending")
         ready_proc = _i(stats, "ready_to_process")
         live = _i(stats, "live_on_site", "live_export_count")
-        bits = []
         if need:
-            bits.append(f"{need} still need files")
+            ctx_parts.append(f"Still need files: {_fmt_int(need)}")
         if ready_proc:
-            bits.append(f"{ready_proc} ready to process")
+            ctx_parts.append(f"Ready to process: {_fmt_int(ready_proc)}")
         if live:
-            bits.append(f"Live on site: {live}")
-        if bits:
-            lines.append(" · ".join(bits))
+            ctx_parts.append(f"Live on site: {_fmt_int(live)}")
+        if ctx_parts:
+            lines.append(_join_metrics(ctx_parts))
 
     elif lane.startswith("download_"):
         added = _i(stats, "downloaded", "ok_count")
         failed = _i(stats, "failed")
+        rate = _fmt_rate(added, stats.get("wall_seconds"))
         if added == 0 and failed == 0:
             lines.append("No new files this run")
         else:
-            line = f"+{added} this run"
+            parts = [f"+{_fmt_int(added)} downloaded"]
             if failed:
-                line += f" · {failed} failed"
-            lines.append(line)
+                parts.append(f"{_fmt_int(failed)} failed")
+            if rate:
+                parts.append(rate)
+            lines.append(_join_metrics(parts))
+        ctx_parts = []
         need = _i(stats, "still_need_files", "download_pending", "backlog_left")
         ready_proc = _i(stats, "ready_to_process")
         live = _i(stats, "live_on_site", "live_export_count")
-        line2_parts = []
         if need:
-            line2_parts.append(f"{need} still need files")
+            ctx_parts.append(f"Still need files: {_fmt_int(need)}")
         if ready_proc:
-            line2_parts.append(f"{ready_proc} ready to process")
+            ctx_parts.append(f"Ready to process: {_fmt_int(ready_proc)}")
         if live:
-            line2_parts.append(f"Live on site: {live}")
-        if line2_parts:
-            lines.append(" · ".join(line2_parts))
+            ctx_parts.append(f"Live on site: {_fmt_int(live)}")
+        if ctx_parts:
+            lines.append(_join_metrics(ctx_parts))
 
     elif lane == "publish_media":
         added = _i(stats, "ok_count", "downloaded")
         failed = _i(stats, "fail_count", "failed")
         if added == 0 and failed == 0:
-            lines.append("Nothing waiting to upload")
-        else:
-            line = f"+{added} uploaded this run"
-            if failed:
-                line += f" · {failed} failed"
-            lines.append(line)
-        ready = _i(stats, "ready_for_site", "remaining")
-        if ready:
-            lines.append(f"{ready} still waiting to upload")
+            return ""
+        parts = [f"+{_fmt_int(added)} uploaded"]
+        if failed:
+            parts.append(f"{_fmt_int(failed)} failed")
+        lines.append(_join_metrics(parts))
+        rem = _i(stats, "remaining", "ready_for_site")
+        if rem:
+            lines.append(f"Still waiting to upload: {_fmt_int(rem)}")
 
     elif lane == "parse":
         parsed = _i(stats, "parsed")
         failed = _i(stats, "failed")
         skipped = _i(stats, "skipped_fresh", "skipped")
+        rate = _fmt_rate(parsed, stats.get("wall_seconds"))
         if parsed == 0 and failed == 0:
             lines.append("Nothing new to process this run")
         else:
-            line = f"+{parsed} processed this run"
+            parts = [f"+{_fmt_int(parsed)} processed"]
             if skipped:
-                line += f" · {skipped} already done"
+                parts.append(f"{_fmt_int(skipped)} already done")
             if failed:
-                line += f" · {failed} failed"
-            lines.append(line)
+                parts.append(f"{_fmt_int(failed)} failed")
+            if rate:
+                parts.append(rate)
+            lines.append(_join_metrics(parts))
+        ctx_parts = []
         ready_proc = _i(stats, "ready_to_process", "backlog_left")
         ready_site = _i(stats, "ready_for_site", "publishable_future")
         live = _i(stats, "live_on_site", "live_export_count")
-        line2_parts = []
         if ready_proc:
-            line2_parts.append(f"{ready_proc} ready to process")
+            ctx_parts.append(f"Ready to process: {_fmt_int(ready_proc)}")
         if ready_site:
-            line2_parts.append(f"{ready_site} ready for site")
+            ctx_parts.append(f"Ready for site: {_fmt_int(ready_site)}")
         if live:
-            line2_parts.append(f"Live on site: {live}")
-        if line2_parts:
-            lines.append(" · ".join(line2_parts))
+            ctx_parts.append(f"Live: {_fmt_int(live)}")
+        if ctx_parts:
+            lines.append(_join_metrics(ctx_parts))
 
     elif lane == "build_deploy":
         live = _i(stats, "published", "live_on_site", "live_export_count", "export_count")
         aged = _i(stats, "aged_out", "aged_out_parsed", "aged_out_stripped")
         ready_site = _i(stats, "ready_for_site", "publishable_future")
-        lines.append(f"Live on site: {live}")
+        if live == 0 and stats.get("allow_small_export"):
+            lines.append("Cutover: allowed empty export")
+        else:
+            lines.append(f"Live on site: {_fmt_int(live)}")
         extra = []
         if ready_site and ready_site != live:
-            extra.append(f"{ready_site} ready for site")
+            extra.append(f"Ready for site: {_fmt_int(ready_site)}")
         if aged:
-            extra.append(f"~{aged} finished but closing already passed — expected")
+            extra.append(f"~{_fmt_int(aged)} finished but closing already passed — expected")
         if extra:
-            lines.append(" · ".join(extra))
+            lines.append(_join_metrics(extra))
 
     else:
-        status = str(stats.get("status") or "Done")
+        status = str(stats.get("status") or stats.get("outcome") or "Done")
         lines.append(_h(status))
 
-    text = "\n".join(lines)
-    if len(text) > LANE_MAX_CHARS:
-        text = text[: LANE_MAX_CHARS - 1].rstrip() + "…"
-    return text
+    if stats.get("include_run_link") and url:
+        link = _open_run_link(url)
+        if link:
+            lines.append(link)
+
+    return _trim("\n".join(lines), PROGRESS_MAX_CHARS)
+
+
+def build_daily_digest_message(snapshot: dict[str, Any]) -> str:
+    lines = [
+        "<b>Daily catalogue</b>",
+        _h(str(snapshot.get("when") or _ist_now_short())),
+    ]
+    live = _i(snapshot, "live_on_site", "live")
+    ready = _i(snapshot, "ready_for_site", "ready")
+    need = _i(snapshot, "still_need_files", "need_files")
+    lines.append(
+        _join_metrics(
+            [
+                f"Live on site: {_fmt_int(live)}",
+                f"Ready for site: {_fmt_int(ready)}",
+                f"Still need files: {_fmt_int(need)}",
+            ]
+        )
+    )
+    dl = _i(snapshot, "downloaded_yesterday", "downloaded")
+    parsed = _i(snapshot, "processed_yesterday", "processed", "parsed")
+    failed = _i(snapshot, "failed_yesterday", "failed")
+    yparts = []
+    if dl or parsed or failed:
+        if dl:
+            yparts.append(f"+{_fmt_int(dl)} downloaded")
+        if parsed:
+            yparts.append(f"+{_fmt_int(parsed)} processed")
+        if failed:
+            yparts.append(f"{_fmt_int(failed)} failed")
+        lines.append("Yesterday: " + _join_metrics(yparts))
+    if snapshot.get("all_clear", True) and failed == 0:
+        lines.append("All clear")
+    elif snapshot.get("note"):
+        lines.append(_h(_clip(str(snapshot["note"]), 120)))
+    lines.append("<i>Only listings closing after 12h are queued.</i>")
+    return _trim("\n".join(lines), DIGEST_MAX_CHARS)
+
+
+def build_ops_note_message(title: str, body: str, *, bullets: list[str] | None = None) -> str:
+    lines = [f"<b>{_h(title)}</b>"]
+    if body:
+        lines.append(_h(_clip(body, 200)))
+    for item in (bullets or [])[:5]:
+        lines.append(f"· {_h(_clip(item, 120))}")
+    return _trim("\n".join(lines), ACTION_MAX_CHARS)
+
+
+def _fingerprint(lane: str, severity: Severity, stats: dict[str, Any]) -> str:
+    bucket = _i(stats, "still_need_files", "backlog_left", "ready_for_site", "downloaded", "parsed")
+    bucket = (bucket // 50) * 50
+    return f"{lane}|{severity}|{bucket}|{_i(stats, 'failed')}"
+
+
+def _dedupe_ok(fp: str, *, ttl_sec: float = 600.0) -> bool:
+    now = time.monotonic()
+    stale = [k for k, t in _recent_fingerprints.items() if now - t > ttl_sec]
+    for k in stale:
+        _recent_fingerprints.pop(k, None)
+    if fp in _recent_fingerprints:
+        return False
+    _recent_fingerprints[fp] = now
+    return True
+
+
+def _pace_send(severity: Severity) -> None:
+    global _last_send_mono
+    delay = 0.05 if severity in {"critical", "action"} else 0.3
+    now = time.monotonic()
+    wait = delay - (now - _last_send_mono)
+    if wait > 0:
+        time.sleep(wait)
+    _last_send_mono = time.monotonic()
+
+
+def send_html_card(text: str, *, timeout: int = 15) -> bool:
+    text = (text or "").strip()
+    if not text:
+        return True
+    creds = _credentials()
+    if not creds:
+        return False
+    token, chat_id = creds
+    api = f"https://api.telegram.org/bot{token}/sendMessage"
+    for attempt in range(3):
+        data = urllib.parse.urlencode(
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": "true",
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(api, data=data, method="POST")
+        ctx = ssl.create_default_context()
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+                ok = bool(payload.get("ok"))
+                if not ok:
+                    logger.warning("telegram send returned non-ok response")
+                return ok
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 and attempt < 2:
+                retry_after = 2.0
+                try:
+                    body = json.loads(exc.read().decode("utf-8"))
+                    retry_after = float((body.get("parameters") or {}).get("retry_after") or 2)
+                except Exception:
+                    pass
+                time.sleep(retry_after + random.uniform(0, 0.5))
+                continue
+            logger.warning("telegram send failed: %s", exc)
+            return False
+        except urllib.error.URLError as exc:
+            logger.warning("telegram send failed: %s", exc)
+            return False
+        except Exception as exc:
+            logger.warning("telegram send error: %s", exc)
+            return False
+    return False
+
+
+def send_telegram_message(text: str, *, timeout: int = 15, parse_mode: str = "HTML") -> bool:
+    _ = parse_mode
+    return send_html_card(text, timeout=timeout)
+
+
+def classify_lane_severity(
+    lane: str,
+    event: str,
+    stats: dict[str, Any],
+    *,
+    noop: bool = False,
+) -> Severity:
+    if noop:
+        return "silent"
+    if event == "failed":
+        return "critical" if lane == "build_deploy" else "action"
+    if lane == "publish_media":
+        if _i(stats, "ok_count", "downloaded") == 0 and _i(stats, "fail_count", "failed") == 0:
+            return "silent"
+    if lane.startswith("discover_"):
+        if _i(stats, "new") == 0 and _i(stats, "queued_download", "queued") == 0:
+            return "silent"
+    if lane.startswith("download_"):
+        if _i(stats, "downloaded", "ok_count") == 0 and _i(stats, "failed") == 0:
+            return "silent"
+    if lane == "parse":
+        if (
+            _i(stats, "parsed") == 0
+            and _i(stats, "failed") == 0
+            and _i(stats, "skipped_fresh", "skipped") == 0
+        ):
+            return "silent"
+    ok = _i(stats, "downloaded", "parsed", "ok_count")
+    fail = _i(stats, "failed", "fail_count")
+    attempted = ok + fail
+    if attempted >= 4 and fail >= 10:
+        return "action"
+    if attempted >= 4 and (fail / attempted) >= 0.25:
+        return "action"
+    return "progress"
+
+
+def send_lane_card(
+    lane: str,
+    severity: Severity | None = None,
+    stats: dict[str, Any] | None = None,
+    *,
+    event: str = "finished",
+    noop: bool = False,
+    run_url: str | None = None,
+    error: str | None = None,
+) -> bool:
+    from scraper.config import TELEGRAM_NOOP_SILENT
+
+    stats = dict(stats or {})
+    if not stats.get("github_run_url"):
+        stats["github_run_url"] = run_url or _github_run_url_from_env()
+
+    sev = severity or classify_lane_severity(lane, event, stats, noop=noop)
+    if sev == "silent" or (noop and TELEGRAM_NOOP_SILENT):
+        logger.debug("telegram silent: lane=%s", lane)
+        return True
+    if sev == "progress" and _in_quiet_hours():
+        logger.debug("telegram quiet hours skip progress: lane=%s", lane)
+        return True
+    if event == "failed":
+        stats["event"] = "failed"
+        if lane == "build_deploy":
+            sev = "critical"
+        elif sev == "progress":
+            sev = "action"
+
+    fp = _fingerprint(lane, sev, stats)
+    if sev == "progress" and not _dedupe_ok(fp):
+        logger.debug("telegram dedupe skip: %s", fp)
+        return True
+
+    text = build_lane_card(
+        lane, sev, stats, error=error or stats.get("error"), run_url=stats.get("github_run_url")
+    )
+    if not text:
+        return True
+    _pace_send(sev)
+    return send_html_card(text)
 
 
 def send_lane_report(
@@ -698,12 +583,67 @@ def send_lane_report(
     *,
     noop: bool = False,
 ) -> bool:
-    from scraper.config import TELEGRAM_NOOP_SILENT
+    return send_lane_card(lane, event=event, stats=stats, noop=noop)
 
-    stats = dict(stats or {})
-    if noop and TELEGRAM_NOOP_SILENT:
-        logger.debug("telegram noop silent: lane=%s", lane)
-        return True
-    if not stats.get("github_run_url"):
-        stats["github_run_url"] = _github_run_url_from_env()
-    return send_telegram_message(build_lane_message(lane, event, stats))
+
+def send_daily_digest(snapshot: dict[str, Any] | None = None) -> bool:
+    text = build_daily_digest_message(dict(snapshot or {}))
+    _pace_send("digest")
+    return send_html_card(text)
+
+
+def send_ops_note(title: str, body: str = "", *, bullets: list[str] | None = None) -> bool:
+    return send_html_card(build_ops_note_message(title, body, bullets=bullets))
+
+
+def send_action_card(
+    lane: str,
+    outcome: str,
+    *,
+    context: str = "",
+    error: str = "",
+    run_url: str | None = None,
+    critical: bool = False,
+) -> bool:
+    stats = {
+        "outcome": outcome,
+        "context": context,
+        "error": error,
+        "github_run_url": run_url or _github_run_url_from_env(),
+        "include_run_link": True,
+    }
+    return send_lane_card(
+        lane,
+        "critical" if critical else "action",
+        stats,
+        error=error or None,
+    )
+
+
+def build_lane_message(lane: str, event: str, stats: dict[str, Any]) -> str:
+    sev = classify_lane_severity(lane, event, stats)
+    if event == "failed":
+        sev = "critical" if lane == "build_deploy" else "action"
+    return build_lane_card(lane, sev, stats, error=stats.get("error"))
+
+
+def build_telegram_message(payload: dict[str, Any], *, event: str) -> str:
+    _ = payload, event
+    return ""
+
+
+def send_telegram_report(payload: dict[str, Any], *, event: str) -> bool:
+    logger.debug("telegram legacy event suppressed: %s", event)
+    _ = payload
+    return True
+
+
+def send_ai_enrichment_report(payload: dict[str, Any], *, event: str = "report") -> bool:
+    logger.info("AI telegram suppressed (enricher held): event=%s", event)
+    _ = payload
+    return True
+
+
+def build_ai_enrichment_message(payload: dict[str, Any], *, event: str = "report") -> str:
+    _ = payload, event
+    return ""

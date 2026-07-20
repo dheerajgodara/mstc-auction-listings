@@ -5,7 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from scraper.filters import tomorrow_min_closing_date
+from scraper.config import MIN_CLOSING_HOURS_AHEAD
+from scraper.filters import resolve_min_closing
 from scraper.pipeline_ledger import (
     LedgerItem,
     count_parse_eligible,
@@ -45,7 +46,6 @@ def _item(
 
 
 def test_truth_aged_out_equals_publishable_minus_future():
-    tomorrow = tomorrow_min_closing_date()
     yesterday = (datetime.now(IST).date() - timedelta(days=1)).strftime("%Y-%m-%d")
     future_day = (datetime.now(IST).date() + timedelta(days=3)).strftime("%Y-%m-%d")
 
@@ -62,7 +62,9 @@ def test_truth_aged_out_equals_publishable_minus_future():
     assert snap["publishable_future"] == 1
     assert snap["aged_out_parsed"] == 1
     assert snap["aged_out_parsed"] == snap["publishable_all"] - snap["publishable_future"]
-    assert snap["min_closing_date"] == tomorrow
+    assert snap["min_closing_hours_ahead"] == MIN_CLOSING_HOURS_AHEAD
+    # Boundary is live (now+12h); compare parsed value not exact clock string.
+    assert resolve_min_closing(snap["min_closing_date"]) <= resolve_min_closing()
     assert snap["naive_pdf_minus_parsed"] == 90
 
 

@@ -2,19 +2,19 @@ name: Lane Download GeM
 
 on:
   schedule:
-    # Temporary backlog drain: ~every 45m (UTC :00 and :45)
-    - cron: "0,45 * * * *"
+    # Steady-state: hourly at :47 UTC (~6m after MSTC download; IST ≈ :17)
+    - cron: "47 * * * *"
   workflow_dispatch:
     inputs:
       max_download:
-        description: "Per-run download cap (default 2000)"
+        description: "Per-run download cap (default 100 steady-state)"
         required: false
-        default: "2000"
+        default: "100"
 
 jobs:
   download-gem:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 120
     concurrency:
       group: pipeline-download-gem
       cancel-in-progress: false
@@ -50,7 +50,8 @@ jobs:
           DOWNLOAD_FETCH_TIMEOUT_SEC: "180"
           DOWNLOAD_STALL_ABORT_MIN: "20"
           DOWNLOAD_STREAM_FLUSH_EVERY: "10"
-          DOWNLOAD_DECOUPLE_FLUSH: "1"
+          DOWNLOAD_DECOUPLE_FLUSH: "0"
+          PIPELINE_JOB_TIMEBOX_MIN: "100"
           SSH_CONNECT_TIMEOUT: "15"
           SSH_SERVER_ALIVE_INTERVAL: "30"
           RSYNC_IO_TIMEOUT: "120"
@@ -62,13 +63,14 @@ jobs:
           R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
           MEDIA_R2_ONLY: "1"
         run: |
+          echo "cron_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ) event=${{ github.event_name }}"
           CAP="${{ github.event.inputs.max_download }}"
-          if [ -z "$CAP" ]; then CAP=2000; fi
+          if [ -z "$CAP" ]; then CAP=100; fi
           PYTHONPATH=. python -m scraper.pipeline_download \
             --source gem_forward \
             --wave-size 25 \
             --batch-size 25 \
-            --max-batches 80 \
+            --max-batches 20 \
             --max-download "$CAP" \
             --skip-pdf \
             --break-stale-lock

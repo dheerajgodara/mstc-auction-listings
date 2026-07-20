@@ -245,36 +245,55 @@ def priority_score(
     if item.source == "mstc" and item.decision == "needs_repair":
         score += 40
     if any(r in {"missing_lots", "status_listing_only", "status_partial"} for r in item.reasons):
-        score += 25
+        score += 80
+    if previous_record is not None:
+        lots = previous_record.get("lots") or []
+        if not lots:
+            score += 120
+        title = (previous_record.get("display_title") or previous_record.get("item_summary") or "").strip()
+        if not title:
+            score += 90
+        loc = (
+            previous_record.get("display_location_city")
+            or previous_record.get("location")
+            or previous_record.get("state")
+            or ""
+        )
+        if not str(loc).strip():
+            score += 60
+        hay = " ".join(
+            str(previous_record.get(k) or "")
+            for k in (
+                "display_title",
+                "item_summary",
+                "search_text",
+                "display_material_category",
+                "auction_number",
+            )
+        ).lower()
+        for kw in (
+            "aluminium",
+            "aluminum",
+            "copper",
+            "scrap",
+            "tower",
+            "conductor",
+            "vehicle",
+            "cable",
+            "ferrous",
+        ):
+            if kw in hay:
+                score += 40
+                break
     if public_dir is not None and previous_record and _record_has_missing_local_assets(previous_record, public_dir):
         score += 60
     return score
 
 
 def _record_has_missing_local_assets(record: dict[str, Any], public_dir: Path) -> bool:
-    from scraper.finalize_public_export import _local_asset_kind, _normalize_rel, _preview_url
+    from scraper.asset_integrity import auction_has_missing_document_assets
 
-    candidates: list[str] = []
-    pdf_url = record.get("pdf_url")
-    if pdf_url:
-        candidates.append(str(pdf_url))
-    for url in record.get("document_urls") or []:
-        if url:
-            candidates.append(str(url))
-    for lot in record.get("lots") or []:
-        if not isinstance(lot, dict):
-            continue
-        for img in lot.get("preview_images") or []:
-            preview = _preview_url(img)
-            if preview:
-                candidates.append(preview)
-    for url in candidates:
-        if _local_asset_kind(url) is None:
-            continue
-        rel = _normalize_rel(url)
-        if not (public_dir / rel).is_file():
-            return True
-    return False
+    return auction_has_missing_document_assets(record, public_dir=public_dir)
 
 
 def retry_due(item: QueueItem, now: datetime) -> bool:

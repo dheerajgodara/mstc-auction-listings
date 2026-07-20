@@ -57,7 +57,6 @@ from scraper.refresh_reports import (
 from scraper.notify import send_failure_notification
 from scraper.safety_gates import SafetyGateConfig, run_safety_gates
 from scraper.source_fallback import apply_missing_source_fallback, load_export, source_counts
-from scraper.telegram_reporter import send_telegram_report
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.refresh_and_deploy")
 
@@ -407,7 +406,6 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
         "warnings": [],
         "errors": [],
     }
-    send_telegram_report(payload, event="started")
 
     errors: list[str] = []
     warnings: list[str] = []
@@ -517,7 +515,6 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
                 "selected_by_source": work_plan.by_source,
                 "queue": queue_state.model_dump(mode="json"),
             }
-            send_telegram_report(payload, event="comparison_done")
 
         # 1. Batch scrape
         scrape_started = time.monotonic()
@@ -544,7 +541,6 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             "failed_non_mstc_batches": failed_batch_groups["non_mstc"],
             "docs_budget_remaining": manifest.data.get("docs_budget_remaining"),
         }
-        send_telegram_report(payload, event="deep_scrape_done")
         # Incremental drains already fall back via materialize + previous/discovery.
         # Hard-failing the whole run for one flaky MSTC office (common ReadTimeout)
         # blocks deploy of every successful deep-parse in the 200-cap batch.
@@ -836,7 +832,6 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             payload=payload,
             success=True,
         )
-        send_telegram_report(payload, event="success")
         return RefreshResult(
             status="success",
             run_id=run_id,
@@ -875,7 +870,6 @@ def run_refresh_and_deploy(config: RefreshConfig) -> RefreshResult:
             payload=payload,
             success=False,
         )
-        send_telegram_report(payload, event="failed")
         return RefreshResult(
             status="failed",
             run_id=run_id,

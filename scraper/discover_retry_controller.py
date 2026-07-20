@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from scraper.config import PIPELINE_DOWNLOAD_AUTO_RETRIES_PER_SLOT, PIPELINE_DOWNLOAD_CAP_CATCHUP
 from scraper.download_retry_controller import decide_retry
 from scraper.pipeline_markers import pull_pipeline_json, push_pipeline_json
-from scraper.telegram_reporter import send_telegram_report
+from scraper.telegram_reporter import send_action_card
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.discover_retry_controller")
@@ -104,7 +104,12 @@ def run_discover_retry_controller(
             push_pipeline_json(DISCOVER_RETRY_STATE, new_state)
         payload["status"] = "exhausted"
         payload["finished_at"] = datetime.now(IST).isoformat()
-        send_telegram_report(payload, event="discover_retries_exhausted")
+        send_action_card(
+            "discover_mstc",
+            "automatic retries used up",
+            context="Next scheduled discover will try again",
+            critical=True,
+        )
         return payload
 
     new_state = {
@@ -118,7 +123,11 @@ def run_discover_retry_controller(
     payload["status"] = "retry_scheduled"
     payload["wait_minutes"] = decision.wait_minutes
     payload["retry_attempt"] = decision.attempt
-    send_telegram_report(payload, event="discover_retry_scheduled")
+    send_action_card(
+        "discover_mstc",
+        f"will retry (attempt {decision.attempt})",
+        context=f"Waiting {decision.wait_minutes} minutes",
+    )
 
     if sleep_enabled and not dry_run and decision.wait_minutes > 0:
         logger.info("sleeping %s minutes before discover retry", decision.wait_minutes)

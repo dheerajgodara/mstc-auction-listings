@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from scraper.filters import parse_min_closing_date
+from scraper.filters import parse_min_closing_boundary
 from scraper.qa_summary import _parse_closing
 from scraper.safety_gates import is_capped_mstc_only_export
 
@@ -109,7 +109,7 @@ def verify_predeploy_build(
             errors.append("accidental one-record build export")
 
         by_source = dict(Counter(a.get("source", "missing") for a in auctions))
-        min_closing = parse_min_closing_date(min_closing_date)
+        min_closing = parse_min_closing_boundary(min_closing_date)
         for auction in auctions:
             closing = _parse_closing(auction.get("closing"))
             if closing is None:

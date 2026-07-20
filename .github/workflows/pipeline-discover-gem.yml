@@ -2,19 +2,19 @@ name: Lane Discover GeM
 
 on:
   schedule:
-    # Temporary backlog drain: every 2h (UTC), 5m after Discover MSTC
-    - cron: "25 */2 * * *"
+    # Steady-state: every 3h at :23 UTC (~6m after Discover MSTC)
+    - cron: "23 */3 * * *"
   workflow_dispatch:
     inputs:
       queue_cap:
-        description: "Queue cap (default 2000)"
+        description: "Queue cap (default 500 steady-state)"
         required: false
-        default: "2000"
+        default: "500"
 
 jobs:
   discover-gem:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 90
     concurrency:
       group: pipeline-discover-gem
       cancel-in-progress: false
@@ -40,8 +40,11 @@ jobs:
           HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PIPELINE_JOB_TIMEBOX_MIN: "80"
         run: |
-          QUEUE_CAP="${{ github.event.inputs.queue_cap || '2000' }}"
+          echo "cron_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ) event=${{ github.event_name }}"
+          QUEUE_CAP="${{ github.event.inputs.queue_cap }}"
+          if [ -z "$QUEUE_CAP" ]; then QUEUE_CAP=500; fi
           PYTHONPATH=. python -m scraper.pipeline_discover \
             --sources gem_forward \
             --queue-cap "$QUEUE_CAP" \

@@ -50,7 +50,7 @@ from scraper.export_hygiene import (
     rewrite_unsafe_thumb_urls,
     strip_aged_out_auctions,
 )
-from scraper.filters import make_run_id, tomorrow_min_closing_date
+from scraper.filters import make_run_id, resolve_min_closing
 from scraper.import_tracking import finalize_export_payload, stable_auction_key
 from scraper.incremental import build_record_index, load_export
 from scraper.incremental_materialize import materialize_incremental_export
@@ -71,7 +71,6 @@ from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
 from scraper.safety_gates import SafetyGateConfig, run_safety_gates
 from scraper.source_fallback import apply_missing_source_fallback
-from scraper.telegram_reporter import send_telegram_report
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_parse")
@@ -196,7 +195,11 @@ def run_pipeline_parse(
     lock_path = repo_root / "work" / "parse.lock"
     acquire_refresh_lock(lock_path=lock_path, run_id=run_id, stale_minutes=360, break_stale_lock=break_stale_lock)
 
-    min_closing = force_min_closing_date or tomorrow_min_closing_date()
+    min_closing = (
+        force_min_closing_date
+        if (force_min_closing_date or "").strip()
+        else resolve_min_closing().isoformat()
+    )
     production_json = Path(DEFAULT_JSON_OUT)
     public_dir = repo_root / "web" / "public"
     pdf_dir = Path(DEFAULT_PDF_DIR)
@@ -219,7 +222,6 @@ def run_pipeline_parse(
         "warnings": [],
         "errors": [],
     }
-    send_telegram_report(payload, event="parse_started")
 
     warnings: list[str] = []
     try:
@@ -244,7 +246,6 @@ def run_pipeline_parse(
         payload["selected_count"] = len(selected)
         payload["ledger"] = ledger.status_counts()
         _phase(f"parse selection: {len(selected)} (ledger={ledger.status_counts()})")
-        send_telegram_report(payload, event="parse_selection")
 
         mstc_selected = [i for i in selected if i.source == "mstc"]
         _phase(f"bootstrap: pulling {len(mstc_selected)} selected raw HTML files + pdfs/")
@@ -554,18 +555,6 @@ def run_pipeline_parse(
                     warnings.extend(q_result.warnings)
                     write_auctions_json(candidate_path, candidate)
                     gates = _run_gates()
-                    send_telegram_report(
-                        {
-                            **payload,
-                            "quarantine_added": quarantine_added,
-                            "quarantine_hours": DEFAULT_AUTO_HOURS,
-                            "quarantine_error_class": error_class,
-                            "hygiene_note": format_quarantine_telegram_note(
-                                keys_to_q, error_class=error_class
-                            ),
-                        },
-                        event="quarantine_added",
-                    )
 
         payload["safety_gates"] = {
             "passed": gates.passed,
@@ -645,7 +634,7 @@ def run_pipeline_parse(
         )
         media_result = None
         if needs_media:
-            _phase("media: pushing docs/thumbs/pdfs to Hostinger")
+            _phase("media: pushing docs/thumbs/pdfs to R2 CDN")
             media_result = push_public_media(public_dir=public_dir)
             payload["media_push"] = media_result.to_dict()
             if media_result.ok:
@@ -740,7 +729,6 @@ def run_pipeline_parse(
             }
         )
         (run_dir / "parse_report.json").write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
-        send_telegram_report(payload, event="parse_done")
         return payload
     except Exception as exc:
         logger.exception("pipeline parse failed")
@@ -748,7 +736,6 @@ def run_pipeline_parse(
         payload["errors"] = [str(exc)]
         payload["warnings"] = warnings
         payload["finished_at"] = datetime.now(IST).isoformat()
-        send_telegram_report(payload, event="parse_failed")
         raise
     finally:
         release_refresh_lock(lock_path, run_id=run_id)

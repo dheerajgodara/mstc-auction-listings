@@ -300,6 +300,13 @@ def download_eligible(item: LedgerItem, *, source: str | None = None) -> bool:
         portal = item.portal_doc_url
     if not portal:
         return False
+    closing = _item_closing_dt(item)
+    if closing is None:
+        return False
+    from scraper.filters import resolve_min_closing
+
+    if closing < resolve_min_closing():
+        return False
     return True
 
 
@@ -417,15 +424,25 @@ def _item_closing_dt(item: LedgerItem) -> datetime | None:
     return _parse_closing(item.closing)
 
 
-def item_passes_min_closing(item: LedgerItem, *, min_closing_date: str) -> bool:
-    """True when closing is missing (kept like strip) or closing >= min_closing IST midnight."""
-    from scraper.filters import parse_min_closing_date
+def item_passes_min_closing(
+    item: LedgerItem,
+    *,
+    min_closing_date: str | None = None,
+    min_closing: datetime | None = None,
+) -> bool:
+    """True when closing is present and >= boundary (now+12h or forced date/ISO)."""
+    from scraper.filters import parse_min_closing_boundary, resolve_min_closing
 
-    min_closing = parse_min_closing_date(min_closing_date)
+    if min_closing is not None:
+        boundary = min_closing
+    elif min_closing_date:
+        boundary = parse_min_closing_boundary(min_closing_date)
+    else:
+        boundary = resolve_min_closing()
     closing = _item_closing_dt(item)
     if closing is None:
-        return True
-    return closing >= min_closing
+        return False
+    return closing >= boundary
 
 
 def select_publishable_future(
@@ -433,13 +450,17 @@ def select_publishable_future(
     *,
     min_closing_date: str | None = None,
 ) -> list[LedgerItem]:
-    from scraper.filters import tomorrow_min_closing_date
+    from scraper.filters import resolve_min_closing
 
-    boundary = min_closing_date or tomorrow_min_closing_date()
+    boundary = (
+        resolve_min_closing(min_closing_date)
+        if min_closing_date
+        else resolve_min_closing()
+    )
     return [
         i
         for i in select_publishable(ledger)
-        if item_passes_min_closing(i, min_closing_date=boundary)
+        if item_passes_min_closing(i, min_closing=boundary)
     ]
 
 
@@ -460,9 +481,15 @@ def pipeline_truth_snapshot(
     min_closing_date: str | None = None,
 ) -> dict[str, Any]:
     """Ledger-truth backlog vs optional Hostinger/live inventory counts."""
-    from scraper.filters import tomorrow_min_closing_date
+    from scraper.config import MIN_CLOSING_HOURS_AHEAD
+    from scraper.filters import resolve_min_closing
 
-    boundary = min_closing_date or tomorrow_min_closing_date()
+    boundary_dt = (
+        resolve_min_closing(min_closing_date)
+        if min_closing_date
+        else resolve_min_closing()
+    )
+    boundary = boundary_dt.isoformat()
     publishable_all = sum(1 for i in ledger.items if compute_publishable(i))
     publishable_future = count_publishable_future(ledger, min_closing_date=boundary)
     parse_done = sum(1 for i in ledger.items if i.parse == "done")
@@ -481,6 +508,10 @@ def pipeline_truth_snapshot(
     return {
         "schema_version": 1,
         "min_closing_date": boundary,
+        "min_closing_at": boundary,
+        "min_closing_hours_ahead": (
+            None if min_closing_date else MIN_CLOSING_HOURS_AHEAD
+        ),
         "pdfs_on_disk": pdf_disk_n,
         "parsed_on_disk": parsed_disk_n,
         "live_export_count": live_n,

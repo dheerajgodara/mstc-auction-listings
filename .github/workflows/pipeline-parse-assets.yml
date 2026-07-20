@@ -2,14 +2,14 @@ name: Lane Parse Assets
 
 on:
   schedule:
-    # Temporary backlog drain: every 30m (UTC); long jobs still self-resume
-    - cron: "10,40 * * * *"
+    # Steady-state: hourly at :11 UTC (~30m after download :41; IST ≈ :41)
+    - cron: "11 * * * *"
   workflow_dispatch:
     inputs:
       max_parse:
-        description: "Per-run parse cap (empty = production unbounded / timebox)"
+        description: "Per-run parse cap (default 200 steady-state)"
         required: false
-        default: ""
+        default: "200"
       auction_ids:
         description: "Comma-separated source_auction_id filter (smoke)"
         required: false
@@ -18,7 +18,7 @@ on:
 jobs:
   parse-assets:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 120
     concurrency:
       group: pipeline-parse-assets
       cancel-in-progress: false
@@ -50,6 +50,7 @@ jobs:
           PARSE_WAVE_SIZE: "100"
           PARSE_WORKERS: "2"
           PARSER_CACHE_VERSION: "2"
+          PIPELINE_JOB_TIMEBOX_MIN: "100"
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -58,10 +59,11 @@ jobs:
           R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
           MEDIA_R2_ONLY: "1"
         run: |
+          echo "cron_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ) event=${{ github.event_name }}"
           EXTRA=""
-          if [ -n "${{ github.event.inputs.max_parse }}" ]; then
-            EXTRA="$EXTRA --max-parse ${{ github.event.inputs.max_parse }}"
-          fi
+          MAX_PARSE="${{ github.event.inputs.max_parse }}"
+          if [ -z "$MAX_PARSE" ]; then MAX_PARSE=200; fi
+          EXTRA="--max-parse $MAX_PARSE"
           if [ -n "${{ github.event.inputs.auction_ids }}" ]; then
             EXTRA="$EXTRA --auction-ids ${{ github.event.inputs.auction_ids }}"
           fi

@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from scraper.config import PIPELINE_DOWNLOAD_AUTO_RETRIES_PER_SLOT, PIPELINE_DOWNLOAD_CAP_CATCHUP
 from scraper.pipeline_markers import DOWNLOAD_RETRY_STATE, pull_pipeline_json, push_pipeline_json
 from scraper.schedule_guard import latest_slot_start
-from scraper.telegram_reporter import send_telegram_report
+from scraper.telegram_reporter import send_action_card
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.download_retry_controller")
@@ -179,7 +179,12 @@ def run_download_retry_controller(
             push_pipeline_json(DOWNLOAD_RETRY_STATE, new_state)
         payload["status"] = "exhausted"
         payload["finished_at"] = datetime.now(IST).isoformat()
-        send_telegram_report(payload, event="download_retries_exhausted")
+        send_action_card(
+            "download_mstc",
+            "automatic retries used up",
+            context="Next scheduled download will try again",
+            critical=True,
+        )
         return payload
 
     new_state = {
@@ -193,7 +198,11 @@ def run_download_retry_controller(
     payload["status"] = "retry_scheduled"
     payload["wait_minutes"] = decision.wait_minutes
     payload["retry_attempt"] = decision.attempt
-    send_telegram_report(payload, event="download_retry_scheduled")
+    send_action_card(
+        "download_mstc",
+        f"will retry (attempt {decision.attempt})",
+        context=f"Waiting {decision.wait_minutes} minutes",
+    )
 
     if sleep_enabled and not dry_run and decision.wait_minutes > 0:
         logger.info("sleeping %s minutes before download retry", decision.wait_minutes)

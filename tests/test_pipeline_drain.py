@@ -23,6 +23,8 @@ def _ledger_with_parse_pending(n: int, path):
                 source_auction_id=str(i),
                 download="done",
                 parse="pending",
+                hostinger_doc_path=f"pdfs/{i}.pdf",
+                object_doc_url=f"https://files.csmg.in/pdfs/{i}.pdf",
                 priority_score=10,
                 first_queued_at=now,
                 updated_at=now,
@@ -44,7 +46,6 @@ def test_drain_empty_backlog(tmp_path, monkeypatch):
     monkeypatch.setattr("scraper.pipeline_drain.REPO_ROOT", tmp_path)
     monkeypatch.setattr("scraper.pipeline_drain.DEFAULT_PIPELINE_LEDGER", tmp_path / "pipeline_ledger.json")
     monkeypatch.setattr("scraper.pipeline_drain.pull_ledger", lambda **kw: True)
-    monkeypatch.setattr("scraper.pipeline_drain.send_telegram_report", lambda *a, **k: True)
     write_ledger(empty_ledger(), tmp_path / "pipeline_ledger.json")
 
     calls = {"parse": 0, "deploy": 0}
@@ -72,8 +73,6 @@ def test_drain_fails_when_ledger_pull_rsync_exit_255(tmp_path, monkeypatch):
     monkeypatch.setattr("scraper.pipeline_drain.DEFAULT_PIPELINE_LEDGER", tmp_path / "pipeline_ledger.json")
     write_ledger(empty_ledger(), tmp_path / "pipeline_ledger.json")
 
-    telegrams: list[tuple[dict, str]] = []
-
     def fake_pull(*, local_path=None, timeout_sec=300, require=False):
         assert require is True
         raise RuntimeError(
@@ -82,26 +81,15 @@ def test_drain_fails_when_ledger_pull_rsync_exit_255(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr("scraper.pipeline_drain.pull_ledger", fake_pull)
-    monkeypatch.setattr(
-        "scraper.pipeline_drain.send_telegram_report",
-        lambda payload, event=None, **kw: telegrams.append((dict(payload), event)) or True,
-    )
 
-    with pytest.raises(RuntimeError, match="ledger pull failed"):
+    with pytest.raises(RuntimeError, match="ledger pull failed") as ei:
         run_pipeline_drain(
             repo_root=tmp_path,
             parse_fn=lambda **kw: (_ for _ in ()).throw(AssertionError("parse must not run")),
             deploy_fn=lambda **kw: (_ for _ in ()).throw(AssertionError("deploy must not run")),
         )
 
-    assert telegrams, "expected drain_stopped telegram"
-    payload, event = telegrams[-1]
-    assert event == "drain_stopped"
-    assert payload["status"] == "failed"
-    assert payload["message"] == "ledger pull failed"
-    assert "ledger pull failed" in str(payload["errors"][0]).lower()
-    assert "no parse backlog" not in str(payload.get("message") or "").lower()
-    assert payload.get("cycles_completed") in (None, 0)
+    assert "ledger pull failed" in str(ei.value).lower()
 
 
 def test_pull_ledger_require_raises_on_rsync_exit_255(tmp_path, monkeypatch):
@@ -136,7 +124,6 @@ def test_drain_parse_fail_stops_without_deploy(tmp_path, monkeypatch):
     monkeypatch.setattr("scraper.pipeline_drain.REPO_ROOT", tmp_path)
     monkeypatch.setattr("scraper.pipeline_drain.DEFAULT_PIPELINE_LEDGER", tmp_path / "pipeline_ledger.json")
     monkeypatch.setattr("scraper.pipeline_drain.pull_ledger", lambda **kw: True)
-    monkeypatch.setattr("scraper.pipeline_drain.send_telegram_report", lambda *a, **k: True)
     _ledger_with_parse_pending(5, tmp_path / "pipeline_ledger.json")
 
     calls = {"parse": 0, "deploy": 0}
@@ -166,7 +153,6 @@ def test_drain_deploy_fail_stops_after_parse(tmp_path, monkeypatch):
     monkeypatch.setattr("scraper.pipeline_drain.REPO_ROOT", tmp_path)
     monkeypatch.setattr("scraper.pipeline_drain.DEFAULT_PIPELINE_LEDGER", tmp_path / "pipeline_ledger.json")
     monkeypatch.setattr("scraper.pipeline_drain.pull_ledger", lambda **kw: True)
-    monkeypatch.setattr("scraper.pipeline_drain.send_telegram_report", lambda *a, **k: True)
     _ledger_with_parse_pending(5, tmp_path / "pipeline_ledger.json")
 
     calls = {"parse": 0, "deploy": 0}
@@ -197,7 +183,6 @@ def test_drain_succeeds_after_strip_recoverable(tmp_path, monkeypatch):
     monkeypatch.setattr("scraper.pipeline_drain.REPO_ROOT", tmp_path)
     monkeypatch.setattr("scraper.pipeline_drain.DEFAULT_PIPELINE_LEDGER", tmp_path / "pipeline_ledger.json")
     monkeypatch.setattr("scraper.pipeline_drain.pull_ledger", lambda **kw: True)
-    monkeypatch.setattr("scraper.pipeline_drain.send_telegram_report", lambda *a, **k: True)
     ledger_path = tmp_path / "pipeline_ledger.json"
     _ledger_with_parse_pending(5, ledger_path)
 
@@ -235,7 +220,6 @@ def test_drain_multi_cycle_until_empty(tmp_path, monkeypatch):
     monkeypatch.setattr("scraper.pipeline_drain.REPO_ROOT", tmp_path)
     monkeypatch.setattr("scraper.pipeline_drain.DEFAULT_PIPELINE_LEDGER", tmp_path / "pipeline_ledger.json")
     monkeypatch.setattr("scraper.pipeline_drain.pull_ledger", lambda **kw: True)
-    monkeypatch.setattr("scraper.pipeline_drain.send_telegram_report", lambda *a, **k: True)
     ledger_path = tmp_path / "pipeline_ledger.json"
     _ledger_with_parse_pending(3, ledger_path)
 
@@ -266,7 +250,6 @@ def test_drain_respects_max_cycles(tmp_path, monkeypatch):
     monkeypatch.setattr("scraper.pipeline_drain.REPO_ROOT", tmp_path)
     monkeypatch.setattr("scraper.pipeline_drain.DEFAULT_PIPELINE_LEDGER", tmp_path / "pipeline_ledger.json")
     monkeypatch.setattr("scraper.pipeline_drain.pull_ledger", lambda **kw: True)
-    monkeypatch.setattr("scraper.pipeline_drain.send_telegram_report", lambda *a, **k: True)
     ledger_path = tmp_path / "pipeline_ledger.json"
     _ledger_with_parse_pending(50, ledger_path)
 

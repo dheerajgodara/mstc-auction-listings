@@ -28,7 +28,6 @@ from scraper.pipeline_deploy import run_pipeline_deploy
 from scraper.pipeline_ledger import load_ledger, pull_ledger, select_for_parse
 from scraper.pipeline_parse import run_pipeline_parse
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
-from scraper.telegram_reporter import send_telegram_report
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_drain")
@@ -148,7 +147,6 @@ def run_pipeline_drain(
         payload["max_cycles"] = cycles_cap
         payload["ledger"] = ledger.status_counts()
         payload["ledger_pulled"] = True
-        send_telegram_report(payload, event="drain_started")
         _phase(f"start backlog={backlog} max_cycles={cycles_cap} max_parse={max_parse}")
 
         if backlog <= 0 or cycles_cap <= 0:
@@ -163,7 +161,6 @@ def run_pipeline_drain(
             (run_dir / "drain_report.json").write_text(
                 json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
             )
-            send_telegram_report(payload, event="drain_done")
             return payload
 
         cycles_completed = 0
@@ -214,7 +211,6 @@ def run_pipeline_drain(
                 (run_dir / "drain_report.json").write_text(
                     json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
                 )
-                send_telegram_report(payload, event="drain_stopped")
                 raise RuntimeError(payload["errors"][0])
 
             selected = int((parse_payload or {}).get("selected_count") or 0)
@@ -245,7 +241,6 @@ def run_pipeline_drain(
                 (run_dir / "drain_report.json").write_text(
                     json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
                 )
-                send_telegram_report(payload, event="drain_stopped")
                 raise RuntimeError(payload["errors"][0])
 
             cycles_completed += 1
@@ -253,16 +248,6 @@ def run_pipeline_drain(
             cycle_info["remaining_after"] = parse_backlog_count(load_ledger(ledger_path))
             payload["cycles"].append(cycle_info)
             payload["ledger"] = load_ledger(ledger_path).status_counts()
-            send_telegram_report(
-                {
-                    **payload,
-                    "cycle": cycle,
-                    "cycles_completed": cycles_completed,
-                    "parse_ok": cycle_info["parse"].get("parse_ok"),
-                    "remaining_after": cycle_info["remaining_after"],
-                },
-                event="drain_cycle",
-            )
 
         pull_ledger(local_path=ledger_path, require=True)
         final_ledger = load_ledger(ledger_path)
@@ -279,7 +264,6 @@ def run_pipeline_drain(
         (run_dir / "drain_report.json").write_text(
             json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
         )
-        send_telegram_report(payload, event="drain_done")
         return payload
     except Exception as exc:
         if payload.get("status") not in {"stopped", "success"}:
@@ -298,7 +282,6 @@ def run_pipeline_drain(
             (run_dir / "drain_report.json").write_text(
                 json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
             )
-            send_telegram_report(payload, event="drain_stopped")
         raise
     finally:
         release_refresh_lock(lock_path, run_id=run_id)

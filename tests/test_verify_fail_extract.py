@@ -1,10 +1,10 @@
-"""Tests for verify-build FAIL extraction and Telegram deploy_failed clarity."""
+"""Tests for verify-build FAIL extraction and critical Update site cards."""
 
 from __future__ import annotations
 
 from html import unescape
 
-from scraper.telegram_reporter import MAX_MESSAGE_CHARS, build_telegram_message
+from scraper.telegram_reporter import ACTION_MAX_CHARS, build_lane_message
 from scraper.verify_fail_extract import extract_fail_lines, summarize_command_failure
 
 
@@ -12,6 +12,8 @@ def _plain(html: str) -> str:
     return unescape(
         html.replace("<b>", "")
         .replace("</b>", "")
+        .replace("<code>", "")
+        .replace("</code>", "")
         .replace("</a>", "")
     )
 
@@ -51,36 +53,39 @@ def test_summarize_command_failure_short_and_actionable():
 
 
 def test_deploy_failed_telegram_shows_fail_not_ok_tail():
-    # Simulate the old bad error: huge RuntimeError with OK tail only in the clip window
-    huge = (
-        "command failed (1): pnpm run verify-build\n"
-        + OK_HEAVY_VERIFY_OUTPUT
+    short, fails, _tail = summarize_command_failure(
+        ["pnpm", "run", "verify-build"],
+        returncode=1,
+        stdout=OK_HEAVY_VERIFY_OUTPUT,
+        stderr="",
     )
-    msg = build_telegram_message(
+    msg = build_lane_message(
+        "build_deploy",
+        "failed",
         {
-            "pipeline": "deploy",
-            "errors": [huge],
+            "outcome": "promote refused",
+            "error": short,
             "github_run_url": "https://github.com/x/y/actions/runs/1",
         },
-        event="deploy_failed",
     )
     plain = _plain(msg)
-    assert len(msg) <= MAX_MESSAGE_CHARS
-    assert "Site update failed" in plain
+    assert len(msg) <= ACTION_MAX_CHARS
+    assert "FAILED" in plain
+    assert "Update site" in plain
     assert "app shell keeps marketplace source disclaimer" in plain
     assert "sitemap excludes /watchlist" not in plain
+    assert fails
 
 
 def test_deploy_failed_telegram_uses_short_summary_from_pipeline():
-    msg = build_telegram_message(
+    msg = build_lane_message(
+        "build_deploy",
+        "failed",
         {
-            "errors": [
-                "pnpm run verify-build: FAIL app shell keeps marketplace source disclaimer"
-            ],
+            "error": "pnpm run verify-build: FAIL app shell keeps marketplace source disclaimer",
             "github_run_url": "https://github.com/x/y/actions/runs/2",
         },
-        event="deploy_failed",
     )
     plain = _plain(msg)
     assert "app shell keeps marketplace source disclaimer" in plain
-    assert "log" in plain or "actions/runs/2" in msg
+    assert "Open run" in msg or "actions/runs/2" in msg

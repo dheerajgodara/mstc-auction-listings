@@ -21,7 +21,7 @@ from scraper.config import AI_ENRICHMENT_CACHE_DIR, DEFAULT_JSON_OUT, REPO_ROOT,
 from scraper.deploy import deploy as deploy_to_hostinger
 from scraper.document_cache import migrate_unsafe_thumb_dirs
 from scraper.export_hygiene import repair_absolute_asset_paths, rewrite_unsafe_thumb_urls
-from scraper.filters import make_run_id, tomorrow_min_closing_date
+from scraper.filters import make_run_id, resolve_min_closing
 from scraper.http_verify import verify_live_site
 from scraper.pipeline_ledger import DEFAULT_LEDGER_PATH, load_ledger, pull_ledger
 from scraper.pipeline_markers import LAST_DEPLOY_MARKER, pull_pipeline_json, push_pipeline_json
@@ -29,7 +29,6 @@ from scraper.predeploy_verify import verify_predeploy_build
 from scraper.raw_store import push_public_media
 from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
-from scraper.telegram_reporter import send_telegram_report
 from scraper.verify_fail_extract import summarize_command_failure
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -115,7 +114,6 @@ def run_pipeline_deploy(
         "warnings": [],
         "errors": [],
     }
-    send_telegram_report(payload, event="deploy_started")
 
     warnings: list[str] = []
     try:
@@ -210,7 +208,6 @@ def run_pipeline_deploy(
             (run_dir / "deploy_report.json").write_text(
                 json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
             )
-            send_telegram_report(payload, event="deploy_done")
             return payload
 
         asset_boot = bootstrap_production_assets(public_dir=public_dir)
@@ -275,7 +272,7 @@ def run_pipeline_deploy(
             if (os.environ.get("PIPELINE_ALLOW_SMALL_EXPORT") or "").strip().lower()
             in {"1", "true", "yes"}
             else 1000,
-            min_closing_date=tomorrow_min_closing_date(),
+            min_closing_date=resolve_min_closing().isoformat(),
             require_sources=[]
             if (os.environ.get("PIPELINE_ALLOW_SMALL_EXPORT") or "").strip().lower()
             in {"1", "true", "yes"}
@@ -335,7 +332,6 @@ def run_pipeline_deploy(
             }
         )
         (run_dir / "deploy_report.json").write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
-        send_telegram_report(payload, event="deploy_done")
         return payload
     except Exception as exc:
         logger.exception("pipeline deploy failed")
@@ -343,7 +339,6 @@ def run_pipeline_deploy(
         payload["errors"] = [str(exc)]
         payload["warnings"] = warnings
         payload["finished_at"] = datetime.now(IST).isoformat()
-        send_telegram_report(payload, event="deploy_failed")
         raise
     finally:
         release_refresh_lock(lock_path, run_id=run_id)
