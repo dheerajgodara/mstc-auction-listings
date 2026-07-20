@@ -25,7 +25,7 @@ logger = logging.getLogger("scraper.pipeline_ledger")
 IST = ZoneInfo("Asia/Kolkata")
 
 DEFAULT_LEDGER_PATH = REPO_ROOT / "work" / "pipeline_ledger.json"
-StageStatus = Literal["pending", "done", "failed", "blocked"]
+StageStatus = Literal["pending", "done", "failed", "blocked", "fetched_local"]
 MAX_STAGE_ATTEMPTS = 5
 LEDGER_SCHEMA_VERSION = 3
 ACTIVE_SOURCES = frozenset({"mstc", "gem_forward"})
@@ -44,6 +44,10 @@ class LedgerItem(BaseModel):
     hostinger_doc_url: Optional[str] = None
     hostinger_doc_path: Optional[str] = None
     doc_sha256: Optional[str] = None
+    # Local staging path after portal fetch, before Hostinger/R2 publish (Phase B).
+    local_doc_path: Optional[str] = None
+    # Optional durable object-store URL (R2) when configured.
+    object_doc_url: Optional[str] = None
 
     discover: StageStatus = "pending"
     download: StageStatus = "pending"
@@ -239,10 +243,10 @@ def _replace_item(ledger: PipelineLedger, item: LedgerItem) -> None:
 
 
 def download_eligible(item: LedgerItem, *, source: str | None = None) -> bool:
-    """Queue truth: portal PDF URL present and download status is not done.
+    """Queue truth: portal PDF URL present and download not yet durable on Hostinger.
 
-    Phantoms are fixed by preflight reset to pending — eligibility does not
-    inspect hostinger paths/sha or attempt caps.
+    ``fetched_local`` waits for the publish lane — not re-fetched from portal.
+    Attempt-capped poison items become blocked.
     """
     if item.removed_from_source:
         return False
@@ -252,15 +256,44 @@ def download_eligible(item: LedgerItem, *, source: str | None = None) -> bool:
         return False
     if src not in ACTIVE_SOURCES:
         return False
+    if item.download == "done" or item.download == "fetched_local":
+        return False
+    if item.download == "blocked" or item.download_attempts >= MAX_STAGE_ATTEMPTS:
+        return False
     portal = (item.portal_doc_url or "").strip()
     if not portal and src == "mstc":
-        # Catalogue endpoint is deterministic; heal empty portal from older rows.
         item.portal_doc_url = mstc_portal_doc_url()
         portal = item.portal_doc_url
     if not portal:
         return False
-    # Treat failed/blocked as re-queueable pending work.
-    return item.download != "done"
+    return True
+
+
+def publish_eligible(item: LedgerItem, *, source: str | None = None) -> bool:
+    """Local file staged; needs Hostinger/R2 publish to become download=done."""
+    if item.removed_from_source:
+        return False
+    item_src = (item.source or "").strip().lower()
+    src = (source or item_src).strip().lower()
+    if src and item_src != src:
+        return False
+    if item.download != "fetched_local":
+        return False
+    path = (item.local_doc_path or "").strip()
+    return bool(path)
+
+
+def select_for_publish(
+    ledger: PipelineLedger,
+    *,
+    limit: int,
+    source: str | None = None,
+) -> list[LedgerItem]:
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    eligible = [i for i in ledger.items if publish_eligible(i, source=source)]
+    eligible.sort(key=lambda i: (-i.priority_score, i.first_seen_at or "", i.stable_key))
+    return eligible[:limit]
 
 
 def mstc_download_eligible(item: LedgerItem) -> bool:
@@ -598,6 +631,9 @@ def mark_download(
     # Legacy kwargs accepted but ignored (v3)
     pdf_path: str | None = None,
     require_media_resync: bool = True,
+    local_doc_path: str | None = None,
+    object_doc_url: str | None = None,
+    fetched_local_only: bool = False,
 ) -> LedgerItem | None:
     _ = require_media_resync
     item = ledger.by_key().get(stable_key)
@@ -611,11 +647,27 @@ def mark_download(
     if ok and hostinger_doc_path and not hostinger_doc_url:
         hostinger_doc_url = public_doc_url(hostinger_doc_path)
 
-    if ok and hostinger_doc_path and hostinger_doc_url:
+    if ok and fetched_local_only and local_doc_path:
+        # Phase B: portal fetch succeeded; publish lane will flush to Hostinger/R2.
+        item.download = "fetched_local"
+        item.download_error = None
+        item.local_doc_path = local_doc_path
+        if hostinger_doc_path:
+            item.hostinger_doc_path = hostinger_doc_path
+        if doc_sha256:
+            item.doc_sha256 = doc_sha256
+        if raw_html_path:
+            item.raw_html_path = raw_html_path
+        if object_doc_url:
+            item.object_doc_url = object_doc_url
+    elif ok and hostinger_doc_path and hostinger_doc_url:
         item.download = "done"
         item.download_error = None
         item.hostinger_doc_path = hostinger_doc_path
         item.hostinger_doc_url = hostinger_doc_url
+        item.local_doc_path = local_doc_path or item.local_doc_path
+        if object_doc_url:
+            item.object_doc_url = object_doc_url
         if doc_sha256:
             item.doc_sha256 = doc_sha256
         if raw_html_path:
@@ -625,14 +677,43 @@ def mark_download(
             item.lots_count = 0
             item.deploy = "pending"
     else:
-        # Any failure → pending (status is the only re-queue signal).
+        # Any failure → pending (status is the only re-queue signal), unless capped.
         item.download_error = error or "download incomplete — hostinger doc required"
-        item.hostinger_doc_path = None
-        item.hostinger_doc_url = None
-        item.doc_sha256 = None
-        item.download = "pending"
+        # Keep local staging on transport/flush failure so publish can retry.
+        if not (local_doc_path or item.local_doc_path):
+            item.hostinger_doc_path = None
+            item.hostinger_doc_url = None
+            item.doc_sha256 = None
+            item.download = "pending"
+        else:
+            item.local_doc_path = local_doc_path or item.local_doc_path
+            item.download = "fetched_local"
+            item.download_error = error or "awaiting Hostinger/R2 publish"
+        if item.download_attempts >= MAX_STAGE_ATTEMPTS and item.download != "fetched_local":
+            item.download = "blocked"
     _replace_item(ledger, item)
     return item
+
+
+def mark_download_fetched_local(
+    ledger: PipelineLedger,
+    stable_key: str,
+    *,
+    local_doc_path: str,
+    hostinger_doc_path: str | None = None,
+    doc_sha256: str | None = None,
+    raw_html_path: str | None = None,
+) -> LedgerItem | None:
+    return mark_download(
+        ledger,
+        stable_key,
+        ok=True,
+        fetched_local_only=True,
+        local_doc_path=local_doc_path,
+        hostinger_doc_path=hostinger_doc_path,
+        doc_sha256=doc_sha256,
+        raw_html_path=raw_html_path,
+    )
 
 
 def mark_parse(
@@ -756,12 +837,21 @@ def pull_ledger(
     remote_root = remote_pipeline_root(cfg["remote_dir"])
     target = f"{cfg['username']}@{cfg['host']}"
     remote = f"{target}:{remote_root}/pipeline_ledger.json"
-    cmd = ["rsync", "-az", "-e", _ssh_cmd(cfg), remote, str(local)]
+    from scraper.hostinger_ssh import rsync_timeout_args, run_rsync_with_retries
+
+    cmd = ["rsync", "-az", *rsync_timeout_args(), "-e", _ssh_cmd(cfg), remote, str(local)]
     last_exc: Exception | None = None
     tries = max(1, int(attempts))
+    # Cap per-attempt wall clock so soft hangs fail fast (was up to 300s×4).
+    per_try = min(int(timeout_sec), 90)
     for attempt in range(1, tries + 1):
         try:
-            subprocess.run(cmd, check=True, timeout=timeout_sec, capture_output=True, text=True)
+            run_rsync_with_retries(
+                cmd,
+                timeout_sec=per_try,
+                label="ledger-pull",
+                attempts=1,
+            )
             if attempt > 1:
                 logger.info("ledger pull succeeded on attempt %s/%s", attempt, tries)
             return True
@@ -769,7 +859,7 @@ def pull_ledger(
             last_exc = exc
             logger.info("ledger pull attempt %s/%s failed: %s", attempt, tries, exc)
             if attempt < tries:
-                time.sleep(min(30, 5 * attempt))
+                time.sleep(min(15, 3 * attempt))
     msg = f"ledger pull failed after {tries} attempts: {last_exc}"
     if require:
         logger.error(msg)
@@ -787,28 +877,22 @@ def push_ledger(*, local_path: Path | None = None, timeout_sec: int = 120) -> bo
         return False
     remote_root = remote_pipeline_root(cfg["remote_dir"])
     target = f"{cfg['username']}@{cfg['host']}"
-    mkdir_cmd = [
-        "ssh",
-        "-i",
-        cfg["key_path"],
-        "-p",
-        cfg["port"],
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-o",
-        "BatchMode=yes",
-        target,
-        f"mkdir -p {remote_root}",
-    ]
+    from scraper.hostinger_ssh import run_ssh, rsync_timeout_args, run_rsync_with_retries
+
     try:
-        subprocess.run(mkdir_cmd, check=True, timeout=60, capture_output=True, text=True)
+        run_ssh(cfg, f"mkdir -p {remote_root}", timeout_sec=60, multiplex=False)
     except Exception as exc:
         logger.warning("ledger remote mkdir failed: %s", exc)
         return False
     remote = f"{target}:{remote_root}/pipeline_ledger.json"
-    cmd = ["rsync", "-az", "-e", _ssh_cmd(cfg), str(local), remote]
+    cmd = ["rsync", "-az", *rsync_timeout_args(), "-e", _ssh_cmd(cfg), str(local), remote]
     try:
-        subprocess.run(cmd, check=True, timeout=timeout_sec, capture_output=True, text=True)
+        run_rsync_with_retries(
+            cmd,
+            timeout_sec=min(int(timeout_sec), 90),
+            label="ledger-push",
+            attempts=3,
+        )
         return True
     except Exception as exc:
         logger.warning("ledger push failed: %s", exc)

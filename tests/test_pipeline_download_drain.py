@@ -41,7 +41,7 @@ def test_download_drain_exits_when_backlog_empty(tmp_path: Path, monkeypatch):
                     with patch("scraper.pipeline_download.pull_ledger", return_value=True):
                         with patch("scraper.pipeline_download.push_ledger", return_value=True):
                             with patch(
-                                "scraper.pipeline_download.send_telegram_report",
+                                "scraper.pipeline_download.push_heartbeat",
                                 return_value=True,
                             ):
                                 with patch(

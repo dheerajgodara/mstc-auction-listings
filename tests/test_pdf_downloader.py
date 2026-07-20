@@ -84,3 +84,44 @@ def test_ensure_catalogue_pdf_raises_when_download_invalid(tmp_path: Path):
     with patch("scraper.pdf_downloader.download_pdf", side_effect=_write_html):
         with pytest.raises(ValueError, match="PDF validation failed"):
             ensure_catalogue_pdf("789", pdf_dir)
+
+
+def test_download_pdf_retries_on_500_then_succeeds(tmp_path: Path):
+    import requests
+    from scraper.pdf_downloader import download_pdf
+
+    good = _fake_pdf_bytes()
+    calls = {"n": 0}
+
+    class FakeResp:
+        def __init__(self, status, content, url="https://mstc/example"):
+            self.status_code = status
+            self.content = content
+            self.url = url
+            self.headers = {
+                "Content-Type": "application/pdf" if content[:4] == b"%PDF" else "text/html"
+            }
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.HTTPError(f"{self.status_code}", response=self)
+
+    def fake_post(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return FakeResp(500, b"\r\n<html>Error 500</html>")
+        return FakeResp(200, good)
+
+    out = tmp_path / "999.pdf"
+    with patch("scraper.pdf_downloader.time.sleep"):
+        with patch("requests.Session") as Sess:
+            inst = Sess.return_value
+            inst.post.side_effect = fake_post
+            path = download_pdf(
+                "999", out, retries=5, backoff_base_sec=0.01, backoff_cap_sec=0.05
+            )
+
+    assert path == out
+    assert validate_pdf_file(out)
+    assert calls["n"] == 3
+

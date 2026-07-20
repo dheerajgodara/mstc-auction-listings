@@ -1,0 +1,20 @@
+[Unit]
+Description=MSTC/GeM auction download worker (drain backlog)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/mstc-auction-listings
+Environment=PYTHONUNBUFFERED=1
+Environment=DOWNLOAD_DECOUPLE_FLUSH=1
+Environment=DOWNLOAD_STALL_ABORT_MIN=20
+Environment=SSH_CONNECT_TIMEOUT=15
+Environment=RSYNC_IO_TIMEOUT=120
+# Set Hostinger + optional R2 secrets in /etc/mstc-pipeline.env
+EnvironmentFile=-/etc/mstc-pipeline.env
+ExecStart=/opt/mstc-auction-listings/scripts/download_worker.sh mstc 200
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

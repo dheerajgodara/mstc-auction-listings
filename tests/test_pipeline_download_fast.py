@@ -108,7 +108,8 @@ def test_wave_flush_fail_keeps_pending(tmp_path: Path, monkeypatch):
                                                     "scraper.pipeline_download.release_refresh_lock"
                                                 ):
                                                     with patch(
-                                                        "scraper.pipeline_download.send_telegram_report"
+                                                        "scraper.pipeline_download.push_heartbeat",
+                                                        return_value=True,
                                                     ):
                                                         with patch(
                                                             "scraper.pipeline_download.send_lane_report",
@@ -120,7 +121,7 @@ def test_wave_flush_fail_keeps_pending(tmp_path: Path, monkeypatch):
                                                                 wave_size=5,
                                                                 source="mstc",
                                                             )
-    assert load_ledger(ledger_path).by_key()["mstc:42"].download == "pending"
+    assert load_ledger(ledger_path).by_key()["mstc:42"].download == "fetched_local"
 
 
 def test_wave_verify_success_marks_done(tmp_path: Path, monkeypatch):
@@ -193,7 +194,8 @@ def test_wave_verify_success_marks_done(tmp_path: Path, monkeypatch):
                                                     "scraper.pipeline_download.release_refresh_lock"
                                                 ):
                                                     with patch(
-                                                        "scraper.pipeline_download.send_telegram_report"
+                                                        "scraper.pipeline_download.push_heartbeat",
+                                                        return_value=True,
                                                     ):
                                                         with patch(
                                                             "scraper.pipeline_download.send_lane_report",

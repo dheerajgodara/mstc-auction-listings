@@ -19,9 +19,14 @@ from scraper.config import (
     DEFAULT_PIPELINE_LEDGER,
     DEFAULT_RAW_DIR,
     DOWNLOAD_BATCH_RETRY_ROUNDS,
+    DOWNLOAD_DECOUPLE_FLUSH,
     DOWNLOAD_FAIL_BUDGET_ABS,
     DOWNLOAD_FAIL_BUDGET_PCT,
+    DOWNLOAD_FETCH_TIMEOUT_SEC,
+    DOWNLOAD_STALL_ABORT_MIN,
+    DOWNLOAD_STREAM_FLUSH_EVERY,
     DOWNLOAD_SUCCESS_PAUSE_SEC,
+    DOWNLOAD_WAVE_DEADLINE_SEC,
     DOWNLOAD_WAVE_SIZE,
     PIPELINE_DOWNLOAD_BATCH_SIZE,
     PIPELINE_DOWNLOAD_CAP_CATCHUP,
@@ -35,6 +40,11 @@ from scraper.download_flush import flush_download_files
 from scraper.download_journal import DownloadJournal
 from scraper.download_throttle import DownloadThrottle
 from scraper.filters import make_run_id
+from scraper.hostinger_ssh import (
+    clear_stale_control_sockets,
+    preflight_hostinger,
+    push_heartbeat,
+)
 from scraper.lane_resume import dispatch_workflow, kick_if_needed, record_resume, should_self_resume
 from scraper.media_sync import media_push_required
 from scraper.pipeline_ledger import (
@@ -43,9 +53,11 @@ from scraper.pipeline_ledger import (
     fail_budget_ok,
     load_ledger,
     mark_download,
+    mark_download_fetched_local,
     pull_ledger,
     push_ledger,
     select_for_download,
+    select_for_publish,
     write_ledger,
 )
 from scraper.pipeline_status import publish_pipeline_status, truth_for_telegram
@@ -234,7 +246,26 @@ def run_pipeline_download(
     errors: list[str] = []
     skipped_existing = 0
     timing = {"fetch_s": 0.0, "flush_s": 0.0}
+    last_progress_at = time.monotonic()
     try:
+        clear_stale_control_sockets()
+        from scraper.hostinger_ssh import hostinger_ssh_config as _live_ssh_cfg
+
+        ok_pf, pf_msg = preflight_hostinger()
+        _phase(pf_msg)
+        # Hard-fail only when SSH is configured but Hostinger is unreachable.
+        # Incomplete env is handled by MEDIA_PUSH_REQUIRED below (and unit tests).
+        if not ok_pf and _live_ssh_cfg() is not None:
+            send_lane_report(
+                lane_id,
+                "failed",
+                {
+                    "error": f"Hostinger stalled (preflight): {pf_msg}",
+                    "github_run_url": _github_run_url(),
+                },
+            )
+            raise RuntimeError(f"Hostinger preflight failed: {pf_msg}")
+
         if media_push_required() and _hostinger_ssh_config() is None:
             raise RuntimeError(
                 "download requires Hostinger SSH (HOSTINGER_*) when MEDIA_PUSH_REQUIRED=1"
@@ -310,65 +341,14 @@ def run_pipeline_download(
                     throttle=throttle,
                 )
 
-        def _process_wave(selected: list[Any], *, wave_num: int) -> tuple[int, int, list[str]]:
-            nonlocal ok_count, fail_count
+        def _flush_pending(pending_ok: list[dict[str, Any]], *, wave_num: int) -> tuple[int, int, list[str]]:
+            nonlocal ok_count, fail_count, last_progress_at
             batch_ok = 0
             batch_fail = 0
             failed_keys: list[str] = []
-
-            if source == "mstc" and not skip_pdf:
-                pdf_names = [f"{i.source_auction_id}.pdf" for i in selected]
-                pull_result = pull_public_pdf_files(public_dir=public_dir, filenames=pdf_names)
-                if pull_result.warnings:
-                    warnings.extend(pull_result.warnings[:5])
-
-            # Parallel portal fetch
-            t_fetch = time.monotonic()
-            results: list[dict[str, Any]] = []
-            with ThreadPoolExecutor(max_workers=min(workers, len(selected))) as pool:
-                futs = {pool.submit(_fetch_one, item): item for item in selected}
-                for fut in as_completed(futs):
-                    item = futs[fut]
-                    try:
-                        r = fut.result()
-                    except Exception as exc:
-                        r = {
-                            "stable_key": item.stable_key,
-                            "source": source,
-                            "source_auction_id": str(item.source_auction_id),
-                            "ok": False,
-                            "error": str(exc),
-                        }
-                    results.append(r)
-                    attempted_ids.append(str(item.source_auction_id))
-                    attempted_keys.add(item.stable_key)
-                    journal.append(
-                        {
-                            "stable_key": r.get("stable_key"),
-                            "ok": bool(r.get("ok")),
-                            "phase": "fetch",
-                            "error": r.get("error"),
-                            "bytes": r.get("bytes"),
-                            "sha": r.get("doc_sha256"),
-                        }
-                    )
-            timing["fetch_s"] += time.monotonic() - t_fetch
-
-            _apply_fetch_failures(ledger, results)
-            pending_ok = [r for r in results if r.get("ok")]
-            fetch_fail_n = len(results) - len(pending_ok)
-            fail_count += fetch_fail_n
-            batch_fail += fetch_fail_n
-            for r in results:
-                if not r.get("ok"):
-                    failed_keys.append(str(r["stable_key"]))
-
             if not pending_ok:
-                write_ledger(ledger, ledger_path)
-                _pause_between_auctions()
                 return batch_ok, batch_fail, failed_keys
 
-            # Batch Hostinger flush + verify
             t_flush = time.monotonic()
             flush_ok, flush_msg, verified = flush_download_files(pending_ok, public_dir=public_dir)
             timing["flush_s"] += time.monotonic() - t_flush
@@ -381,6 +361,31 @@ def run_pipeline_download(
                 stats["pdf_hostinger_flush_failures"] = (
                     int(stats.get("pdf_hostinger_flush_failures") or 0) + 1
                 )
+                if DOWNLOAD_DECOUPLE_FLUSH:
+                    for r in pending_ok:
+                        mark_download_fetched_local(
+                            ledger,
+                            str(r["stable_key"]),
+                            local_doc_path=str(r.get("local_path") or ""),
+                            hostinger_doc_path=str(r.get("hostinger_doc_path") or ""),
+                            doc_sha256=r.get("doc_sha256"),
+                            raw_html_path=r.get("raw_html_path"),
+                        )
+                        journal.append(
+                            {
+                                "stable_key": r["stable_key"],
+                                "ok": True,
+                                "phase": "fetched_local",
+                                "local_path": str(r.get("local_path") or ""),
+                                "error": flush_msg,
+                            }
+                        )
+                    _phase(
+                        f"wave {wave_num}: Hostinger flush failed — staged "
+                        f"{len(pending_ok)} as fetched_local for publish lane"
+                    )
+                    write_ledger(ledger, ledger_path)
+                    return batch_ok, batch_fail, failed_keys
                 _mark_unverified_pending(
                     ledger,
                     pending_ok,
@@ -397,6 +402,8 @@ def run_pipeline_download(
             committed = _commit_verified(ledger, verified, stats=stats)
             ok_count += committed
             batch_ok += committed
+            if committed:
+                last_progress_at = time.monotonic()
             for r in verified:
                 journal.append(
                     {
@@ -405,22 +412,198 @@ def run_pipeline_download(
                         "phase": "flushed",
                         "flushed": True,
                         "path": r.get("hostinger_doc_path"),
+                        "local_path": str(r.get("local_path") or ""),
                     }
                 )
 
             unverified = [r for r in pending_ok if str(r["stable_key"]) not in verified_keys]
             if unverified:
-                _mark_unverified_pending(
-                    ledger,
-                    unverified,
-                    verified_keys,
-                    error="Hostinger URL not HTTP 200 after wave flush",
-                )
-                fail_count += len(unverified)
-                batch_fail += len(unverified)
-                failed_keys.extend(str(r["stable_key"]) for r in unverified)
+                if DOWNLOAD_DECOUPLE_FLUSH:
+                    for r in unverified:
+                        mark_download_fetched_local(
+                            ledger,
+                            str(r["stable_key"]),
+                            local_doc_path=str(r.get("local_path") or ""),
+                            hostinger_doc_path=str(r.get("hostinger_doc_path") or ""),
+                            doc_sha256=r.get("doc_sha256"),
+                            raw_html_path=r.get("raw_html_path"),
+                        )
+                else:
+                    _mark_unverified_pending(
+                        ledger,
+                        unverified,
+                        verified_keys,
+                        error="Hostinger URL not HTTP 200 after wave flush",
+                    )
+                    fail_count += len(unverified)
+                    batch_fail += len(unverified)
+                    failed_keys.extend(str(r["stable_key"]) for r in unverified)
 
             write_ledger(ledger, ledger_path)
+            return batch_ok, batch_fail, failed_keys
+
+        def _process_wave(selected: list[Any], *, wave_num: int) -> tuple[int, int, list[str]]:
+            nonlocal ok_count, fail_count, last_progress_at
+            from concurrent.futures import wait, FIRST_COMPLETED
+
+            batch_ok = 0
+            batch_fail = 0
+            failed_keys: list[str] = []
+            wave_deadline = time.monotonic() + max(60.0, float(DOWNLOAD_WAVE_DEADLINE_SEC))
+            fetch_timeout = max(30.0, float(DOWNLOAD_FETCH_TIMEOUT_SEC))
+            stream_every = max(0, int(DOWNLOAD_STREAM_FLUSH_EVERY))
+
+            if source == "mstc" and not skip_pdf:
+                pdf_names = [f"{i.source_auction_id}.pdf" for i in selected]
+                pull_result = pull_public_pdf_files(
+                    public_dir=public_dir, filenames=pdf_names, timeout_sec=90, attempts=2
+                )
+                if pull_result.warnings:
+                    warnings.extend(pull_result.warnings[:5])
+
+            t_fetch = time.monotonic()
+            results: list[dict[str, Any]] = []
+            pending_stream: list[dict[str, Any]] = []
+            flushed_keys: set[str] = set()
+
+            with ThreadPoolExecutor(max_workers=min(workers, len(selected))) as pool:
+                futs: dict = {}
+                for item in selected:
+                    resume = journal.local_resume_path(item.stable_key)
+                    if resume is not None:
+                        if source == "mstc":
+                            rel = f"pdfs/{item.source_auction_id}.pdf"
+                        else:
+                            rel = f"docs/gem/{item.source_auction_id}.pdf"
+                            for cand in (
+                                public_dir / "docs" / "gem" / f"{item.source_auction_id}.pdf",
+                                public_dir / "docs" / "gem" / f"{item.source_auction_id}.html",
+                            ):
+                                if cand.is_file():
+                                    resume = cand
+                                    try:
+                                        rel = str(cand.relative_to(public_dir)).replace("\\", "/")
+                                    except ValueError:
+                                        pass
+                                    break
+                        r = {
+                            "stable_key": item.stable_key,
+                            "source": source,
+                            "source_auction_id": str(item.source_auction_id),
+                            "ok": True,
+                            "local_path": resume,
+                            "hostinger_doc_path": rel,
+                            "doc_sha256": (journal.latest_ok_fetch(item.stable_key) or {}).get("sha"),
+                            "resumed": True,
+                        }
+                        results.append(r)
+                        attempted_ids.append(str(item.source_auction_id))
+                        attempted_keys.add(item.stable_key)
+                        journal.append(
+                            {
+                                "stable_key": r["stable_key"],
+                                "ok": True,
+                                "phase": "fetch",
+                                "resumed": True,
+                                "local_path": str(resume),
+                                "sha": r.get("doc_sha256"),
+                            }
+                        )
+                        continue
+                    futs[pool.submit(_fetch_one, item)] = item
+
+                pending_futs = set(futs)
+                while pending_futs:
+                    if time.monotonic() >= wave_deadline:
+                        _phase(
+                            f"wave {wave_num}: deadline reached — abandoning "
+                            f"{len(pending_futs)} in-flight fetch(es)"
+                        )
+                        for fut in list(pending_futs):
+                            item = futs[fut]
+                            results.append(
+                                {
+                                    "stable_key": item.stable_key,
+                                    "source": source,
+                                    "source_auction_id": str(item.source_auction_id),
+                                    "ok": False,
+                                    "error": "wave_deadline",
+                                }
+                            )
+                            attempted_ids.append(str(item.source_auction_id))
+                            attempted_keys.add(item.stable_key)
+                            failed_keys.append(item.stable_key)
+                        break
+                    wait_s = min(5.0, max(0.1, wave_deadline - time.monotonic()))
+                    done, pending_futs = wait(
+                        pending_futs, timeout=wait_s, return_when=FIRST_COMPLETED
+                    )
+                    for fut in done:
+                        item = futs[fut]
+                        try:
+                            r = fut.result(timeout=fetch_timeout)
+                        except Exception as exc:
+                            r = {
+                                "stable_key": item.stable_key,
+                                "source": source,
+                                "source_auction_id": str(item.source_auction_id),
+                                "ok": False,
+                                "error": str(exc),
+                            }
+                        results.append(r)
+                        attempted_ids.append(str(item.source_auction_id))
+                        attempted_keys.add(item.stable_key)
+                        journal.append(
+                            {
+                                "stable_key": r.get("stable_key"),
+                                "ok": bool(r.get("ok")),
+                                "phase": "fetch",
+                                "error": r.get("error"),
+                                "bytes": r.get("bytes"),
+                                "sha": r.get("doc_sha256"),
+                                "local_path": str(r.get("local_path") or ""),
+                            }
+                        )
+                        if r.get("ok") and stream_every > 0:
+                            pending_stream.append(r)
+                            if len(pending_stream) >= stream_every:
+                                bok, bfail, fkeys = _flush_pending(
+                                    list(pending_stream), wave_num=wave_num
+                                )
+                                flushed_keys.update(str(x["stable_key"]) for x in pending_stream)
+                                batch_ok += bok
+                                batch_fail += bfail
+                                failed_keys.extend(fkeys)
+                                pending_stream.clear()
+
+            timing["fetch_s"] += time.monotonic() - t_fetch
+
+            _apply_fetch_failures(ledger, results)
+            pending_ok = [
+                r
+                for r in results
+                if r.get("ok") and str(r["stable_key"]) not in flushed_keys
+            ]
+            fetch_fail_n = sum(1 for r in results if not r.get("ok"))
+            fail_count += fetch_fail_n
+            batch_fail += fetch_fail_n
+            for r in results:
+                if not r.get("ok"):
+                    failed_keys.append(str(r["stable_key"]))
+
+            if pending_stream:
+                pending_ok = pending_stream + [
+                    r for r in pending_ok if str(r["stable_key"]) not in {
+                        str(x["stable_key"]) for x in pending_stream
+                    }
+                ]
+
+            if pending_ok:
+                bok, bfail, fkeys = _flush_pending(pending_ok, wave_num=wave_num)
+                batch_ok += bok
+                batch_fail += bfail
+                failed_keys.extend(fkeys)
+
             _pause_between_auctions()
             return batch_ok, batch_fail, failed_keys
 
@@ -429,6 +612,27 @@ def run_pipeline_download(
             if elapsed_min >= PIPELINE_JOB_TIMEBOX_MIN:
                 _phase(f"timebox reached ({elapsed_min:.0f}m); stopping")
                 break
+            stall_min = (time.monotonic() - last_progress_at) / 60.0
+            if (
+                stall_min >= float(DOWNLOAD_STALL_ABORT_MIN)
+                and ok_count == 0
+                and _unique_attempted() > 0
+            ):
+                msg = (
+                    f"download stalled: 0 commits after {stall_min:.0f}m "
+                    f"(threshold {DOWNLOAD_STALL_ABORT_MIN}m)"
+                )
+                _phase(msg)
+                send_lane_report(
+                    lane_id,
+                    "failed",
+                    {
+                        "error": msg,
+                        "github_run_url": _github_run_url(),
+                        "still_need_files": eligible_n,
+                    },
+                )
+                raise RuntimeError(msg)
             if _unique_attempted() >= run_item_cap:
                 _phase(f"max-download cap reached ({run_item_cap})")
                 break
@@ -502,8 +706,21 @@ def run_pipeline_download(
                 f"rate={rate:.1f}/min throttle={throttle.snapshot()}"
             )
             push_ledger(local_path=ledger_path)
+            push_heartbeat(
+                {
+                    "lane": lane_id,
+                    "wave": batch_num,
+                    "ok": ok_count,
+                    "fail": fail_count,
+                    "flush_s": round(timing["flush_s"], 1),
+                    "fetch_s": round(timing["fetch_s"], 1),
+                    "items_per_min": round(rate, 2),
+                    "throttle": throttle.snapshot(),
+                }
+            )
 
         backlog_left = len(select_for_download(ledger, limit=10**9, pdf_dir=pdf_dir, source=source))
+        publish_left = len(select_for_publish(ledger, limit=10**9, source=source))
         attempted = ok_count + fail_count
         budget_ok = fail_budget_ok(
             failed=fail_count,
@@ -546,6 +763,7 @@ def run_pipeline_download(
                 "unique_attempted": len(attempted_keys),
                 "max_download": run_item_cap,
                 "backlog_left": backlog_left,
+                "publish_left": publish_left,
                 "fail_budget_ok": budget_ok,
                 "resume_next": resume,
                 "resume_reason": resume_reason,
@@ -565,7 +783,19 @@ def run_pipeline_download(
         (run_dir / "download_report.json").write_text(
             json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
         )
-        # Event chain: wake parse when new downloads created eligible work
+        # Event chain: wake publish for fetched_local, then parse for done downloads
+        kicked_publish = False
+        if publish_left > 0:
+            kicked_publish, pub_reason = kick_if_needed(
+                "pipeline-publish-media.yml",
+                reason="download_fetched_local",
+                backlog=publish_left,
+            )
+            if kicked_publish:
+                record_resume(
+                    "publish_kick",
+                    {"reason": pub_reason, "publish_left": publish_left, "from": lane_id},
+                )
         parse_eligible = count_parse_eligible(ledger)
         kicked_parse = False
         kick_reason = ""
@@ -587,6 +817,8 @@ def run_pipeline_download(
             extra={
                 "ok_count": ok_count,
                 "parse_kick": kicked_parse,
+                "publish_kick": kicked_publish,
+                "publish_left": publish_left,
                 "parse_kick_reason": kick_reason,
             },
         )
@@ -599,16 +831,20 @@ def run_pipeline_download(
                 "failed": fail_count,
                 "still_need_files": int(truth.get("download_pending") or backlog_left),
                 "ready_to_process": int(truth.get("parse_eligible") or parse_eligible),
+                "ready_for_site": publish_left,
                 "live_on_site": truth.get("live_export_count"),
             },
-            noop=attempted == 0 and backlog_left == 0,
+            noop=attempted == 0 and backlog_left == 0 and publish_left == 0,
         )
         payload["parse_eligible"] = parse_eligible
         payload["parse_kick"] = kicked_parse
+        payload["publish_kick"] = kicked_publish
         payload["truth"] = truth_for_telegram(truth)
         _phase(
             f"done ok={ok_count} fail={fail_count} backlog={backlog_left} "
-            f"rate={rate:.1f}/min parse_eligible={parse_eligible} kick_parse={kicked_parse} "
+            f"publish_left={publish_left} rate={rate:.1f}/min "
+            f"parse_eligible={parse_eligible} kick_parse={kicked_parse} "
+            f"kick_publish={kicked_publish} "
             f"fetch_s={timing['fetch_s']:.1f} flush_s={timing['flush_s']:.1f}"
         )
         return payload

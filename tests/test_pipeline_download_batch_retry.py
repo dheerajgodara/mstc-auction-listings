@@ -115,7 +115,8 @@ def test_wave_end_retries_failures(tmp_path: Path, monkeypatch):
                                                     "scraper.pipeline_download.release_refresh_lock"
                                                 ):
                                                     with patch(
-                                                        "scraper.pipeline_download.send_telegram_report"
+                                                        "scraper.pipeline_download.push_heartbeat",
+                                                        return_value=True,
                                                     ):
                                                         with patch(
                                                             "scraper.pipeline_download.send_lane_report",

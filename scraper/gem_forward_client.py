@@ -68,6 +68,14 @@ class _SshCurlTransport:
             "StrictHostKeyChecking=accept-new",
             "-o",
             "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=15",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-o",
+            "TCPKeepAlive=yes",
             f"{username}@{host}",
         ]
         # Per-process jar avoids cross-job / cross-client cookie clobber on Hostinger.

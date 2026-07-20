@@ -511,6 +511,7 @@ LANE_LABELS: dict[str, str] = {
     "discover_gem": "Discover GeM",
     "download_mstc": "Downloads (MSTC)",
     "download_gem": "Downloads (GeM)",
+    "publish_media": "Uploading files",
     "parse": "Processing",
     "build_deploy": "Site update",
 }
@@ -626,6 +627,20 @@ def build_lane_message(lane: str, event: str, stats: dict[str, Any]) -> str:
             line2_parts.append(f"Live on site: {live}")
         if line2_parts:
             lines.append(" · ".join(line2_parts))
+
+    elif lane == "publish_media":
+        added = _i(stats, "ok_count", "downloaded")
+        failed = _i(stats, "fail_count", "failed")
+        if added == 0 and failed == 0:
+            lines.append("Nothing waiting to upload")
+        else:
+            line = f"+{added} uploaded this run"
+            if failed:
+                line += f" · {failed} failed"
+            lines.append(line)
+        ready = _i(stats, "ready_for_site", "remaining")
+        if ready:
+            lines.append(f"{ready} still waiting to upload")
 
     elif lane == "parse":
         parsed = _i(stats, "parsed")

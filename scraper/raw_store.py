@@ -15,10 +15,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from scraper.config import HOSTINGER_REMOTE_DIR, REPO_ROOT
+from scraper.hostinger_ssh import (
+    clear_stale_control_sockets,
+    hostinger_ssh_config,
+    run_rsync_with_retries,
+    rsync_timeout_args,
+    ssh_argv,
+    ssh_e,
+)
 
 logger = logging.getLogger("scraper.raw_store")
 
 DEFAULT_RAW_DIR = REPO_ROOT / "work" / "raw"
+
+# Re-export for callers that import from raw_store
+_hostinger_ssh_config = hostinger_ssh_config
 
 
 def domain_root_from_remote_dir(remote_dir: str | None = None) -> str:
@@ -100,30 +111,9 @@ class RawSyncResult:
         }
 
 
-def _hostinger_ssh_config() -> dict[str, str] | None:
-    host = (os.environ.get("HOSTINGER_HOST") or "").strip()
-    port = (os.environ.get("HOSTINGER_PORT") or "22").strip()
-    username = (os.environ.get("HOSTINGER_USERNAME") or "").strip()
-    key_path = os.path.expanduser((os.environ.get("HOSTINGER_SSH_KEY") or "").strip())
-    remote_dir = (os.environ.get("HOSTINGER_REMOTE_DIR") or "").strip()
-    if not all([host, username, key_path, remote_dir]):
-        return None
-    if not Path(key_path).is_file():
-        return None
-    return {
-        "host": host,
-        "port": port,
-        "username": username,
-        "key_path": key_path,
-        "remote_dir": remote_dir.rstrip("/"),
-    }
-
-
 def _ssh_cmd(cfg: dict[str, str]) -> str:
-    return (
-        f"ssh -i {cfg['key_path']} -p {cfg['port']} "
-        "-o StrictHostKeyChecking=accept-new -o BatchMode=yes"
-    )
+    """Ledger / tiny-file rsync: short-lived SSH (no ControlMaster)."""
+    return ssh_e(cfg, multiplex=False)
 
 
 _RSYNC_MKPATH: bool | None = None
@@ -166,19 +156,7 @@ def _precreate_remote_nested_dirs(cfg: dict[str, str], remote_root: str, local: 
     for i in range(0, len(ordered), chunk_size):
         chunk = ordered[i : i + chunk_size]
         quoted = " ".join(shlex.quote(p) for p in chunk)
-        mkdir_cmd = [
-            "ssh",
-            "-i",
-            cfg["key_path"],
-            "-p",
-            cfg["port"],
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            "-o",
-            "BatchMode=yes",
-            target,
-            f"mkdir -p {quoted}",
-        ]
+        mkdir_cmd = ssh_argv(cfg, multiplex=False) + [target, f"mkdir -p {quoted}"]
         try:
             subprocess.run(mkdir_cmd, check=True, timeout=120, capture_output=True, text=True)
         except Exception as exc:
@@ -381,22 +359,10 @@ def push_public_media(*, public_dir: Path, timeout_sec: int = 900) -> RawSyncRes
 
 def _ensure_remote_dir(cfg: dict[str, str], remote_path: str) -> str | None:
     """Create remote directory; return error message or None on success."""
-    target = f"{cfg['username']}@{cfg['host']}"
-    mkdir_cmd = [
-        "ssh",
-        "-i",
-        cfg["key_path"],
-        "-p",
-        cfg["port"],
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-o",
-        "BatchMode=yes",
-        target,
-        f"mkdir -p {remote_path}",
-    ]
     try:
-        subprocess.run(mkdir_cmd, check=True, timeout=60, capture_output=True, text=True)
+        from scraper.hostinger_ssh import run_ssh
+
+        run_ssh(cfg, f"mkdir -p {remote_path}", timeout_sec=60, multiplex=False)
     except Exception as exc:
         return f"mkdir failed: {exc}"
     return None
@@ -410,29 +376,21 @@ def _run_rsync_with_retries(
     attempts: int = 3,
     input_text: str | None = None,
 ) -> None:
-    """Run rsync with short backoff. Raises on final failure."""
-    import time
-
-    last_exc: Exception | None = None
-    for attempt in range(1, max(1, attempts) + 1):
-        try:
-            kwargs: dict = {
-                "check": True,
-                "timeout": timeout_sec,
-                "capture_output": True,
-                "text": True,
-            }
-            if input_text is not None:
-                kwargs["input"] = input_text
-            subprocess.run(cmd, **kwargs)
-            return
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            last_exc = exc
-            logger.warning("%s rsync attempt %d/%d failed: %s", label, attempt, attempts, exc)
-            if attempt < attempts:
-                time.sleep(min(2 ** attempt, 8))
-    assert last_exc is not None
-    raise last_exc
+    """Delegate to unified hostinger_ssh retries."""
+    if not any(a.startswith("--timeout=") for a in cmd):
+        insert_at = 1
+        for i, a in enumerate(cmd):
+            if a == "-e":
+                insert_at = i
+                break
+        cmd = cmd[:insert_at] + rsync_timeout_args() + cmd[insert_at:]
+    run_rsync_with_retries(
+        cmd,
+        timeout_sec=timeout_sec,
+        label=label,
+        attempts=attempts,
+        input_text=input_text,
+    )
 
 
 def push_public_pdf_files(

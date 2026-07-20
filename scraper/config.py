@@ -154,6 +154,28 @@ PIPELINE_DOWNLOAD_AUTO_RETRIES_PER_SLOT = 2
 
 # Six independent GHA lanes — fast download: wave fetch + batch Hostinger flush.
 DOWNLOAD_SUCCESS_PAUSE_SEC = float(os.getenv("DOWNLOAD_SUCCESS_PAUSE_SEC", "0"))
+# Wave wall-clock soft deadline (seconds); unfinished futures abandoned, flush what we have.
+DOWNLOAD_WAVE_DEADLINE_SEC = float(os.getenv("DOWNLOAD_WAVE_DEADLINE_SEC", "600"))
+# Per-item portal fetch hard timeout (seconds).
+DOWNLOAD_FETCH_TIMEOUT_SEC = float(os.getenv("DOWNLOAD_FETCH_TIMEOUT_SEC", "180"))
+# Abort lane if zero download commits for this many minutes while pending work remains.
+DOWNLOAD_STALL_ABORT_MIN = float(os.getenv("DOWNLOAD_STALL_ABORT_MIN", "20"))
+# Mid-wave flush every K successful local fetches (0 = only end-of-wave).
+DOWNLOAD_STREAM_FLUSH_EVERY = int(os.getenv("DOWNLOAD_STREAM_FLUSH_EVERY", "10"))
+# When 1, fetch lane marks fetched_local and continues even if Hostinger flush fails.
+DOWNLOAD_DECOUPLE_FLUSH = os.getenv("DOWNLOAD_DECOUPLE_FLUSH", "1").strip() not in (
+    "0",
+    "false",
+    "False",
+    "no",
+)
+# Cloudflare R2 (optional durable SoR).
+R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "").strip()
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "").strip()
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
+R2_BUCKET = os.getenv("R2_BUCKET", "").strip()
+R2_ENDPOINT_URL = os.getenv("R2_ENDPOINT_URL", "").strip()
+R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL", "").strip()
 # Wave-end reattempts of failed auctions (not in-step retries).
 DOWNLOAD_BATCH_RETRY_ROUNDS = int(os.getenv("DOWNLOAD_BATCH_RETRY_ROUNDS", "2"))
 DOWNLOAD_WAVE_SIZE = int(os.getenv("DOWNLOAD_WAVE_SIZE", "25"))

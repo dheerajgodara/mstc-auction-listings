@@ -4,45 +4,26 @@ from __future__ import annotations
 
 import logging
 import shutil
-import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from scraper.hostinger_ssh import (
+    clear_stale_control_sockets,
+    hostinger_ssh_config,
+    run_rsync_with_retries,
+    run_ssh,
+    rsync_timeout_args,
+    ssh_e,
+)
 from scraper.pdf_flush import verify_hostinger_doc_url
 from scraper.pipeline_ledger import public_doc_url
-from scraper.raw_store import _hostinger_ssh_config, rsync_mkpath_args
+from scraper.raw_store import rsync_mkpath_args
 
 logger = logging.getLogger("scraper.download_flush")
 
-
-def _ssh_e(cfg: dict[str, str]) -> str:
-    return (
-        f"ssh -i {cfg['key_path']} -p {cfg['port']} "
-        f"-o StrictHostKeyChecking=accept-new -o BatchMode=yes "
-        f"-o ControlMaster=auto -o ControlPath=/tmp/mstc_dl_ssh_%C -o ControlPersist=600"
-    )
-
-
-def _ssh_base(cfg: dict[str, str]) -> list[str]:
-    return [
-        "ssh",
-        "-i",
-        cfg["key_path"],
-        "-p",
-        cfg["port"],
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ControlMaster=auto",
-        "-o",
-        "ControlPath=/tmp/mstc_dl_ssh_%C",
-        "-o",
-        "ControlPersist=600",
-    ]
+_CONTROL = "/tmp/mstc_dl_ssh_%C"
 
 
 def flush_download_files(
@@ -57,7 +38,9 @@ def flush_download_files(
 
     Returns (ok, message, verified_items) where verified_items passed HTTP 200.
     If rsync fails entirely, verified_items is empty and ok is False.
+    Per-parent-dir flush: one parent failure does not discard already-uploaded parents.
     """
+    del public_dir  # reserved for future local staging roots
     ready: list[dict[str, Any]] = []
     for raw in items:
         rel = str(raw.get("hostinger_doc_path") or "").strip().lstrip("/")
@@ -81,11 +64,12 @@ def flush_download_files(
     if not ready:
         return True, "nothing to flush", []
 
-    cfg = _hostinger_ssh_config()
+    cfg = hostinger_ssh_config()
     if cfg is None or shutil.which("rsync") is None:
         return False, "Hostinger SSH/rsync unavailable", []
 
-    # Group by remote parent dir under auctions root
+    clear_stale_control_sockets(prefix="/tmp/mstc_dl_ssh_")
+
     by_remote: dict[str, list[dict[str, Any]]] = {}
     for it in ready:
         rel = it["hostinger_doc_path"]
@@ -95,13 +79,20 @@ def flush_download_files(
         by_remote.setdefault(parent, []).append(it)
 
     target = f"{cfg['username']}@{cfg['host']}"
-    ssh_e = _ssh_e(cfg)
-    uploaded = 0
-    try:
-        for parent, group in by_remote.items():
-            remote_dir = f"{cfg['remote_dir'].rstrip('/')}/{parent}"
-            mkdir = _ssh_base(cfg) + [target, f"mkdir -p {remote_dir}"]
-            subprocess.run(mkdir, check=True, timeout=60, capture_output=True, text=True)
+    ssh_e_str = ssh_e(cfg, multiplex=True, control_path=_CONTROL)
+    uploaded_items: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    for parent, group in by_remote.items():
+        remote_dir = f"{cfg['remote_dir'].rstrip('/')}/{parent}"
+        try:
+            run_ssh(
+                cfg,
+                f"mkdir -p {remote_dir}",
+                timeout_sec=60,
+                multiplex=True,
+                control_path=_CONTROL,
+            )
             with tempfile.TemporaryDirectory(prefix="dl_flush_") as tmp:
                 stage = Path(tmp)
                 for it in group:
@@ -113,25 +104,27 @@ def flush_download_files(
                     "-az",
                     "--compress-level=0",
                     "--chmod=F644",
+                    *rsync_timeout_args(),
                     *rsync_mkpath_args(),
                     "-e",
-                    ssh_e,
+                    ssh_e_str,
                     f"{stage}/",
                     remote,
                 ]
-                subprocess.run(
+                run_rsync_with_retries(
                     cmd,
-                    check=True,
-                    timeout=600,
-                    capture_output=True,
-                    text=True,
+                    timeout_sec=180,
+                    label=f"dl-flush:{parent}",
+                    attempts=3,
                 )
-                uploaded += len(group)
-    except Exception as exc:
-        logger.warning("flush_download_files rsync failed: %s", exc)
-        return False, str(exc), []
+                uploaded_items.extend(group)
+        except Exception as exc:
+            logger.warning("flush_download_files parent=%s failed: %s", parent, exc)
+            errors.append(f"{parent}: {exc}")
 
-    # Parallel HTTP verify
+    if not uploaded_items:
+        return False, "; ".join(errors) or "rsync failed", []
+
     verified: list[dict[str, Any]] = []
 
     def _check(it: dict[str, Any]) -> dict[str, Any] | None:
@@ -142,15 +135,15 @@ def flush_download_files(
             return out
         return None
 
-    workers = min(16, max(1, len(ready)))
+    workers = min(16, max(1, len(uploaded_items)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = {pool.submit(_check, it): it for it in ready}
+        futs = {pool.submit(_check, it): it for it in uploaded_items}
         for fut in as_completed(futs):
             got = fut.result()
             if got is not None:
                 verified.append(got)
 
-    if len(verified) < len(ready):
-        msg = f"flushed {uploaded}; verified {len(verified)}/{len(ready)}"
-        return True, msg, verified
-    return True, f"flushed+verified {len(verified)}", verified
+    msg = f"flushed {len(uploaded_items)}; verified {len(verified)}/{len(uploaded_items)}"
+    if errors:
+        msg += f" (partial errors: {'; '.join(errors[:3])})"
+    return True, msg, verified

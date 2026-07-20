@@ -48,6 +48,7 @@ jobs:
           HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
         run: PYTHONPATH=. python -m scraper.pipeline_schema_migrate --pull --push
       - name: Download MSTC wave (parallel fetch + batch flush)
+        timeout-minutes: 90
         env:
           PYTHONUNBUFFERED: "1"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -63,6 +64,14 @@ jobs:
           DOWNLOAD_BATCH_RETRY_ROUNDS: "2"
           DOWNLOAD_WAVE_SIZE: "25"
           DOWNLOAD_FETCH_WORKERS_MSTC: "4"
+          DOWNLOAD_WAVE_DEADLINE_SEC: "600"
+          DOWNLOAD_FETCH_TIMEOUT_SEC: "180"
+          DOWNLOAD_STALL_ABORT_MIN: "20"
+          DOWNLOAD_STREAM_FLUSH_EVERY: "10"
+          DOWNLOAD_DECOUPLE_FLUSH: "1"
+          SSH_CONNECT_TIMEOUT: "15"
+          SSH_SERVER_ALIVE_INTERVAL: "30"
+          RSYNC_IO_TIMEOUT: "120"
         run: |
           CAP="${{ github.event.inputs.max_download }}"
           if [ -z "$CAP" ]; then CAP=2000; fi

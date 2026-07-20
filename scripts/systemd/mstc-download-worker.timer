@@ -1,0 +1,13 @@
+[Unit]
+Description=Run MSTC download worker every 15 minutes
+Requires=mstc-download-worker.service
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+Unit=mstc-download-worker.service
+
+[Install]
+WantedBy=timers.target

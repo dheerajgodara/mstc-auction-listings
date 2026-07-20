@@ -1,22 +1,26 @@
-name: Lane Download GeM
+name: Lane Publish Media
 
 on:
   schedule:
-    # Temporary backlog drain: ~every 45m (UTC :00 and :45)
-    - cron: "0,45 * * * *"
+    # Drain fetched_local → Hostinger/R2 every 20m (staggered)
+    - cron: "12,32,52 * * * *"
   workflow_dispatch:
     inputs:
-      max_download:
-        description: "Per-run download cap (default 2000)"
+      source:
+        description: "mstc | gem_forward | empty=all"
         required: false
-        default: "2000"
+        default: ""
+      wave_size:
+        description: "Items per wave"
+        required: false
+        default: "50"
 
 jobs:
-  download-gem:
+  publish-media:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 120
     concurrency:
-      group: pipeline-download-gem
+      group: pipeline-publish-media
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +33,7 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
-      - name: Download GeM wave (parallel fetch + batch flush)
+      - name: Publish fetched_local to Hostinger/R2
         timeout-minutes: 90
         env:
           PYTHONUNBUFFERED: "1"
@@ -42,26 +46,23 @@ jobs:
           HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          DOWNLOAD_SUCCESS_PAUSE_SEC: "0"
-          DOWNLOAD_BATCH_RETRY_ROUNDS: "2"
-          DOWNLOAD_WAVE_SIZE: "25"
-          DOWNLOAD_FETCH_WORKERS_GEM: "3"
-          DOWNLOAD_WAVE_DEADLINE_SEC: "600"
-          DOWNLOAD_FETCH_TIMEOUT_SEC: "180"
-          DOWNLOAD_STALL_ABORT_MIN: "20"
-          DOWNLOAD_STREAM_FLUSH_EVERY: "10"
-          DOWNLOAD_DECOUPLE_FLUSH: "1"
           SSH_CONNECT_TIMEOUT: "15"
           SSH_SERVER_ALIVE_INTERVAL: "30"
           RSYNC_IO_TIMEOUT: "120"
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
         run: |
-          CAP="${{ github.event.inputs.max_download }}"
-          if [ -z "$CAP" ]; then CAP=2000; fi
-          PYTHONPATH=. python -m scraper.pipeline_download \
-            --source gem_forward \
-            --wave-size 25 \
-            --batch-size 25 \
-            --max-batches 80 \
-            --max-download "$CAP" \
-            --skip-pdf \
-            --break-stale-lock
+          SRC="${{ github.event.inputs.source }}"
+          WAVE="${{ github.event.inputs.wave_size }}"
+          if [ -z "$WAVE" ]; then WAVE=50; fi
+          EXTRA=""
+          if [ -n "$SRC" ]; then EXTRA="--source $SRC"; fi
+          PYTHONPATH=. python -m scraper.pipeline_publish_media \
+            --wave-size "$WAVE" \
+            --max-waves 40 \
+            --break-stale-lock \
+            $EXTRA
