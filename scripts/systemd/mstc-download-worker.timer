@@ -1,10 +1,10 @@
 [Unit]
-Description=Run MSTC download worker every 15 minutes
+Description=Run MSTC VPS download worker every 10 minutes
 Requires=mstc-download-worker.service
 
 [Timer]
-OnBootSec=3min
-OnUnitActiveSec=15min
+OnBootSec=2min
+OnUnitActiveSec=10min
 AccuracySec=1min
 Persistent=true
 Unit=mstc-download-worker.service

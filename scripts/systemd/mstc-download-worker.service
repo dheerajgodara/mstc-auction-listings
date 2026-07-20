@@ -1,5 +1,5 @@
 [Unit]
-Description=MSTC/GeM auction download worker (drain backlog)
+Description=MSTC auction download worker on MIYNU VPS (polite R2 scratch path)
 After=network-online.target
 Wants=network-online.target
 
@@ -7,13 +7,16 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/mstc-auction-listings
 Environment=PYTHONUNBUFFERED=1
-Environment=DOWNLOAD_DECOUPLE_FLUSH=1
-Environment=DOWNLOAD_STALL_ABORT_MIN=20
+Environment=MEDIA_R2_ONLY=1
+Environment=DOWNLOAD_DECOUPLE_FLUSH=0
+Environment=VPS_DOWNLOAD_GAP_SEC=2
+Environment=VPS_DOWNLOAD_CONCURRENCY=2
+Environment=VPS_DOWNLOAD_FAIL_STREAK_ABORT=5
 Environment=SSH_CONNECT_TIMEOUT=15
 Environment=RSYNC_IO_TIMEOUT=120
-# Set Hostinger + optional R2 secrets in /etc/mstc-pipeline.env
+# Hostinger + R2 + Telegram secrets
 EnvironmentFile=-/etc/mstc-pipeline.env
-ExecStart=/opt/mstc-auction-listings/scripts/download_worker.sh mstc 200
+ExecStart=/opt/mstc-auction-listings/scripts/download_worker.sh mstc 150
 Nice=10
 
 [Install]

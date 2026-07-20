@@ -12,11 +12,13 @@ All crons are **UTC**. IST = UTC+5:30. Schedules live on the **default branch** 
 |------|------------|--------------|----------|-------------|---------|-------------|
 | Discover MSTC | `17 */3 * * *` | :47 | 3h | queue_cap **500** | 90m | `pipeline-discover-mstc` |
 | Discover GeM | `23 */3 * * *` | :53 | 3h | queue_cap **500** | 90m | `pipeline-discover-gem` |
-| Download MSTC | `41 * * * *` | :11 | 1h | max **150**; wave 25; workers 4; max-batches 20 | 120m / step 90m | `pipeline-download-mstc` |
+| Download MSTC | **VPS timer** (every 10m) | — | 10m | max **150**; concurrency 2; gap 2s | oneshot | MIYNU `/opt/mstc-auction-listings` |
 | Download GeM | `47 * * * *` | :17 | 1h | max **100**; wave 25; workers 3 | 120m / step 90m | `pipeline-download-gem` |
 | Parse Assets | `11 * * * *` | :41 | 1h | max_parse **200**; wave 100; workers 2 | 120m | `pipeline-parse-assets` |
 | Build Deploy | `19 */2 * * *` | :49 | 2h | normal export (no scheduled `allow_small`) | 180m | `pipeline-build-deploy` |
 | Publish Media | *(none)* | — | manual | wave 50 | 60m | `pipeline-publish-media` |
+
+**MSTC download:** sole writer is the MIYNU VPS worker ([`docs/VPS_DOWNLOAD_WORKER.md`](VPS_DOWNLOAD_WORKER.md)). GHA `pipeline-download-mstc.yml` has **no schedule** (manual emergency only). Do not run GHA Download MSTC while the VPS timer is enabled.
 
 Shared rules:
 

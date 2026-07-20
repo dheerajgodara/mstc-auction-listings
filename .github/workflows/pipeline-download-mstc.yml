@@ -1,13 +1,12 @@
 name: Lane Download MSTC
 
+# VPS (MIYNU) is the sole scheduled MSTC downloader.
+# This workflow is emergency / manual only — no cron.
 on:
-  schedule:
-    # Steady-state: hourly at :41 UTC (IST ≈ :11); odd offset avoids :00/:30 congestion
-    - cron: "41 * * * *"
   workflow_dispatch:
     inputs:
       max_download:
-        description: "Per-run download cap (default 150 steady-state)"
+        description: "Per-run download cap (emergency GHA path; prefer VPS worker)"
         required: false
         default: "150"
       migrate_ledger:

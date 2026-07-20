@@ -65,16 +65,25 @@ def flush_download_files(
     uploaded_items: list[dict[str, Any]] = []
     errors: list[str] = []
 
-    for it in ready:
+    def _upload_one(it: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
         rel = it["hostinger_doc_path"]
         up = upload_hostinger_rel(it["local_path"], rel)
         if not up.get("ok"):
-            errors.append(f"{rel}: {up.get('error')}")
-            continue
+            return None, f"{rel}: {up.get('error')}"
         out = dict(it)
         out["object_doc_url"] = up.get("url") or public_object_url(rel) or public_doc_url(rel)
         out["hostinger_doc_url"] = out["object_doc_url"]
-        uploaded_items.append(out)
+        return out, None
+
+    upload_workers = min(8, max(1, len(ready)))
+    with ThreadPoolExecutor(max_workers=upload_workers) as pool:
+        futs = {pool.submit(_upload_one, it): it for it in ready}
+        for fut in as_completed(futs):
+            out, err = fut.result()
+            if err:
+                errors.append(err)
+            elif out is not None:
+                uploaded_items.append(out)
 
     if not uploaded_items:
         return False, "; ".join(errors) or "R2 upload failed", []
