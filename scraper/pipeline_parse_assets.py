@@ -573,16 +573,12 @@ def run_parse_assets(
             "parse",
             "finished",
             {
-                "status": status,
                 "parsed": parsed_n,
                 "skipped_fresh": skipped,
                 "failed": failed,
-                "backlog_left": backlog,
-                "resume_next": resume,
-                "items_per_sec": round((parsed_n + skipped) / elapsed, 3) if elapsed else 0,
-                "publishable_future": future_n,
-                "deploy_kick": kicked_deploy,
-                **truth_for_telegram(truth),
+                "ready_to_process": backlog,
+                "ready_for_site": future_n,
+                "live_on_site": truth.get("live_export_count"),
             },
             noop=attempted == 0 and skipped == 0 and backlog == 0,
         )
@@ -618,7 +614,7 @@ def run_parse_assets(
         )
         return payload
     except Exception as exc:
-        send_lane_report("parse", "failed", {"error": str(exc), "backlog_left": "?"})
+        send_lane_report("parse", "failed", {"error": str(exc)})
         raise
     finally:
         release_refresh_lock(lock_path=lock_path, run_id=run_id)

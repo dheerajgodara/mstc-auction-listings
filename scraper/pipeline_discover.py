@@ -40,7 +40,7 @@ from scraper.pipeline_ledger import (
 from scraper.raw_store import pull_public_pdf_files, pull_raw_store
 from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
-from scraper.telegram_reporter import send_lane_report, send_telegram_report
+from scraper.telegram_reporter import send_lane_report
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_discover")
@@ -124,7 +124,6 @@ def run_pipeline_discover(
         "warnings": [],
         "errors": [],
     }
-    send_telegram_report(payload, event="discover_started")
 
     warnings: list[str] = []
     errors: list[str] = []
@@ -294,20 +293,15 @@ def run_pipeline_discover(
         (run_dir / "discover_report.json").write_text(
             json.dumps(payload, indent=2) + "\n", encoding="utf-8"
         )
-        event = "discover_empty" if queued_count == 0 else "discover_done"
-        send_telegram_report(payload, event=event)
+        # Lane report only (no dual event telegram).
         listed = int(payload["discovery"]["total"] or 0)
         send_lane_report(
             lane_id,
             "finished",
             {
-                "status": "Done",
                 "listed": listed,
                 "new": queued_new,
                 "queued_download": queued_count,
-                "unchanged": max(0, listed - queued_new),
-                "cap": queue_cap,
-                "snapshot": snap_name,
             },
             noop=queued_count == 0 and listed == 0,
         )
@@ -323,7 +317,6 @@ def run_pipeline_discover(
         payload["errors"] = errors
         payload["warnings"] = warnings
         payload["finished_at"] = datetime.now(IST).isoformat()
-        send_telegram_report(payload, event="discover_failed")
         srcs = sources or []
         fail_lane = (
             "discover_mstc"
@@ -335,7 +328,7 @@ def run_pipeline_discover(
         send_lane_report(
             fail_lane,
             "failed",
-            {"error": str(exc), "backlog_left": "?"},
+            {"error": str(exc)},
         )
         raise
     finally:

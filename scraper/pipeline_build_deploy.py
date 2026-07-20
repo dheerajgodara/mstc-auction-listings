@@ -333,15 +333,10 @@ def run_build_deploy(
             "build_deploy",
             "finished",
             {
-                "status": "Complete",
                 "published": export["count"],
-                "publishable_ledger": len(publishable),
-                "publishable_future": future_n,
-                "aged_out_stripped": len(strip.dropped),
-                "future_pending_deploy": future_pending,
-                "self_resume": kicked,
-                "site_base_url": SITE_BASE_URL,
-                **truth_for_telegram(truth),
+                "live_on_site": export["count"],
+                "ready_for_site": future_n,
+                "aged_out": int(truth.get("aged_out_parsed") or len(strip.dropped)),
             },
             noop=export["count"] == 0 and not allow_small_export,
         )

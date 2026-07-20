@@ -509,11 +509,34 @@ def send_ai_enrichment_report(payload: dict[str, Any], *, event: str = "report")
 LANE_LABELS: dict[str, str] = {
     "discover_mstc": "Discover MSTC",
     "discover_gem": "Discover GeM",
-    "download_mstc": "Download MSTC",
-    "download_gem": "Download GeM",
-    "parse": "Parse",
-    "build_deploy": "Build Deploy",
+    "download_mstc": "Downloads (MSTC)",
+    "download_gem": "Downloads (GeM)",
+    "parse": "Processing",
+    "build_deploy": "Site update",
 }
+
+# Words that must never appear in lane Telegram (jargon / inventory traps).
+LANE_BANNED_PHRASES: frozenset[str] = frozenset(
+    {
+        "fail budget",
+        "timebox",
+        "pdfs_on_disk",
+        "parsed_on_disk",
+        "parse_eligible",
+        "publishable",
+        "backlog left",
+        "auto-resume",
+        "snapshot",
+        "schema",
+        "workers",
+        "wave",
+        "hostinger",
+        "ready merged",
+        "material-searchable",
+    }
+)
+
+LANE_MAX_CHARS = 350
 
 
 def _ist_now_short() -> str:
@@ -523,75 +546,133 @@ def _ist_now_short() -> str:
     return datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %H:%M IST")
 
 
+def _i(stats: dict[str, Any], *keys: str, default: int = 0) -> int:
+    for k in keys:
+        if stats.get(k) is not None:
+            try:
+                return int(stats[k])
+            except (TypeError, ValueError):
+                continue
+    return default
+
+
+def _github_run_url_from_env() -> str:
+    server = os.environ.get("GITHUB_SERVER_URL")
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if server and repo and run_id:
+        return f"{server}/{repo}/actions/runs/{run_id}"
+    return ""
+
+
 def build_lane_message(lane: str, event: str, stats: dict[str, Any]) -> str:
-    """Short professional per-lane Telegram body (plain text / HTML-safe)."""
+    """Minimal human-readable lane card (Progress or Action only)."""
     label = LANE_LABELS.get(lane, lane)
-    header = f"SAI · {_h(label)}"
-    when = _h(stats.get("when") or _ist_now_short())
-    lines = [header]
+    lines: list[str] = [f"<b>{_h(label)}</b>"]
 
     if event == "failed":
-        lines.append(f"FAILED · {when}")
-        err = _clip(str(stats.get("error") or "unknown error"), 180)
-        lines.append(f"Error: {_h(err)}")
-        if stats.get("backlog_left") is not None:
-            lines.append(f"Backlog unchanged: {_h(stats.get('backlog_left'))} · Manual check required")
-        return "\n".join(lines)
+        lines.append("FAILED")
+        err = _clip(str(stats.get("error") or "Something went wrong"), 140)
+        lines.append(_h(err))
+        url = str(stats.get("github_run_url") or _github_run_url_from_env()).strip()
+        if url:
+            lines.append(f'<a href="{escape(url, quote=True)}">Open log</a>')
+        text = "\n".join(lines)
+        if len(text) > LANE_MAX_CHARS:
+            text = text[: LANE_MAX_CHARS - 1].rstrip() + "…"
+        return text
 
-    status = str(stats.get("status") or "Done")
-    lines.append(f"{_h(status)} · {when}")
-
+    # --- Progress ---
     if lane.startswith("discover_"):
-        lines.append(
-            "Listed: {listed} · New: {new} · Queued download: {queued} · Unchanged: {unchanged}".format(
-                listed=_h(stats.get("listed", 0)),
-                new=_h(stats.get("new", 0)),
-                queued=_h(stats.get("queued_download", 0)),
-                unchanged=_h(stats.get("unchanged", 0)),
-            )
-        )
+        listed = _i(stats, "listed")
+        new = _i(stats, "new")
+        queued = _i(stats, "queued_download", "queued")
+        if listed == 0 and new == 0 and queued == 0:
+            lines.append("Nothing new to queue")
+        else:
+            lines.append(f"Found {listed} live · {new} new · {queued} queued for download")
+        need = _i(stats, "download_pending", "still_need_files")
+        ready_proc = _i(stats, "ready_to_process")
+        live = _i(stats, "live_on_site", "live_export_count")
         bits = []
-        if stats.get("cap") is not None:
-            bits.append(f"Cap: {_h(stats.get('cap'))}")
-        if stats.get("snapshot"):
-            bits.append(f"Snapshot: {_h(stats.get('snapshot'))}")
+        if need:
+            bits.append(f"{need} still need files")
+        if ready_proc:
+            bits.append(f"{ready_proc} ready to process")
+        if live:
+            bits.append(f"Live on site: {live}")
         if bits:
             lines.append(" · ".join(bits))
+
     elif lane.startswith("download_"):
-        verb = "Fetched docs" if lane == "download_gem" else "Downloaded"
-        lines.append(
-            f"{verb}: {_h(stats.get('downloaded', 0))} · "
-            f"Skipped: {_h(stats.get('skipped_existing', 0))} · "
-            f"Failed: {_h(stats.get('failed', 0))}"
-        )
-        budget = "OK" if stats.get("fail_budget_ok", True) else "EXCEEDED"
-        lines.append(
-            f"Backlog left: {_h(stats.get('backlog_left', 0))} · Fail budget {budget}"
-        )
-        if stats.get("resume_next"):
-            lines.append("Next: auto-resume this lane")
+        added = _i(stats, "downloaded", "ok_count")
+        failed = _i(stats, "failed")
+        if added == 0 and failed == 0:
+            lines.append("No new files this run")
+        else:
+            line = f"+{added} this run"
+            if failed:
+                line += f" · {failed} failed"
+            lines.append(line)
+        need = _i(stats, "still_need_files", "download_pending", "backlog_left")
+        ready_proc = _i(stats, "ready_to_process")
+        live = _i(stats, "live_on_site", "live_export_count")
+        line2_parts = []
+        if need:
+            line2_parts.append(f"{need} still need files")
+        if ready_proc:
+            line2_parts.append(f"{ready_proc} ready to process")
+        if live:
+            line2_parts.append(f"Live on site: {live}")
+        if line2_parts:
+            lines.append(" · ".join(line2_parts))
+
     elif lane == "parse":
-        lines.append(
-            f"Parsed: {_h(stats.get('parsed', 0))} · "
-            f"Skipped (fresh): {_h(stats.get('skipped_fresh', 0))} · "
-            f"Failed: {_h(stats.get('failed', 0))}"
-        )
-        lines.append(f"Parse backlog left: {_h(stats.get('backlog_left', 0))}")
-        if stats.get("resume_next"):
-            lines.append("Next: auto-resume this lane")
+        parsed = _i(stats, "parsed")
+        failed = _i(stats, "failed")
+        skipped = _i(stats, "skipped_fresh", "skipped")
+        if parsed == 0 and failed == 0:
+            lines.append("Nothing new to process this run")
+        else:
+            line = f"+{parsed} processed this run"
+            if skipped:
+                line += f" · {skipped} already done"
+            if failed:
+                line += f" · {failed} failed"
+            lines.append(line)
+        ready_proc = _i(stats, "ready_to_process", "backlog_left")
+        ready_site = _i(stats, "ready_for_site", "publishable_future")
+        live = _i(stats, "live_on_site", "live_export_count")
+        line2_parts = []
+        if ready_proc:
+            line2_parts.append(f"{ready_proc} ready to process")
+        if ready_site:
+            line2_parts.append(f"{ready_site} ready for site")
+        if live:
+            line2_parts.append(f"Live on site: {live}")
+        if line2_parts:
+            lines.append(" · ".join(line2_parts))
+
     elif lane == "build_deploy":
-        deploy = "OK" if stats.get("deploy_ok", True) else "FAILED"
-        lines.append(
-            f"Ready merged: {_h(stats.get('ready_merged', 0))} · "
-            f"Site auctions: {_h(stats.get('export_count', 0))} · "
-            f"Deploy: {deploy}"
-        )
-        if stats.get("with_lots_count") is not None:
-            lines.append(f"Material-searchable (with lots): {_h(stats.get('with_lots_count'))}")
+        live = _i(stats, "published", "live_on_site", "live_export_count", "export_count")
+        aged = _i(stats, "aged_out", "aged_out_parsed", "aged_out_stripped")
+        ready_site = _i(stats, "ready_for_site", "publishable_future")
+        lines.append(f"Live on site: {live}")
+        extra = []
+        if ready_site and ready_site != live:
+            extra.append(f"{ready_site} ready for site")
+        if aged:
+            extra.append(f"~{aged} finished but closing already passed — expected")
+        if extra:
+            lines.append(" · ".join(extra))
+
+    else:
+        status = str(stats.get("status") or "Done")
+        lines.append(_h(status))
 
     text = "\n".join(lines)
-    if len(text) > MAX_MESSAGE_CHARS:
-        text = text[: MAX_MESSAGE_CHARS - 1].rstrip() + "…"
+    if len(text) > LANE_MAX_CHARS:
+        text = text[: LANE_MAX_CHARS - 1].rstrip() + "…"
     return text
 
 
@@ -608,4 +689,6 @@ def send_lane_report(
     if noop and TELEGRAM_NOOP_SILENT:
         logger.debug("telegram noop silent: lane=%s", lane)
         return True
+    if not stats.get("github_run_url"):
+        stats["github_run_url"] = _github_run_url_from_env()
     return send_telegram_message(build_lane_message(lane, event, stats))

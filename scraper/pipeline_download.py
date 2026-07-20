@@ -50,7 +50,7 @@ from scraper.pipeline_ledger import (
 from scraper.pipeline_status import publish_pipeline_status, truth_for_telegram
 from scraper.raw_store import _hostinger_ssh_config, pull_public_pdf_files
 from scraper.refresh_lock import acquire_refresh_lock, release_refresh_lock
-from scraper.telegram_reporter import send_lane_report, send_telegram_report
+from scraper.telegram_reporter import send_lane_report
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger("scraper.pipeline_download")
@@ -213,7 +213,6 @@ def run_pipeline_download(
         "warnings": [],
         "errors": [],
     }
-    send_telegram_report(payload, event="download_started")
 
     warnings: list[str] = []
     errors: list[str] = []
@@ -547,8 +546,6 @@ def run_pipeline_download(
         (run_dir / "download_report.json").write_text(
             json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
         )
-        send_telegram_report(payload, event="download_done")
-        status = "Complete" if backlog_left == 0 else "Paused · timebox"
         # Event chain: wake parse when new downloads created eligible work
         parse_eligible = count_parse_eligible(ledger)
         kicked_parse = False
@@ -574,21 +571,16 @@ def run_pipeline_download(
                 "parse_kick_reason": kick_reason,
             },
         )
+        # Lane report only (human vocabulary; no dual event telegram).
         send_lane_report(
             lane_id,
             "finished",
             {
-                "status": status if backlog_left else "Complete",
                 "downloaded": ok_count,
-                "skipped_existing": skipped_existing,
                 "failed": fail_count,
-                "backlog_left": backlog_left,
-                "fail_budget_ok": budget_ok,
-                "resume_next": resume,
-                "items_per_min": round(rate, 2),
-                "parse_eligible": parse_eligible,
-                "parse_kick": kicked_parse,
-                **truth_for_telegram(truth),
+                "still_need_files": int(truth.get("download_pending") or backlog_left),
+                "ready_to_process": int(truth.get("parse_eligible") or parse_eligible),
+                "live_on_site": truth.get("live_export_count"),
             },
             noop=attempted == 0 and backlog_left == 0,
         )
@@ -608,8 +600,7 @@ def run_pipeline_download(
         payload["errors"] = errors
         payload["warnings"] = warnings
         payload["finished_at"] = datetime.now(IST).isoformat()
-        send_telegram_report(payload, event="download_failed")
-        send_lane_report(lane_id, "failed", {"error": str(exc), "backlog_left": "?"})
+        send_lane_report(lane_id, "failed", {"error": str(exc)})
         raise
     finally:
         release_refresh_lock(lock_path=lock_path, run_id=run_id)
