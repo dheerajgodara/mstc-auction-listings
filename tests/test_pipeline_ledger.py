@@ -7,10 +7,13 @@ from zoneinfo import ZoneInfo
 from scraper.pipeline_ledger import (
     MAX_STAGE_ATTEMPTS,
     LedgerItem,
+    compute_publishable,
     empty_ledger,
     estimated_download_runs_to_clear,
     mark_download,
     mark_parse,
+    merge_ledger_item,
+    merge_ledgers,
     select_for_download,
     select_for_parse,
     write_ledger,
@@ -407,3 +410,116 @@ def test_mark_download_clears_hostinger_on_failure():
     assert item.download == "pending"
     assert item.hostinger_doc_path is None
     assert item.download_error == "missing PDF"
+
+
+def test_mark_download_same_sha_does_not_wipe_parse():
+    now = datetime.now(IST).isoformat()
+    ledger = empty_ledger()
+    ledger.items.append(
+        LedgerItem(
+            stable_key="mstc:1",
+            source="mstc",
+            source_auction_id="1",
+            download="done",
+            parse="done",
+            lots_count=4,
+            hostinger_doc_path="pdfs/1.pdf",
+            hostinger_doc_url="https://cdn.example/pdfs/1.pdf",
+            object_doc_url="https://cdn.example/pdfs/1.pdf",
+            doc_sha256="abc123",
+            first_seen_at=now,
+            updated_at=now,
+        )
+    )
+    mark_download(
+        ledger,
+        "mstc:1",
+        ok=True,
+        pdf_path="pdfs/1.pdf",
+        object_doc_url="https://cdn.example/pdfs/1.pdf",
+        doc_sha256="abc123",
+        content_changed=True,
+    )
+    item = ledger.by_key()["mstc:1"]
+    assert item.parse == "done"
+    assert item.lots_count == 4
+
+
+def test_merge_ledger_preserves_remote_parse_against_stale_download_writer():
+    """Reproduce the production race: VPS push must not wipe GHA parse=done."""
+    now = datetime.now(IST).isoformat()
+    # Stale VPS view: download advanced, parse still pending
+    ours = empty_ledger()
+    ours.items.append(
+        LedgerItem(
+            stable_key="mstc:99",
+            source="mstc",
+            source_auction_id="99",
+            download="done",
+            parse="pending",
+            lots_count=0,
+            hostinger_doc_path="pdfs/99.pdf",
+            object_doc_url="https://cdn.example/pdfs/99.pdf",
+            doc_sha256="sha99",
+            first_seen_at=now,
+            updated_at=now,
+        )
+    )
+    # Remote after parse wave
+    theirs = empty_ledger()
+    theirs.items.append(
+        LedgerItem(
+            stable_key="mstc:99",
+            source="mstc",
+            source_auction_id="99",
+            download="done",
+            parse="done",
+            lots_count=7,
+            parsed_path="parsed/mstc/99.json",
+            hostinger_doc_path="pdfs/99.pdf",
+            object_doc_url="https://cdn.example/pdfs/99.pdf",
+            doc_sha256="sha99",
+            first_seen_at=now,
+            updated_at=now,
+        )
+    )
+    merged = merge_ledgers(ours, theirs)
+    item = merged.by_key()["mstc:99"]
+    assert item.parse == "done"
+    assert item.lots_count == 7
+    assert item.download == "done"
+    assert compute_publishable(item)
+
+
+def test_merge_ledger_item_allows_parse_reset_on_sha_change():
+    now = datetime.now(IST).isoformat()
+    ours = LedgerItem(
+        stable_key="mstc:1",
+        source="mstc",
+        source_auction_id="1",
+        download="done",
+        parse="pending",
+        lots_count=0,
+        hostinger_doc_path="pdfs/1.pdf",
+        object_doc_url="https://cdn.example/pdfs/1.pdf",
+        doc_sha256="newsha",
+        first_seen_at=now,
+        updated_at=now,
+    )
+    theirs = LedgerItem(
+        stable_key="mstc:1",
+        source="mstc",
+        source_auction_id="1",
+        download="done",
+        parse="done",
+        lots_count=3,
+        hostinger_doc_path="pdfs/1.pdf",
+        object_doc_url="https://cdn.example/pdfs/1.pdf",
+        doc_sha256="oldsha",
+        first_seen_at=now,
+        updated_at=now,
+    )
+    out = merge_ledger_item(ours, theirs)
+    assert out.parse == "pending"
+    assert out.lots_count == 0
+    assert out.doc_sha256 == "newsha"

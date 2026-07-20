@@ -12,7 +12,14 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from scraper.config import DEFAULT_JSON_OUT, DEFAULT_PARSED_DIR, DEFAULT_PIPELINE_LEDGER, REPO_ROOT, SITE_BASE_URL
+from scraper.config import (
+    DEFAULT_JSON_OUT,
+    DEFAULT_PARSED_DIR,
+    DEFAULT_PIPELINE_LEDGER,
+    PARSER_CACHE_VERSION,
+    REPO_ROOT,
+    SITE_BASE_URL,
+)
 from scraper.export_guard import write_auctions_json
 from scraper.export_hygiene import repair_absolute_asset_paths, strip_aged_out_auctions
 from scraper.filters import make_run_id, resolve_min_closing
@@ -27,6 +34,7 @@ from scraper.pipeline_ledger import (
     count_publishable_future,
     load_ledger,
     mark_deploy,
+    mark_parse,
     media_doc_path,
     media_doc_url,
     public_doc_url,
@@ -49,6 +57,43 @@ logger = logging.getLogger("scraper.pipeline_build_deploy")
 def _phase(msg: str) -> None:
     print(f"[build_deploy] {msg}", flush=True)
     logger.info(msg)
+
+
+def reconcile_parse_marks_from_artifacts(ledger: Any, parsed_root: Path) -> int:
+    """Restore parse=done from on-disk artifacts when ledger marks were wiped.
+
+    Concurrent VPS download pushes used to clobber GHA parse marks (last-writer-wins).
+    Parsed JSON still lives under Hostinger/work parsed/; rebuild ledger from that.
+    """
+    healed = 0
+    for item in list(ledger.items):
+        if item.download != "done":
+            continue
+        if not media_doc_url(item) or not media_doc_path(item):
+            continue
+        if item.parse == "done" and int(item.lots_count or 0) > 0:
+            continue
+        path = parsed_root / item.source / f"{item.source_auction_id}.json"
+        art = load_parse_artifact(path)
+        if not art:
+            continue
+        rec = art.get("record")
+        if not isinstance(rec, dict):
+            continue
+        lots = rec.get("lots") or []
+        if not isinstance(lots, list) or not lots:
+            continue
+        rel = f"parsed/{item.source}/{item.source_auction_id}.json"
+        mark_parse(
+            ledger,
+            item.stable_key,
+            ok=True,
+            lots_count=len(lots),
+            parsed_path=rel,
+            parser_version=str(art.get("parser_version") or PARSER_CACHE_VERSION),
+        )
+        healed += 1
+    return healed
 
 
 def _load_discovery_snapshots() -> dict[str, dict[str, Any]]:
@@ -211,6 +256,12 @@ def run_build_deploy(
                 "ledger pull failed and local ledger is empty — refusing build-deploy"
             )
         discovery_by_key = _load_discovery_snapshots()
+        # Heal parse marks wiped by concurrent download ledger pushes (artifacts remain).
+        healed = reconcile_parse_marks_from_artifacts(ledger, parsed_root)
+        if healed:
+            write_ledger(ledger, ledger_path)
+            push_ledger(local_path=ledger_path)
+            _phase(f"reconciled parse marks from artifacts: {healed}")
         publishable = select_publishable(ledger)
         _phase(f"publishable={len(publishable)} ledger_total={len(ledger.items)}")
 
@@ -249,6 +300,40 @@ def run_build_deploy(
 
         # Media lives on CDN — no Hostinger media pull required for export correctness.
         _phase("media: CDN mode — skipping Hostinger asset pull")
+
+        # Empty export: do not promote (would fail QA / wipe site). Soft noop for Telegram.
+        if export["count"] == 0 and not allow_small_export:
+            future_n = count_publishable_future(ledger, min_closing_date=min_closing)
+            truth = publish_pipeline_status(
+                ledger,
+                lane="build_deploy",
+                wake_reason="noop_empty_export",
+                live_n=0,
+                extra={"published": 0, "healed_parse_marks": healed},
+            )
+            send_lane_report(
+                "build_deploy",
+                "finished",
+                {
+                    "published": 0,
+                    "live_on_site": 0,
+                    "ready_for_site": future_n,
+                    "aged_out": int(truth.get("aged_out_parsed") or 0),
+                },
+                noop=True,
+            )
+            payload = {
+                "run_id": run_id,
+                "published": 0,
+                "status": "noop_empty_export",
+                "publishable_future": future_n,
+                "healed_parse_marks": healed,
+            }
+            (run_dir / "build_deploy_report.json").write_text(
+                json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+            )
+            _phase(f"noop: export_ready=0 publishable_future={future_n} healed={healed}")
+            return payload
 
         candidate = run_dir / "candidate_auctions.json"
         write_auctions_json(candidate, export, allow_small_output=True)

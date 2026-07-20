@@ -241,6 +241,185 @@ def write_ledger(ledger: PipelineLedger, path: Path | None = None) -> Path:
     return path
 
 
+# Stage ranks for concurrent-writer merge (VPS download + GHA parse share one ledger file).
+_DOWNLOAD_STAGE_RANK: dict[str, int] = {
+    "blocked": -1,
+    "pending": 0,
+    "failed": 1,
+    "fetched_local": 2,
+    "done": 3,
+}
+_PARSE_STAGE_RANK: dict[str, int] = {
+    "blocked": -1,
+    "pending": 0,
+    "failed": 1,
+    "fetched_local": 0,
+    "done": 3,
+}
+_DEPLOY_STAGE_RANK: dict[str, int] = {
+    "blocked": -1,
+    "pending": 0,
+    "failed": 1,
+    "fetched_local": 0,
+    "done": 3,
+}
+
+
+def _stage_rank(status: str | None, table: dict[str, int]) -> int:
+    return table.get(str(status or "pending"), 0)
+
+
+def _prefer_nonempty(a: str | None, b: str | None) -> str | None:
+    aa = (a or "").strip()
+    bb = (b or "").strip()
+    return aa or bb or None
+
+
+def _parse_done(item: LedgerItem) -> bool:
+    return item.parse == "done" and int(item.lots_count or 0) > 0
+
+
+def merge_ledger_item(ours: LedgerItem, theirs: LedgerItem) -> LedgerItem:
+    """Monotonic merge of two views of the same auction.
+
+    Critical: never let a stale download writer regress ``parse=done`` back to
+    ``pending`` (that race emptied the site after a successful parse wave).
+    """
+    if ours.stable_key != theirs.stable_key:
+        raise ValueError(f"stable_key mismatch: {ours.stable_key!r} vs {theirs.stable_key!r}")
+
+    out = theirs.model_copy(deep=True)
+
+    # --- download + media ---
+    ours_dl = _stage_rank(ours.download, _DOWNLOAD_STAGE_RANK)
+    theirs_dl = _stage_rank(out.download, _DOWNLOAD_STAGE_RANK)
+    if ours_dl > theirs_dl or (
+        ours_dl == theirs_dl and (ours.object_doc_url or "").strip() and not (out.object_doc_url or "").strip()
+    ):
+        out.download = ours.download
+        out.download_error = ours.download_error
+        out.download_attempts = max(int(ours.download_attempts or 0), int(out.download_attempts or 0))
+        for fld in (
+            "hostinger_doc_path",
+            "hostinger_doc_url",
+            "object_doc_url",
+            "doc_sha256",
+            "local_doc_path",
+            "raw_html_path",
+            "portal_doc_url",
+        ):
+            val = getattr(ours, fld)
+            if val:
+                setattr(out, fld, val)
+    else:
+        out.download_attempts = max(int(ours.download_attempts or 0), int(out.download_attempts or 0))
+        for fld in (
+            "hostinger_doc_path",
+            "hostinger_doc_url",
+            "object_doc_url",
+            "doc_sha256",
+            "local_doc_path",
+            "raw_html_path",
+            "portal_doc_url",
+        ):
+            setattr(out, fld, _prefer_nonempty(getattr(out, fld), getattr(ours, fld)))
+
+    # --- parse (never regress done→pending unless real content change) ---
+    ours_done = _parse_done(ours)
+    theirs_done = _parse_done(out)
+    ours_sha = (ours.doc_sha256 or "").strip()
+    out_sha = (out.doc_sha256 or "").strip()
+    content_changed = bool(ours_sha and out_sha and ours_sha != out_sha and ours.download == "done")
+
+    if ours_done and theirs_done:
+        if int(ours.lots_count or 0) >= int(out.lots_count or 0):
+            out.parse = "done"
+            out.lots_count = int(ours.lots_count or 0)
+            out.parsed_path = ours.parsed_path or out.parsed_path
+            out.parsed_at = ours.parsed_at or out.parsed_at
+            out.parser_version = ours.parser_version or out.parser_version
+            out.parse_error = None
+        out.parse_attempts = max(int(ours.parse_attempts or 0), int(out.parse_attempts or 0))
+    elif theirs_done and not ours_done:
+        if content_changed:
+            out.parse = ours.parse
+            out.lots_count = int(ours.lots_count or 0)
+            out.parsed_path = ours.parsed_path
+            out.parsed_at = ours.parsed_at
+            out.parser_version = ours.parser_version
+            out.parse_error = ours.parse_error
+            # Take the new download bytes that invalidated parse.
+            if ours_sha:
+                out.doc_sha256 = ours_sha
+            for fld in (
+                "hostinger_doc_path",
+                "hostinger_doc_url",
+                "object_doc_url",
+                "local_doc_path",
+            ):
+                val = getattr(ours, fld)
+                if val:
+                    setattr(out, fld, val)
+        # else keep theirs parse=done
+        out.parse_attempts = max(int(ours.parse_attempts or 0), int(out.parse_attempts or 0))
+    elif ours_done and not theirs_done:
+        out.parse = "done"
+        out.lots_count = int(ours.lots_count or 0)
+        out.parsed_path = ours.parsed_path
+        out.parsed_at = ours.parsed_at
+        out.parser_version = ours.parser_version
+        out.parse_error = None
+        out.parse_attempts = max(int(ours.parse_attempts or 0), int(out.parse_attempts or 0))
+    else:
+        if _stage_rank(ours.parse, _PARSE_STAGE_RANK) > _stage_rank(out.parse, _PARSE_STAGE_RANK):
+            out.parse = ours.parse
+            out.lots_count = int(ours.lots_count or 0)
+            out.parsed_path = ours.parsed_path
+            out.parsed_at = ours.parsed_at
+            out.parser_version = ours.parser_version
+            out.parse_error = ours.parse_error
+        out.parse_attempts = max(int(ours.parse_attempts or 0), int(out.parse_attempts or 0))
+
+    # --- deploy ---
+    if _stage_rank(ours.deploy, _DEPLOY_STAGE_RANK) > _stage_rank(out.deploy, _DEPLOY_STAGE_RANK):
+        out.deploy = ours.deploy
+        out.deploy_error = ours.deploy_error
+        out.deployed_at = ours.deployed_at or out.deployed_at
+    out.deploy_attempts = max(int(ours.deploy_attempts or 0), int(out.deploy_attempts or 0))
+
+    # --- discover + listing fields ---
+    if _stage_rank(ours.discover, _DOWNLOAD_STAGE_RANK) > _stage_rank(out.discover, _DOWNLOAD_STAGE_RANK):
+        out.discover = ours.discover
+        out.discover_error = ours.discover_error
+    out.discover_attempts = max(int(ours.discover_attempts or 0), int(out.discover_attempts or 0))
+    for fld in ("closing", "opening", "seller", "state", "detail_url"):
+        setattr(out, fld, _prefer_nonempty(getattr(out, fld), getattr(ours, fld)))
+    out.priority_score = max(int(ours.priority_score or 0), int(out.priority_score or 0))
+    out.removed_from_source = bool(ours.removed_from_source or out.removed_from_source)
+    out.first_seen_at = min(
+        x for x in (ours.first_seen_at or "", out.first_seen_at or "") if x
+    ) or out.first_seen_at
+    out.updated_at = max(ours.updated_at or "", out.updated_at or "") or _now_iso()
+    return out
+
+
+def merge_ledgers(ours: PipelineLedger, theirs: PipelineLedger) -> PipelineLedger:
+    """Union merge by stable_key — keeps progress from both concurrent writers."""
+    by: dict[str, LedgerItem] = {i.stable_key: i.model_copy(deep=True) for i in theirs.items}
+    for item in ours.items:
+        existing = by.get(item.stable_key)
+        if existing is None:
+            by[item.stable_key] = item.model_copy(deep=True)
+        else:
+            by[item.stable_key] = merge_ledger_item(item, existing)
+    return PipelineLedger(
+        generated_at=_now_iso(),
+        items=sorted(by.values(), key=lambda i: i.stable_key),
+        version=LEDGER_SCHEMA_VERSION,
+        schema_version=LEDGER_SCHEMA_VERSION,
+    )
+
+
 def patch_ledger_items(
     ledger: PipelineLedger,
     updates: dict[str, dict[str, Any]],
@@ -730,6 +909,14 @@ def mark_download(
         if object_doc_url:
             item.object_doc_url = object_doc_url
     elif ok and hostinger_doc_path and (object_doc_url or hostinger_doc_url):
+        prev_sha = (item.doc_sha256 or "").strip()
+        new_sha = (doc_sha256 or "").strip()
+        # Same bytes already on ledger → do not wipe parse/deploy (VPS re-touch / CDN hit).
+        effective_changed = bool(content_changed)
+        if new_sha and prev_sha and new_sha == prev_sha:
+            effective_changed = False
+        elif not new_sha and prev_sha and item.parse == "done":
+            effective_changed = False
         item.download = "done"
         item.download_error = None
         item.hostinger_doc_path = hostinger_doc_path
@@ -740,7 +927,7 @@ def mark_download(
             item.doc_sha256 = doc_sha256
         if raw_html_path:
             item.raw_html_path = raw_html_path
-        if content_changed:
+        if effective_changed:
             item.parse = "pending"
             item.lots_count = 0
             item.deploy = "pending"
@@ -938,6 +1125,14 @@ def pull_ledger(
 
 
 def push_ledger(*, local_path: Path | None = None, timeout_sec: int = 120) -> bool:
+    """Push ledger to Hostinger after merging any concurrent remote updates.
+
+    VPS download and GHA parse both mutate the same file. Blind rsync push was
+    last-writer-wins and wiped parse=done marks (build then saw publishable=0).
+    """
+    import os
+    import time
+
     local = Path(local_path or DEFAULT_LEDGER_PATH)
     if not local.is_file():
         return False
@@ -953,7 +1148,42 @@ def push_ledger(*, local_path: Path | None = None, timeout_sec: int = 120) -> bo
     except Exception as exc:
         logger.warning("ledger remote mkdir failed: %s", exc)
         return False
+
+    # Merge-before-push: pull current remote, union with local, then write+push.
+    remote_tmp = local.parent / f".pipeline_ledger.remote.{os.getpid()}.{int(time.time())}.json"
     remote = f"{target}:{remote_root}/pipeline_ledger.json"
+    try:
+        pull_cmd = ["rsync", "-az", *rsync_timeout_args(), "-e", _ssh_cmd(cfg), remote, str(remote_tmp)]
+        try:
+            run_rsync_with_retries(
+                pull_cmd,
+                timeout_sec=min(int(timeout_sec), 60),
+                label="ledger-push-premerge-pull",
+                attempts=2,
+            )
+        except Exception as exc:
+            logger.info("ledger push pre-merge pull skipped: %s", exc)
+        if remote_tmp.is_file():
+            try:
+                ours = load_ledger(local)
+                theirs = load_ledger(remote_tmp)
+                merged = merge_ledgers(ours, theirs)
+                write_ledger(merged, local)
+                logger.info(
+                    "ledger merge-before-push ours=%d theirs=%d merged=%d publishable=%d",
+                    len(ours.items),
+                    len(theirs.items),
+                    len(merged.items),
+                    sum(1 for i in merged.items if compute_publishable(i)),
+                )
+            except Exception as exc:
+                logger.warning("ledger merge-before-push failed (pushing local as-is): %s", exc)
+    finally:
+        try:
+            remote_tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     cmd = ["rsync", "-az", *rsync_timeout_args(), "-e", _ssh_cmd(cfg), str(local), remote]
     try:
         run_rsync_with_retries(
