@@ -31,7 +31,10 @@ def normalize_rel(value: object) -> str:
 def local_asset_kind(value: object) -> str | None:
     if not value:
         return None
-    text = str(value).lstrip("/")
+    text = str(value).strip()
+    if text.startswith(("http://", "https://")):
+        return None
+    text = text.lstrip("/")
     for prefix in LOCAL_ASSET_PREFIXES:
         if text.startswith(prefix):
             return prefix.rstrip("/")

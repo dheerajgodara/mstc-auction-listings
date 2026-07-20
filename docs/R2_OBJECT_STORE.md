@@ -18,7 +18,7 @@ Hostinger is **not** used for media mirrors. It remains for:
 | `R2_ACCOUNT_ID` | Cloudflare account id (builds endpoint if `R2_ENDPOINT_URL` unset) |
 | `R2_ACCESS_KEY_ID` | R2 API token access key |
 | `R2_SECRET_ACCESS_KEY` | R2 API token secret |
-| `R2_BUCKET` | Bucket name (e.g. `fourleaf-storage` / `scrapauction-pdfs`) |
+| `R2_BUCKET` | Bucket name (`scrapauction-pdfs`) |
 | `R2_ENDPOINT_URL` | Optional `https://<account>.r2.cloudflarestorage.com` |
 | `R2_PUBLIC_BASE_URL` | **`https://files.csmg.in`** |
 | `MEDIA_R2_ONLY` | Default `1` — skip Hostinger media rsync |

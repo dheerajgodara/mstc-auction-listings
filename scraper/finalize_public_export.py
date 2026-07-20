@@ -175,7 +175,10 @@ def _append_warning(auction: dict, note: str) -> None:
 def _is_local_asset_url(value: object, *, prefix: str) -> bool:
     if not value:
         return False
-    text = str(value).lstrip("/")
+    text = str(value).strip()
+    if text.startswith(("http://", "https://")):
+        return False
+    text = text.lstrip("/")
     return text.startswith(prefix)
 
 

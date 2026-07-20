@@ -1,0 +1,37 @@
+name: R2 Poll Downloads
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "How long to poll (minutes)"
+        required: false
+        default: "25"
+      interval:
+        description: "Seconds between polls"
+        required: false
+        default: "40"
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Poll R2 pdfs/ every interval
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: |
+          echo "bucket=$R2_BUCKET base=$R2_PUBLIC_BASE_URL"
+          PYTHONPATH=. python -m scraper.r2_poll_downloads \
+            --minutes "${{ inputs.minutes }}" \
+            --interval "${{ inputs.interval }}"
