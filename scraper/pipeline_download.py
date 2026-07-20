@@ -319,7 +319,13 @@ def run_pipeline_download(
         (public_dir / "pdfs").mkdir(parents=True, exist_ok=True)
         (public_dir / "docs" / "gem").mkdir(parents=True, exist_ok=True)
 
-        pulled = pull_ledger(local_path=ledger_path)
+        import os
+
+        if os.getenv("SKIP_LEDGER_PULL", "").strip().lower() in {"1", "true", "yes"}:
+            _phase("SKIP_LEDGER_PULL=1 — using checkout/local ledger only")
+            pulled = ledger_path.is_file() and ledger_path.stat().st_size > 0
+        else:
+            pulled = pull_ledger(local_path=ledger_path)
         ledger = load_ledger(ledger_path)
         if not pulled and not ledger.items:
             raise RuntimeError(
@@ -808,7 +814,16 @@ def run_pipeline_download(
                 f"wave {batch_num} done ok={batch_ok} fail={batch_fail} "
                 f"rate={rate:.1f}/min throttle={throttle.snapshot()}"
             )
-            push_ledger(local_path=ledger_path)
+            import os
+
+            if os.getenv("SKIP_LEDGER_PUSH", "").strip().lower() not in {
+                "1",
+                "true",
+                "yes",
+            }:
+                push_ledger(local_path=ledger_path)
+            else:
+                _phase("SKIP_LEDGER_PUSH=1 — local ledger only (smoke)")
             push_heartbeat(
                 {
                     "lane": lane_id,

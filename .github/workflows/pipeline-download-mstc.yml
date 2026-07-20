@@ -87,10 +87,21 @@ jobs:
         run: |
           CAP="${{ github.event.inputs.max_download }}"
           if [ -z "$CAP" ]; then CAP=2000; fi
+          mkdir -p work
+          # Rate smoke: seed local ledger when Hostinger SSH is down (fixture = 20 pending MSTC).
+          if [ "$CAP" -le 25 ] && [ -f tests/fixtures/smoke_ledger_mstc_20.json ]; then
+            cp tests/fixtures/smoke_ledger_mstc_20.json work/pipeline_ledger.json
+            export SKIP_LEDGER_PULL=1
+            export SKIP_LEDGER_PUSH=1
+            echo "seeded smoke ledger (20 items); ledger pull/push skipped"
+          fi
+          START=$(date +%s)
           PYTHONPATH=. python -m scraper.pipeline_download \
             --source mstc \
-            --wave-size 25 \
-            --batch-size 25 \
-            --max-batches 80 \
+            --wave-size 20 \
+            --batch-size 20 \
+            --max-batches 2 \
             --max-download "$CAP" \
             --break-stale-lock
+          END=$(date +%s)
+          echo "smoke_wall_sec=$((END-START))"
