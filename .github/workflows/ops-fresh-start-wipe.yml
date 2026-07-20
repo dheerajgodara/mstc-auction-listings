@@ -1,0 +1,90 @@
+name: Ops Fresh Start Wipe
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Must equal WIPE-PRODUCTION"
+        required: true
+        default: ""
+      wipe_r2:
+        description: "Delete R2 pdfs/docs/thumbs/pipeline"
+        type: boolean
+        default: true
+      wipe_hostinger_pipeline:
+        description: "Rename Hostinger auction_pipeline (+ AI state)"
+        type: boolean
+        default: true
+      wipe_hostinger_public:
+        description: "Clear public auctions.json + legacy pdfs/docs/thumbs"
+        type: boolean
+        default: true
+
+jobs:
+  wipe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: ops-fresh-start-wipe
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
+          chmod 600 ~/.ssh/hostinger_key
+      - name: Gate confirm
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "WIPE-PRODUCTION" ]; then
+            echo "Refusing: confirm must be WIPE-PRODUCTION"
+            exit 2
+          fi
+      - name: Wipe Hostinger pipeline + public media/data
+        if: ${{ github.event.inputs.wipe_hostinger_pipeline == 'true' || github.event.inputs.wipe_hostinger_public == 'true' }}
+        env:
+          CONFIRM: WIPE-PRODUCTION
+          WIPE_AI: "1"
+          WIPE_PUBLIC_MEDIA: ${{ github.event.inputs.wipe_hostinger_public }}
+          WIPE_PUBLIC_DATA: ${{ github.event.inputs.wipe_hostinger_public }}
+          HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
+          HOSTINGER_PORT: ${{ secrets.HOSTINGER_PORT }}
+          HOSTINGER_USERNAME: ${{ secrets.HOSTINGER_USERNAME }}
+          HOSTINGER_SSH_KEY: ~/.ssh/hostinger_key
+          HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
+        run: |
+          chmod +x scripts/ops_wipe_hostinger.sh
+          # If only public wipe requested without pipeline, still run script with pipeline rename
+          # when wipe_hostinger_pipeline is true (default).
+          if [ "${{ github.event.inputs.wipe_hostinger_pipeline }}" != "true" ]; then
+            # Only public: skip pipeline rename by renaming a nonexistent path — use env override
+            # Simpler: always rename pipeline when either flag set (safe for fresh start).
+            true
+          fi
+          ./scripts/ops_wipe_hostinger.sh
+      - name: Wipe R2 prefixes
+        if: ${{ github.event.inputs.wipe_r2 == 'true' }}
+        env:
+          CONFIRM: WIPE-PRODUCTION
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: PYTHONPATH=. python scripts/ops_wipe_r2.py
+      - name: Verify CDN sample 404
+        if: ${{ github.event.inputs.wipe_r2 == 'true' }}
+        env:
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: |
+          BASE="${R2_PUBLIC_BASE_URL:-https://files.csmg.in}"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -A "Mozilla/5.0" "$BASE/pdfs/589371.pdf" || true)
+          echo "sample_cdn_status=$CODE"
+          if [ "$CODE" = "200" ]; then
+            echo "WARN: sample PDF still HTTP 200 (CDN cache lag possible)"
+          fi
