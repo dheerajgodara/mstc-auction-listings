@@ -224,8 +224,8 @@ PARSE_PDF_TIMEOUT_SEC = int(os.getenv("PARSE_PDF_TIMEOUT_SEC", "60"))
 PARSE_ENGINE = (os.getenv("PARSE_ENGINE", "pymupdf") or "pymupdf").strip().lower()
 PIPELINE_ACTIVE_SOURCES = ("mstc", "gem_forward")
 DEFAULT_PARSED_DIR = REPO_ROOT / "work" / "parsed"
-# Bump when MuPDF-primary lot extraction changes semantics.
-PARSER_CACHE_VERSION = os.getenv("PARSER_CACHE_VERSION", "2")
+# Bump when MuPDF-primary lot extraction OR GeM adapter body mapping changes.
+PARSER_CACHE_VERSION = os.getenv("PARSER_CACHE_VERSION", "3")
 TELEGRAM_NOOP_SILENT = os.getenv("TELEGRAM_NOOP_SILENT", "1").strip() not in {
     "0",
     "false",

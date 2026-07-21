@@ -190,6 +190,41 @@ def _enrich_gem_wave(wave: list[Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _requeue_stale_gem_parses(ledger: Any, *, parsed_root: Path) -> list[Any]:
+    """Force GeM re-enrich when parser_version bumped (e.g. notice-body adapter)."""
+    stale: list[Any] = []
+    for item in ledger.items:
+        if item.source != "gem_forward":
+            continue
+        if item.parse != "done" or item.download != "done" or item.removed_from_source:
+            continue
+        if not media_doc_url(item) or not media_doc_path(item):
+            continue
+        out_path = local_parsed_path(item.source, item.source_auction_id, root=parsed_root)
+        existing = load_parse_artifact(out_path)
+        if is_fresh_parse(
+            existing,
+            pdf_sha256=item.doc_sha256,
+            parser_version=PARSER_CACHE_VERSION,
+        ):
+            # Also requeue if complete artifact still lacks description body.
+            rec = (existing or {}).get("record") or {}
+            lots = rec.get("lots") if isinstance(rec, dict) else None
+            has_body = bool((rec.get("item_summary") or "").strip()) if isinstance(rec, dict) else False
+            if isinstance(lots, list):
+                has_body = has_body or any(
+                    (lot.get("lot_description_text") or lot.get("item_description") or "").strip()
+                    for lot in lots
+                    if isinstance(lot, dict)
+                )
+            if has_body:
+                continue
+        item.parse = "pending"
+        item.parse_error = None
+        stale.append(item)
+    return stale
+
+
 def run_parse_assets(
     *,
     repo_root: Path = REPO_ROOT,
@@ -245,6 +280,12 @@ def run_parse_assets(
             raise RuntimeError("ledger pull failed and local ledger is empty — refusing parse")
 
         queue = select_for_parse(ledger, limit=None)
+        stale_gem = _requeue_stale_gem_parses(ledger, parsed_root=parsed_root)
+        if stale_gem:
+            seen = {i.stable_key for i in queue}
+            front = [i for i in stale_gem if i.stable_key not in seen]
+            queue = front + queue
+            _phase(f"stale_gem_requeue={len(front)} parser_version={PARSER_CACHE_VERSION}")
         if id_filter is not None:
             queue = [i for i in queue if str(i.source_auction_id) in id_filter]
             if not queue:
