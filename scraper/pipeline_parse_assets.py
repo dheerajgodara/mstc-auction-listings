@@ -20,6 +20,7 @@ from scraper.config import (
     DEFAULT_PIPELINE_LEDGER,
     DEFAULT_RAW_DIR,
     DEFAULT_THUMBS_DIR,
+    GEM_REQUEUE_MAX_PER_RUN,
     PARSE_ASSETS_MAX_DOCS,
     PARSE_FAIL_BUDGET_ABS,
     PARSE_FAIL_BUDGET_PCT,
@@ -40,6 +41,7 @@ from scraper.parse_cache import (
     is_fresh_parse,
     load_parse_artifact,
     local_parsed_path,
+    pull_parsed_tree,
     write_parse_artifact,
 )
 from scraper.parse_engine import worker_parse_mstc
@@ -48,6 +50,7 @@ from scraper.parse_journal import ParseJournal
 from scraper.pipeline_ledger import (
     count_publishable_future,
     fail_budget_ok,
+    item_passes_min_closing,
     load_ledger,
     mark_parse,
     media_doc_path,
@@ -279,9 +282,24 @@ def _hydrate_mstc_docs(
     )
     return refreshed.model_dump(mode="json"), remaining
 
-def _requeue_stale_gem_parses(ledger: Any, *, parsed_root: Path) -> list[Any]:
-    """Force GeM re-enrich when parser_version bumped (e.g. notice-body adapter)."""
-    stale: list[Any] = []
+def _requeue_stale_gem_parses(
+    ledger: Any,
+    *,
+    target_version: str | None = None,
+    max_requeue: int | None = None,
+) -> tuple[list[Any], int]:
+    """Requeue GeM parse=done rows whose ledger parser_version lags target.
+
+    Ledger is source of truth (CI runners have empty work/parsed/). Returns
+    (items_to_append, skipped_already_current). Never uses missing local files
+    as a staleness signal.
+    """
+    target = str(target_version or PARSER_CACHE_VERSION)
+    cap = int(GEM_REQUEUE_MAX_PER_RUN if max_requeue is None else max_requeue)
+    if cap < 0:
+        cap = 0
+    candidates: list[Any] = []
+    skipped_current = 0
     for item in ledger.items:
         if item.source != "gem_forward":
             continue
@@ -289,29 +307,38 @@ def _requeue_stale_gem_parses(ledger: Any, *, parsed_root: Path) -> list[Any]:
             continue
         if not media_doc_url(item) or not media_doc_path(item):
             continue
-        out_path = local_parsed_path(item.source, item.source_auction_id, root=parsed_root)
-        existing = load_parse_artifact(out_path)
-        if is_fresh_parse(
-            existing,
-            pdf_sha256=item.doc_sha256,
-            parser_version=PARSER_CACHE_VERSION,
-        ):
-            # Also requeue if complete artifact still lacks description body.
-            rec = (existing or {}).get("record") or {}
-            lots = rec.get("lots") if isinstance(rec, dict) else None
-            has_body = bool((rec.get("item_summary") or "").strip()) if isinstance(rec, dict) else False
-            if isinstance(lots, list):
-                has_body = has_body or any(
-                    (lot.get("lot_description_text") or lot.get("item_description") or "").strip()
-                    for lot in lots
-                    if isinstance(lot, dict)
-                )
-            if has_body:
-                continue
+        if str(item.parser_version or "") == target:
+            skipped_current += 1
+            continue
+        candidates.append(item)
+
+    # Prefer future-closing auctions when capping.
+    future: list[Any] = []
+    other: list[Any] = []
+    for item in candidates:
+        try:
+            if item_passes_min_closing(item):
+                future.append(item)
+            else:
+                other.append(item)
+        except Exception:
+            other.append(item)
+    ordered = future + other
+    selected = ordered[:cap] if cap else []
+    for item in selected:
         item.parse = "pending"
         item.parse_error = None
-        stale.append(item)
-    return stale
+    return selected, skipped_current
+
+
+def merge_parse_queue_with_gem_upgrades(
+    pending: list[Any],
+    gem_upgrades: list[Any],
+) -> list[Any]:
+    """MSTC/GeM true pending first; append GeM version upgrades (no front-load)."""
+    seen = {i.stable_key for i in pending}
+    tail = [i for i in gem_upgrades if i.stable_key not in seen]
+    return list(pending) + tail
 
 
 def run_parse_assets(
@@ -389,13 +416,18 @@ def run_parse_assets(
         if not pulled and not ledger.items:
             raise RuntimeError("ledger pull failed and local ledger is empty — refusing parse")
 
+        pulled_parsed_n = pull_parsed_tree(local_root=parsed_root)
+        if pulled_parsed_n:
+            _phase(f"pulled_parsed_artifacts={pulled_parsed_n}")
+
         queue = select_for_parse(ledger, limit=None)
-        stale_gem = _requeue_stale_gem_parses(ledger, parsed_root=parsed_root)
-        if stale_gem:
-            seen = {i.stable_key for i in queue}
-            front = [i for i in stale_gem if i.stable_key not in seen]
-            queue = front + queue
-            _phase(f"stale_gem_requeue={len(front)} parser_version={PARSER_CACHE_VERSION}")
+        stale_gem, skipped_gem_current = _requeue_stale_gem_parses(ledger)
+        if stale_gem or skipped_gem_current:
+            queue = merge_parse_queue_with_gem_upgrades(queue, stale_gem)
+            _phase(
+                f"stale_gem_requeue={len(stale_gem)} skipped_current_version={skipped_gem_current} "
+                f"parser_version={PARSER_CACHE_VERSION} cap={GEM_REQUEUE_MAX_PER_RUN}"
+            )
         if id_filter is not None:
             queue = [i for i in queue if str(i.source_auction_id) in id_filter]
             if not queue:

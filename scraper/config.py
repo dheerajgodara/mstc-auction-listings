@@ -224,6 +224,8 @@ PARSE_PDF_TIMEOUT_SEC = int(os.getenv("PARSE_PDF_TIMEOUT_SEC", "60"))
 PARSE_ENGINE = (os.getenv("PARSE_ENGINE", "pymupdf") or "pymupdf").strip().lower()
 # Lot photo/annexure download budget per parse-assets run (0 = skip docs).
 PARSE_ASSETS_MAX_DOCS = int(os.getenv("PARSE_ASSETS_MAX_DOCS", "80"))
+# Max GeM parser-version upgrades requeued per parse-assets run (appended after MSTC).
+GEM_REQUEUE_MAX_PER_RUN = int(os.getenv("GEM_REQUEUE_MAX_PER_RUN", "40"))
 PIPELINE_ACTIVE_SOURCES = ("mstc", "gem_forward")
 DEFAULT_PARSED_DIR = REPO_ROOT / "work" / "parsed"
 # Bump when MuPDF-primary lot extraction, GeM adapter body, or catalogue PDF extract changes.
