@@ -228,7 +228,8 @@ PARSE_ASSETS_MAX_DOCS = int(os.getenv("PARSE_ASSETS_MAX_DOCS", "80"))
 # Set 0 to disable version upgrades entirely (true pending GeM still parse via select_for_parse).
 GEM_REQUEUE_MAX_PER_RUN = int(os.getenv("GEM_REQUEUE_MAX_PER_RUN", "40"))
 # When 0/false, never requeue parse=done GeM for version upgrades (one-and-done after stamp).
-GEM_REQUEUE_ENABLE = os.getenv("GEM_REQUEUE_ENABLE", "1").strip().lower() not in {
+# Off by default: leave historical GeM as-is; new GeM still parse fully via select_for_parse.
+GEM_REQUEUE_ENABLE = os.getenv("GEM_REQUEUE_ENABLE", "0").strip().lower() not in {
     "0",
     "false",
     "no",

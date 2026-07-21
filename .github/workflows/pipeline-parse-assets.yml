@@ -51,7 +51,7 @@ jobs:
           PARSE_WORKERS: "2"
           PARSER_CACHE_VERSION: "4"
           GEM_REQUEUE_MAX_PER_RUN: "40"
-          GEM_REQUEUE_ENABLE: "1"
+          GEM_REQUEUE_ENABLE: "0"
           PIPELINE_JOB_TIMEBOX_MIN: "100"
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}

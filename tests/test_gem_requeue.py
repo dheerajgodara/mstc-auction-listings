@@ -68,7 +68,7 @@ def test_requeue_old_version_capped_and_marks_pending():
     for i in range(10):
         ledger.items.append(_gem(str(2000 + i), parser_version="3"))
     selected, skipped = _requeue_stale_gem_parses(
-        ledger, target_version="4", max_requeue=3
+        ledger, target_version="4", max_requeue=3, enabled=True
     )
     assert skipped == 0
     assert len(selected) == 3
@@ -109,7 +109,9 @@ def test_completed_upgrade_never_requeues_again():
     ledger = empty_ledger()
     item = _gem("555", parser_version="3")
     ledger.items.append(item)
-    selected, _ = _requeue_stale_gem_parses(ledger, target_version="4", max_requeue=40)
+    selected, _ = _requeue_stale_gem_parses(
+        ledger, target_version="4", max_requeue=40, enabled=True
+    )
     assert len(selected) == 1
     assert selected[0].parse == "pending"
 
@@ -125,11 +127,18 @@ def test_completed_upgrade_never_requeues_again():
     assert item.parser_version == "4"
 
     selected2, skipped2 = _requeue_stale_gem_parses(
-        ledger, target_version="4", max_requeue=40
+        ledger, target_version="4", max_requeue=40, enabled=True
     )
     assert selected2 == []
     assert skipped2 == 1
     assert item.parse == "done"
+
+
+def test_requeue_disabled_by_default_config():
+    """Default GEM_REQUEUE_ENABLE is off — historical GeM stay put."""
+    from scraper.config import GEM_REQUEUE_ENABLE
+
+    assert GEM_REQUEUE_ENABLE is False
 
 
 def test_requeue_disabled_returns_empty():
