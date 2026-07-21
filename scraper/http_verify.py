@@ -259,10 +259,31 @@ def verify_live_site(
         errors.append(f"sitemap returned HTTP {sitemap_status}")
     else:
         sitemap_text = sitemap_body.decode("utf-8", errors="replace")
-        if "<urlset" not in sitemap_text:
-            errors.append("sitemap missing urlset root element")
+        is_index = "<sitemapindex" in sitemap_text
+        is_urlset = "<urlset" in sitemap_text
+        if not is_index and not is_urlset:
+            errors.append("sitemap missing sitemapindex or urlset root element")
         if "?q=" in sitemap_text or "?source=" in sitemap_text:
             errors.append("sitemap contains query-string URLs")
+        if is_index:
+            # Spot-check one child sitemap resolves as a urlset.
+            child_match = re.search(
+                r"<loc>\s*(https?://[^<]+/sitemap-auctions\.xml)\s*</loc>",
+                sitemap_text,
+                flags=re.I,
+            )
+            if child_match:
+                child_url = child_match.group(1).strip()
+                child_status, child_body, child_note = _http_status(child_url)
+                checked["sitemap_auctions"] = child_url
+                if child_status is None:
+                    warnings.append(f"sitemap-auctions URL skipped (invalid): {child_note}")
+                elif child_status != 200:
+                    errors.append(f"sitemap-auctions returned HTTP {child_status}")
+                elif b"<urlset" not in child_body:
+                    errors.append("sitemap-auctions missing urlset root element")
+            else:
+                warnings.append("sitemap index missing sitemap-auctions.xml loc")
 
     detail_candidates: list[str] = []
     if candidate_json and candidate_json.is_file():
