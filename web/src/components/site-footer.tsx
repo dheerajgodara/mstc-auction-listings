@@ -17,19 +17,24 @@ const FOOTER_SECTIONS = [
   {
     title: "Materials",
     links: [
-      { href: "hub/material/ferrous_scrap/", label: "Material hubs" },
+      { href: "hub/material/ferrous_scrap/", label: "Materials" },
       { href: "metal-scrap/", label: "Metal scrap" },
+      { href: "aluminium-scrap/", label: "Aluminium" },
+      { href: "large-scrap-lots/", label: "Large lots" },
+      { href: "closing-soon/", label: "Closing soon" },
       { href: "vehicle-auctions/", label: "Vehicles" },
-      { href: "coal-auctions/", label: "Coal" },
     ],
   },
   {
     title: "Tools",
     links: [
+      { href: "scrap-rates/", label: "Scrap rates" },
       { href: "watchlist/", label: "Watchlist" },
       { href: "map/", label: "Map" },
-      { href: "saved/", label: "Saved searches" },
-      { href: "app/", label: "Install app" },
+      { href: "saved/", label: "Saved" },
+      { href: "app/", label: "App" },
+      { href: "status/", label: "Status" },
+      { href: "hub/region/ncr/", label: "Regions" },
     ],
   },
   {
@@ -39,7 +44,6 @@ const FOOTER_SECTIONS = [
       { href: "terms/", label: "Terms" },
       { href: "privacy/", label: "Privacy" },
       { href: "support/", label: "Support" },
-      { href: "status/", label: "Import & data status" },
       { href: "accessibility/", label: "Accessibility" },
     ],
   },
@@ -47,7 +51,7 @@ const FOOTER_SECTIONS = [
     title: "Company",
     links: [
       { href: "", label: "Discover auctions" },
-      { href: "hub/region/ncr/", label: "Regions" },
+      { href: "developers/", label: "Developers & agents" },
       { href: "accessibility/", label: "Accessibility" },
     ],
   },
@@ -103,8 +107,8 @@ export function SiteFooter({ automationRanAt }: { automationRanAt?: string }) {
             {automationRanAt ? ` Pipeline ran: ${automationRanAt}.` : ""}
           </p>
           <p className="text-footnote text-muted-foreground">
-            © Scrap Auction India. Bidding and payments occur only on official
-            source portals.
+            © Scrap Auction India. Public auction listings for discovery and
+            research.
           </p>
         </div>
       </div>

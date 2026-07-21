@@ -3,14 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Activity,
-  Bookmark,
   Compass,
   CreditCard,
-  Layers,
-  Smartphone,
   Map,
-  MapPin,
   Menu,
   Moon,
   Search,
@@ -53,15 +48,12 @@ function BrandMark() {
   );
 }
 
+/** Primary header nav — secondary destinations live in the footer. */
 const NAV = [
   { href: "", label: "Discover", icon: Compass },
-  { href: "hub/material/ferrous_scrap/", label: "Materials", icon: Layers },
-  { href: "hub/region/ncr/", label: "Regions", icon: MapPin },
+  { href: "map/", label: "Map", icon: Map },
   { href: "watchlist/", label: "Watchlist", icon: Star },
   { href: "pricing/", label: "Pricing", icon: CreditCard },
-  { href: "app/", label: "App", icon: Smartphone },
-  { href: "map/", label: "Map", icon: Map },
-  { href: "status/", label: "Status", icon: Activity },
 ] as const;
 
 export function AppShell({
@@ -101,14 +93,6 @@ export function AppShell({
           <span>{label}</span>
         </Link>
       ))}
-      <Link
-        href={appRoute("saved/")}
-        onClick={() => setMobileOpen(false)}
-        className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-full px-3 text-sm font-semibold text-muted-foreground hover:text-foreground"
-      >
-        <Bookmark className="h-4 w-4 shrink-0" aria-hidden />
-        <span>Saved</span>
-      </Link>
     </>
   );
 
