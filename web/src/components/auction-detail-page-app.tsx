@@ -6,6 +6,8 @@ import { SiteFooter } from "@/components/site-footer";
 import { AuctionDetailAnalytics } from "@/components/auction-detail-analytics";
 import { AuctionDetailLots } from "@/components/auction-detail-lots";
 import { SiteDisclaimer } from "@/components/site-disclaimer";
+import { ExpandableText } from "@/components/expandable-text";
+import { resolveNoticeBody } from "@/lib/text-summary";
 import { countAuctionDocuments } from "@/lib/auction-documents";
 import { listingPdfHref } from "@/lib/listing-pdf";
 import {
@@ -239,6 +241,29 @@ export function AuctionDetailPageApp({
           )}
         </header>
 
+        {(() => {
+          const notice = resolveNoticeBody({
+            item_summary: auction.item_summary,
+            display_title: title,
+            lots: auction.lots,
+          });
+          if (!notice) return null;
+          return (
+            <section
+              aria-labelledby="auction-notice-heading"
+              className="surface-elevated space-y-3 p-4"
+            >
+              <h2
+                id="auction-notice-heading"
+                className="text-heading text-foreground"
+              >
+                What’s being sold
+              </h2>
+              <ExpandableText text={notice} previewLen={700} />
+            </section>
+          );
+        })()}
+
         <section
           aria-labelledby="auction-details-heading"
           className="surface-elevated space-y-4 p-4"
@@ -300,9 +325,15 @@ export function AuctionDetailPageApp({
               </dt>
               <dd className="mt-1">
                 {title}
-                {auction.item_summary && auction.item_summary !== title
-                  ? ` ${auction.item_summary}`
-                  : ""}
+                {(() => {
+                  const notice = resolveNoticeBody({
+                    item_summary: auction.item_summary,
+                    display_title: title,
+                    lots: auction.lots,
+                  });
+                  if (!notice || notice === title) return "";
+                  return ` ${notice}`;
+                })()}
                 {auction.lots.length > 0
                   ? ` This listing includes ${auction.lots.length} lot${auction.lots.length === 1 ? "" : "s"}.`
                   : ""}

@@ -47,7 +47,7 @@ export function buildAuctionTitle(auction: AuctionRecord): string {
   }
   parts.push(`${source} ${ref}`);
   return truncate(parts.join(" | "), TITLE_MAX);
-} /** Unique meta description from display enrichment. */
+} /** Unique meta description from display enrichment + notice body. */
 export function buildAuctionDescription(auction: AuctionRecord): string {
   const enriched = enrichAuctionDisplay(auction);
   const source = sourceLabel(enriched.source);
@@ -55,15 +55,27 @@ export function buildAuctionDescription(auction: AuctionRecord): string {
   const material = materialLabel(enriched);
   const closing = enriched.closing ? formatDateTime(enriched.closing) : null;
   const qty = enriched.display_quantity_summary?.trim();
+  const notice = (enriched.item_summary ?? "").replace(/\s+/g, " ").trim();
   const bits: string[] = [];
-  bits.push(`${source} auction listing`);
-  if (material) bits.push(material);
-  if (qty) bits.push(qty);
+  if (notice && notice.length >= 40) {
+    bits.push(notice);
+  } else {
+    bits.push(`${source} auction listing`);
+    if (material) bits.push(material);
+    if (qty) bits.push(qty);
+  }
   if (location) bits.push(`in ${location}`);
   if (closing) bits.push(`closes ${closing}`);
-  if (enriched.display_buyer_summary?.trim()) {
+  if (
+    !notice &&
+    enriched.display_buyer_summary?.trim()
+  ) {
     bits.push(enriched.display_buyer_summary.trim());
-  } else if (enriched.min_start_price != null && enriched.min_start_price > 0) {
+  } else if (
+    !notice &&
+    enriched.min_start_price != null &&
+    enriched.min_start_price > 0
+  ) {
     bits.push(
       `floor price from ₹${Math.round(enriched.min_start_price).toLocaleString("en-IN")}`,
     );

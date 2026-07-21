@@ -230,8 +230,9 @@ export function AuctionCard({
   const cardTitle = resolveDisplayTitle(rawAuction);
   const buyerSummary = resolveDisplayBuyerSummary(rawAuction);
   const fullSummary = auction.item_summary || cardTitle;
-  const longNotice = isLongSummary(fullSummary) && fullSummary !== cardTitle;
-  const cardSummary = showFullNotice ? fullSummary : cardTitle;
+  const longNotice =
+    fullSummary !== cardTitle &&
+    (isLongSummary(fullSummary, 80) || fullSummary.length > cardTitle.length + 20);
   const cityState =
     auction.display_location_city && auction.display_location_state
       ? `${auction.display_location_city}, ${auction.display_location_state}`
@@ -288,14 +289,32 @@ export function AuctionCard({
               )}
               <a
                 href={localDetailHref}
-                className={cn(
-                  "text-title text-foreground transition-colors hover:text-action",
-                  !showFullNotice && "line-clamp-2",
-                )}
+                className="text-title text-foreground transition-colors hover:text-action line-clamp-2"
               >
-                {cardSummary}
+                {cardTitle}
               </a>
             </div>
+            {longNotice && (
+              <div className="space-y-1 pl-0 sm:pl-12">
+                <p
+                  className={cn(
+                    "text-body-sm text-muted-foreground",
+                    !showFullNotice && "line-clamp-3",
+                  )}
+                >
+                  {fullSummary}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowFullNotice((v) => !v)}
+                  className="text-footnote font-medium link-action hover:underline"
+                >
+                  {showFullNotice
+                    ? "Hide full notice text"
+                    : "Show full notice text"}
+                </button>
+              </div>
+            )}
             {auction.display_quantity_summary && (
               <p className="text-body-sm font-medium text-muted-foreground">
                 {auction.display_quantity_summary}
@@ -368,17 +387,6 @@ export function AuctionCard({
                   {auction.display_key_lots.join(" · ")}
                 </p>
               )}
-            {longNotice && (
-              <button
-                type="button"
-                onClick={() => setShowFullNotice((v) => !v)}
-                className="text-footnote font-medium link-action hover:underline"
-              >
-                {showFullNotice
-                  ? "Hide full notice text"
-                  : "Show full notice text"}
-              </button>
-            )}
           </div>
           <div className="shrink-0 rounded-[var(--radius-lg)] border border-[color-mix(in_srgb,var(--color-rausch)_22%,white)] bg-[color-mix(in_srgb,var(--color-rausch)_6%,white)] px-[var(--space-20)] py-[var(--space-12)] text-right dark:border-border dark:bg-muted">
             <p className="text-footnote font-medium uppercase tracking-wide text-muted-foreground">

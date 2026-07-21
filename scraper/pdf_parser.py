@@ -254,10 +254,9 @@ def _norm_lot_no(value: str) -> str:
 
 
 def _clean_description_text(text: str | None) -> str | None:
-    if not text:
-        return None
-    cleaned = re.sub(r"\s+", " ", text).strip()
-    return cleaned or None
+    from scraper.text_cleanup import cleanup_ocr_text
+
+    return cleanup_ocr_text(text)
 
 
 def compute_lot_parse_warnings(lot: dict) -> list[str]:

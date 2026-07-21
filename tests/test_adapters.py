@@ -32,6 +32,8 @@ def test_gem_forward_adapter_maps_fields():
         category="Metallic",
         seller_name="Test Seller",
         min_opening_price_inr=45721.0,
+        auction_brief="Disposal of scrap",
+        auction_detail="Item Description-Old Damaged GI Sheets Qty- 10 MT (Approx.)",
         items=[
             GemForwardItem(sr_no=1, item_name="Old Damaged GI Sheets", opening_price_inr=45721.0)
         ],
@@ -42,6 +44,28 @@ def test_gem_forward_adapter_maps_fields():
     assert record.source == "gem_forward"
     assert record.seller == "Test Seller"
     assert record.lots[0].start_price_inr == 45721.0
+    assert "10 MT" in (record.item_summary or "")
+    assert "GI Sheets" in (record.lots[0].lot_description_text or "")
+    assert "10 MT" in (record.search_text or "")
+    assert record.lots[0].item_description
+
+
+def test_gem_forward_adapter_keeps_detail_over_short_lot_title():
+    auction = GemForwardAuction(
+        auction_id="37024",
+        title="Unserviceable Drone",
+        notice_path="/eprocure/view-auction-notice/37024/1/ABC",
+        notice_token="ABC",
+        auction_brief="Disposal of unserviceable Drone",
+        auction_detail="Disposal of unserviceable Drone and related e-Waste at Bagdogra",
+        items=[
+            GemForwardItem(sr_no=1, item_name="Unserviceable Drone", opening_price_inr=1000.0)
+        ],
+    )
+    record = adapt_gem_forward_auction(auction)
+    assert "e-Waste" in (record.item_summary or "")
+    assert record.lots[0].lot_description_text
+    assert "Bagdogra" in (record.search_text or "")
 
 
 def test_eauction_adapter_maps_fields():

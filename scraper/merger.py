@@ -59,6 +59,8 @@ def html_lot_to_record(lot: dict[str, Any]) -> LotRecord:
 
 
 def pdf_lot_to_record(lot: dict[str, Any]) -> LotRecord:
+    from scraper.text_cleanup import cleanup_ocr_text
+
     start_price = lot.get("start_price")
     if start_price is not None:
         start_price = float(start_price)
@@ -73,7 +75,7 @@ def pdf_lot_to_record(lot: dict[str, Any]) -> LotRecord:
     return LotRecord(
         lot_id=str(lot.get("lot_no") or ""),
         item_title=lot.get("lot_name") or lot.get("lot_no") or "Unknown item",
-        item_description=lot.get("item_description"),
+        item_description=cleanup_ocr_text(lot.get("item_description")),
         start_price_inr=start_price,
         start_price=start_price,
         start_price_label=lot.get("start_price_label"),
@@ -96,11 +98,11 @@ def pdf_lot_to_record(lot: dict[str, Any]) -> LotRecord:
         pre_bid_emd_text=lot.get("pre_bid_emd_text"),
         annexure_file=lot.get("annexure_file"),
         photo_file=lot.get("photo_file"),
-        lot_details_text=lot.get("lot_details_text"),
-        lot_description_text=lot.get("lot_description_text"),
-        lot_parameters_text=lot.get("lot_parameters_text"),
-        lot_other_details_text=lot.get("lot_other_details_text"),
-        lot_documents_text=lot.get("lot_documents_text"),
+        lot_details_text=cleanup_ocr_text(lot.get("lot_details_text")),
+        lot_description_text=cleanup_ocr_text(lot.get("lot_description_text")),
+        lot_parameters_text=cleanup_ocr_text(lot.get("lot_parameters_text")),
+        lot_other_details_text=cleanup_ocr_text(lot.get("lot_other_details_text")),
+        lot_documents_text=cleanup_ocr_text(lot.get("lot_documents_text")),
         lot_parse_warnings=lot.get("lot_parse_warnings") or [],
     )
 
