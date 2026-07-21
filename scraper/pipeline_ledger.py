@@ -998,8 +998,10 @@ def mark_parse(
         item.lots_count = int(lots_count)
         item.parsed_path = parsed_path
         item.parsed_at = _now_iso()
-        if parser_version:
-            item.parser_version = parser_version
+        # Always stamp version on success so GeM upgrade requeue cannot loop.
+        from scraper.config import PARSER_CACHE_VERSION
+
+        item.parser_version = str(parser_version or PARSER_CACHE_VERSION)
         item.deploy = "pending"
     elif durability_failed:
         # Hostinger save/verify (or missing doc) — status-only re-queue.

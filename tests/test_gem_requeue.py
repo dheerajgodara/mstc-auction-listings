@@ -100,3 +100,43 @@ def test_merge_dedupes_already_pending_gem():
     keys = [i.stable_key for i in merged]
     assert keys == ["mstc:1", "gem_forward:9", "gem_forward:10"]
     assert keys.count("gem_forward:9") == 1
+
+
+def test_completed_upgrade_never_requeues_again():
+    """After mark_parse stamps target version, same item is skipped forever for that target."""
+    from scraper.pipeline_ledger import empty_ledger, mark_parse
+
+    ledger = empty_ledger()
+    item = _gem("555", parser_version="3")
+    ledger.items.append(item)
+    selected, _ = _requeue_stale_gem_parses(ledger, target_version="4", max_requeue=40)
+    assert len(selected) == 1
+    assert selected[0].parse == "pending"
+
+    mark_parse(
+        ledger,
+        item.stable_key,
+        ok=True,
+        lots_count=1,
+        parsed_path="parsed/gem_forward/555.json",
+        parser_version="4",
+    )
+    assert item.parse == "done"
+    assert item.parser_version == "4"
+
+    selected2, skipped2 = _requeue_stale_gem_parses(
+        ledger, target_version="4", max_requeue=40
+    )
+    assert selected2 == []
+    assert skipped2 == 1
+    assert item.parse == "done"
+
+
+def test_requeue_disabled_returns_empty():
+    ledger = empty_ledger()
+    ledger.items.append(_gem("1", parser_version="3"))
+    selected, _ = _requeue_stale_gem_parses(
+        ledger, target_version="4", max_requeue=40, enabled=False
+    )
+    assert selected == []
+    assert ledger.items[0].parse == "done"

@@ -20,6 +20,7 @@ from scraper.config import (
     DEFAULT_PIPELINE_LEDGER,
     DEFAULT_RAW_DIR,
     DEFAULT_THUMBS_DIR,
+    GEM_REQUEUE_ENABLE,
     GEM_REQUEUE_MAX_PER_RUN,
     PARSE_ASSETS_MAX_DOCS,
     PARSE_FAIL_BUDGET_ABS,
@@ -287,13 +288,34 @@ def _requeue_stale_gem_parses(
     *,
     target_version: str | None = None,
     max_requeue: int | None = None,
+    enabled: bool | None = None,
 ) -> tuple[list[Any], int]:
     """Requeue GeM parse=done rows whose ledger parser_version lags target.
 
     Ledger is source of truth (CI runners have empty work/parsed/). Returns
     (items_to_append, skipped_already_current). Never uses missing local files
     as a staleness signal.
+
+    Once an item successfully parses, ``mark_parse`` stamps ``parser_version`` to
+    the target — that item is skipped forever for this target (one-and-done).
     """
+    if enabled is None:
+        enabled = GEM_REQUEUE_ENABLE
+    if not enabled:
+        # Count how many would have been skipped as already current / ineligible.
+        target = str(target_version or PARSER_CACHE_VERSION)
+        skipped = 0
+        for item in ledger.items:
+            if item.source != "gem_forward":
+                continue
+            if item.parse != "done" or item.download != "done" or item.removed_from_source:
+                continue
+            if not media_doc_url(item) or not media_doc_path(item):
+                continue
+            if str(item.parser_version or "") == target:
+                skipped += 1
+        return [], skipped
+
     target = str(target_version or PARSER_CACHE_VERSION)
     cap = int(GEM_REQUEUE_MAX_PER_RUN if max_requeue is None else max_requeue)
     if cap < 0:
@@ -307,6 +329,7 @@ def _requeue_stale_gem_parses(
             continue
         if not media_doc_url(item) or not media_doc_path(item):
             continue
+        # Already upgraded to this target → never requeue again for this version.
         if str(item.parser_version or "") == target:
             skipped_current += 1
             continue
@@ -329,7 +352,6 @@ def _requeue_stale_gem_parses(
         item.parse = "pending"
         item.parse_error = None
     return selected, skipped_current
-
 
 def merge_parse_queue_with_gem_upgrades(
     pending: list[Any],
