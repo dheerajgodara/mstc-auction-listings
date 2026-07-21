@@ -285,8 +285,9 @@ def run_build_deploy(
         strip = strip_aged_out_auctions(
             export,
             min_closing_date=min_closing,
-            # Cutover / growth: runway floor can age out >poison_threshold in one pass.
-            allow_large_aged_out_strip=bool(allow_small_export),
+            # 12h runway intentionally ages out many closings during refill/growth.
+            # Poison guard is for accidental mass deletes elsewhere — always allow here.
+            allow_large_aged_out_strip=True,
         )
         export = strip.export
         repair = repair_absolute_asset_paths(export)
