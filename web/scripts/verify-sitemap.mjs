@@ -180,14 +180,18 @@ if (fs.existsSync(sitemapPath)) {
 
   pass("sitemap-summary.json exists", fs.existsSync(path.join(outDir, "sitemap-summary.json")));
 
-  // Child lastmod presence
+  // Child lastmod presence (empty urlsets have no <url>/<lastmod> — OK if not indexed)
   for (const file of childFiles) {
     const childPath = path.join(outDir, file);
     if (!fs.existsSync(childPath)) continue;
     const childXml = fs.readFileSync(childPath, "utf8");
-    pass(`${file} is urlset`, childXml.includes("<urlset") && childXml.includes("</urlset>"));
-    pass(`${file} has lastmod`, childXml.includes("<lastmod>"));
     const childUrls = sitemapUrlsFromXml(childXml);
+    pass(`${file} is urlset`, childXml.includes("<urlset") && childXml.includes("</urlset>"));
+    pass(
+      `${file} has lastmod`,
+      childUrls.length === 0 || childXml.includes("<lastmod>"),
+      childUrls.length === 0 ? "empty urlset" : "",
+    );
     pass(
       `${file} has no machine URLs`,
       !childUrls.some((u) => u.includes("/api/") || u.includes("/feeds/")),
