@@ -187,3 +187,46 @@ def test_eauction_timber_title():
     enriched = apply_display_enrichment(record)
     assert enriched.display_material_category == "timber"
     assert "Timber" in enriched.display_title or "timber" in enriched.display_title.lower()
+
+
+def test_ferrous_preferred_over_aluminium_in_mixed_lot():
+    record = AuctionRecord(
+        id="mix1",
+        auction_number="mix1",
+        region="JPR",
+        office="JPR",
+        item_summary="MS scrap with minor aluminium cuttings",
+        lots=[
+            LotRecord(
+                lot_id="1",
+                item_title="Mixed scrap",
+                category="Ferrous Scrap",
+                product_type="MS Scrap",
+                pcb_group="HMS",
+                lot_description_text="Primarily ferrous MS scrap; aluminium pieces incidental",
+            )
+        ],
+    )
+    enriched = apply_display_enrichment(record)
+    assert enriched.display_material_category == "ferrous_scrap"
+
+
+def test_taxonomy_uses_pcb_and_category_fields():
+    record = AuctionRecord(
+        id="pcb1",
+        auction_number="pcb1",
+        region="LKO",
+        office="LKO",
+        item_summary="Lot for disposal",
+        lots=[
+            LotRecord(
+                lot_id="1",
+                item_title="Lot for disposal",
+                category="Coal",
+                product_type="Steam coal",
+                pcb_group="Coal",
+            )
+        ],
+    )
+    enriched = apply_display_enrichment(record)
+    assert enriched.display_material_category == "coal"

@@ -14,10 +14,13 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from scraper.config import (
+    DEFAULT_DOCS_DIR,
     DEFAULT_PARSED_DIR,
     DEFAULT_PDF_DIR,
     DEFAULT_PIPELINE_LEDGER,
     DEFAULT_RAW_DIR,
+    DEFAULT_THUMBS_DIR,
+    PARSE_ASSETS_MAX_DOCS,
     PARSE_FAIL_BUDGET_ABS,
     PARSE_FAIL_BUDGET_PCT,
     PARSE_WAVE_SIZE,
@@ -190,6 +193,92 @@ def _enrich_gem_wave(wave: list[Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _ensure_gem_catalogue(
+    *,
+    public_dir: Path,
+    source_auction_id: str,
+    hostinger_doc_path: str | None,
+    hostinger_doc_url: str | None = None,
+) -> Path | None:
+    from scraper.gem_catalogue_text import resolve_gem_catalogue_path
+
+    path = resolve_gem_catalogue_path(
+        public_dir=public_dir,
+        source_auction_id=source_auction_id,
+        hostinger_doc_path=hostinger_doc_path,
+    )
+    if path is not None:
+        return path
+    aid = str(source_auction_id).strip()
+    candidates: list[tuple[str, Path]] = []
+    if hostinger_doc_path:
+        rel = hostinger_doc_path.lstrip("/")
+        candidates.append((rel, public_dir / rel))
+    for folder in ("docs/gem", "pdfs/gem"):
+        for ext in (".pdf", ".docx"):
+            rel = f"{folder}/{aid}{ext}"
+            candidates.append((rel, public_dir / rel))
+    for key, dest in candidates:
+        try:
+            result = download_object_to_path(
+                key=key,
+                url=hostinger_doc_url if key == (hostinger_doc_path or "").lstrip("/") else None,
+                dest=dest,
+            )
+            if result.get("ok") and dest.is_file() and dest.stat().st_size > 200:
+                return dest
+        except Exception as exc:
+            logger.debug("GeM catalogue pull %s failed: %s", key, exc)
+    return resolve_gem_catalogue_path(
+        public_dir=public_dir,
+        source_auction_id=source_auction_id,
+        hostinger_doc_path=hostinger_doc_path,
+    )
+
+
+def _hydrate_mstc_docs(
+    record_dict: dict[str, Any],
+    *,
+    docs_dir: Path,
+    thumbs_dir: Path,
+    docs_remaining: int,
+    session: Any,
+    stats: dict[str, Any],
+) -> tuple[dict[str, Any], int]:
+    if docs_remaining <= 0:
+        return record_dict, docs_remaining
+    try:
+        record = AuctionRecord.model_validate(record_dict)
+    except Exception as exc:
+        logger.warning("MSTC doc hydrate validate failed: %s", exc)
+        return record_dict, docs_remaining
+    # Prefer lots that name a photo but have no ready preview.
+    needs = False
+    for lot in record.lots or []:
+        if lot.photo_file and not (lot.preview_images or []):
+            needs = True
+            break
+        for doc in lot.documents or []:
+            if getattr(doc, "status", None) in {"pending", "pending_cache", "failed", "skipped"}:
+                needs = True
+                break
+        if needs:
+            break
+    if not needs and not any(lot.photo_file or lot.annexure_file for lot in (record.lots or [])):
+        return record_dict, docs_remaining
+    from scraper.document_cache import process_auction_documents
+
+    refreshed, remaining = process_auction_documents(
+        record,
+        docs_dir=docs_dir,
+        thumbs_dir=thumbs_dir,
+        skip_docs=False,
+        max_docs_remaining=docs_remaining,
+        session=session,
+        stats=stats,
+    )
+    return refreshed.model_dump(mode="json"), remaining
+
 def _requeue_stale_gem_parses(ledger: Any, *, parsed_root: Path) -> list[Any]:
     """Force GeM re-enrich when parser_version bumped (e.g. notice-body adapter)."""
     stale: list[Any] = []
@@ -265,7 +354,28 @@ def run_parse_assets(
     attempted_ids: list[str] = []
     wave_size = max(1, int(wave_size))
     workers = _worker_count()
-    timing = {"prefetch_s": 0.0, "cpu_s": 0.0, "flush_s": 0.0}
+    timing = {"prefetch_s": 0.0, "cpu_s": 0.0, "flush_s": 0.0, "docs_s": 0.0}
+    docs_remaining = max(0, int(PARSE_ASSETS_MAX_DOCS))
+    docs_stats: dict[str, Any] = {
+        "documents": {
+            "refs_found": 0,
+            "attempted": 0,
+            "downloaded": 0,
+            "cache_hits": 0,
+            "thumbnails_ready": 0,
+            "failed": 0,
+            "skipped_due_limit": 0,
+            "failed_by_reason": {},
+            "failed_by_doc_type": {},
+        }
+    }
+    media_dirty = False
+    gem_catalogue_n = 0
+    docs_session = None
+    if docs_remaining > 0:
+        import requests
+
+        docs_session = requests.Session()
 
     try:
         if media_push_required() and not media_r2_only() and _hostinger_ssh_config() is None:
@@ -426,6 +536,32 @@ def run_parse_assets(
                     rec["pdf_url"] = item.hostinger_doc_path
                     rec["hostinger_doc_url"] = item.hostinger_doc_url
                     rec["source_pdf_url"] = item.portal_doc_url
+                    # P2: catalogue PDF/DOCX → body + optional page-1 thumb
+                    try:
+                        from scraper.gem_catalogue_text import merge_gem_catalogue_into_record
+
+                        cat = _ensure_gem_catalogue(
+                            public_dir=public_dir,
+                            source_auction_id=aid,
+                            hostinger_doc_path=item.hostinger_doc_path,
+                            hostinger_doc_url=item.hostinger_doc_url,
+                        )
+                        if cat is not None:
+                            before = (rec.get("item_summary") or "")[:80]
+                            rec = merge_gem_catalogue_into_record(rec, pdf_path=cat)
+                            gem_catalogue_n += 1
+                            if (rec.get("item_summary") or "")[:80] != before:
+                                media_dirty = True
+                            lots0 = rec.get("lots") or []
+                            if (
+                                isinstance(lots0, list)
+                                and lots0
+                                and isinstance(lots0[0], dict)
+                                and (lots0[0].get("preview_images") or [])
+                            ):
+                                media_dirty = True
+                    except Exception as exc:
+                        logger.warning("GeM catalogue extract failed %s: %s", aid, exc)
                     lots = rec.get("lots") or []
                     n_lots = len(lots) if isinstance(lots, list) else 0
                     out_path = local_parsed_path(item.source, aid, root=parsed_root)
@@ -471,9 +607,35 @@ def run_parse_assets(
                         key = result["stable_key"]
                         aid = result["source_auction_id"]
                         if result.get("ok") and result.get("record"):
+                            record_dict = dict(result["record"])
+                            if docs_remaining > 0 and docs_session is not None:
+                                td = time.perf_counter()
+                                before_dl = int(
+                                    docs_stats["documents"].get("downloaded") or 0
+                                )
+                                before_th = int(
+                                    docs_stats["documents"].get("thumbnails_ready") or 0
+                                )
+                                record_dict, docs_remaining = _hydrate_mstc_docs(
+                                    record_dict,
+                                    docs_dir=DEFAULT_DOCS_DIR,
+                                    thumbs_dir=DEFAULT_THUMBS_DIR,
+                                    docs_remaining=docs_remaining,
+                                    session=docs_session,
+                                    stats=docs_stats,
+                                )
+                                timing["docs_s"] += time.perf_counter() - td
+                                after_dl = int(
+                                    docs_stats["documents"].get("downloaded") or 0
+                                )
+                                after_th = int(
+                                    docs_stats["documents"].get("thumbnails_ready") or 0
+                                )
+                                if after_dl > before_dl or after_th > before_th:
+                                    media_dirty = True
                             out_path = local_parsed_path("mstc", aid, root=parsed_root)
                             artifact = build_parse_artifact(
-                                record=result["record"],
+                                record=record_dict,
                                 stable_key=key,
                                 pdf_sha256=result.get("doc_sha256"),
                                 parser_version=PARSER_CACHE_VERSION,
@@ -568,6 +730,28 @@ def run_parse_assets(
 
         backlog = len(select_for_parse(load_ledger(ledger_path), limit=None))
         attempted = parsed_n + failed
+
+        if media_dirty:
+            try:
+                from scraper.raw_store import push_public_media
+
+                media_result = push_public_media(public_dir=public_dir)
+                _phase(f"media_push docs/thumbs: {media_result.to_dict()}")
+            except Exception as exc:
+                logger.warning("media push after parse-assets failed: %s", exc)
+                _phase(f"media_push failed: {exc}")
+
+        if docs_remaining <= 0 and int(PARSE_ASSETS_MAX_DOCS) > 0:
+            kicked_media, media_reason = kick_if_needed(
+                "pipeline-media-backfill.yml",
+                reason="parse_assets_doc_budget_exhausted",
+                backlog=1,
+                inputs={"max_docs": "500", "auction_ids": ""},
+            )
+            if kicked_media:
+                _phase(f"media_backfill kick: {media_reason}")
+                record_resume("media_backfill_kick", {"reason": media_reason})
+
         budget_ok = fail_budget_ok(
             failed=failed,
             attempted=max(1, attempted),
@@ -658,6 +842,9 @@ def run_parse_assets(
             "items_per_sec": round((parsed_n + skipped) / elapsed, 3) if elapsed else 0,
             "publishable_future": future_n,
             "deploy_kick": kicked_deploy,
+            "gem_catalogue_extracted": gem_catalogue_n,
+            "docs_remaining": docs_remaining,
+            "docs_stats": docs_stats.get("documents"),
             "truth": truth_for_telegram(truth),
         }
         if attempted_ids:

@@ -202,6 +202,8 @@ A listing is **top quality** when all of the following hold:
 
 ### D. P2 — Document intelligence pipeline
 
+**Status (Jul 2026):** In progress / shipping — GeM catalogue extract + MSTC photo hydrate wired into [`pipeline_parse_assets`](mstc-auction-listings/scraper/pipeline_parse_assets.py) (`PARSER_CACHE_VERSION` 4, `PARSE_ASSETS_MAX_DOCS`); taxonomy blob expanded; material hub loading copy fixed. Remaining: annexure prose UI, Event `image`, photo KPI Telegram, historical media_backfill catch-up.
+
 26. GeM catalogue PDF/DOCX extract in [`pipeline_parse_assets`](mstc-auction-listings/scraper/pipeline_parse_assets.py).
 27. Route: selectable text → keep; sparse → OCR ≥300 DPI; empty → flag.
 28. pdfplumber/table extract for GeM lot grids when present.

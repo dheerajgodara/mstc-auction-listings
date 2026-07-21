@@ -80,16 +80,17 @@ _CITY_ALIASES: dict[str, tuple[str, str | None]] = {
 
 _MATERIAL_PATTERNS: list[tuple[re.Pattern[str], DisplayMaterialCategory, str]] = [
     (re.compile(r"tower|transmission|earth\s*wire|acsr|conductor|moose|panther|deer", re.I), "transmission_scrap", "Transmission scrap"),
+    # Ferrous before aluminium so mixed "MS scrap / aluminium scrap" hubs stay ferrous-primary.
+    (re.compile(r"ms\s*scrap|ferrous|iron\s*scrap|steel\s*scrap|\bhms\b|ci\s*scrap|cast\s*iron", re.I), "ferrous_scrap", "Ferrous scrap"),
     (re.compile(r"alumin|aluminium|aluminum", re.I), "aluminium_conductor", "Aluminium conductor"),
     (re.compile(r"cable", re.I), "cable_scrap", "Cable scrap"),
     (re.compile(r"transformer\s*oil|insulating\s*oil", re.I), "transformer_oil", "Transformer oil"),
     (re.compile(r"vehicle|car|bus|truck|auto", re.I), "vehicle_lot", "Vehicle lot"),
-    (re.compile(r"timber|wood|teak|sal\b", re.I), "timber", "Timber"),
+    (re.compile(r"timber|wood|teak|\bsal\b", re.I), "timber", "Timber"),
     (re.compile(r"machinery|machine|plant|equipment", re.I), "machinery", "Machinery"),
     (re.compile(r"\bcoal\b", re.I), "coal", "Coal"),
     (re.compile(r"mineral|ore|bauxite|iron\s*ore", re.I), "minerals", "Minerals"),
     (re.compile(r"property|land|building|flat", re.I), "property", "Property"),
-    (re.compile(r"ms\s*scrap|ferrous|iron\s*scrap|steel\s*scrap|hms", re.I), "ferrous_scrap", "Ferrous scrap"),
     (re.compile(r"scrap", re.I), "ferrous_scrap", "Ferrous scrap"),
 ]
 
@@ -404,6 +405,32 @@ def _build_buyer_summary(
     return " · ".join(bits) if bits else None
 
 
+def _material_classify_blob(record: AuctionRecord) -> str:
+    """Rich text used for material taxonomy (Category/PCB/lot sections, not title-only)."""
+    lots = list(record.lots)
+    parts: list[str] = [
+        record.item_summary or "",
+        record.location or "",
+        str(record.asset_category or ""),
+        getattr(record, "search_text", None) or "",
+    ]
+    for lot in lots:
+        parts.extend(
+            [
+                lot.item_title or "",
+                lot.item_description or "",
+                lot.lot_description_text or "",
+                lot.lot_details_text or "",
+                lot.lot_parameters_text or "",
+                lot.lot_other_details_text or "",
+                lot.category or "",
+                lot.product_type or "",
+                lot.pcb_group or "",
+            ]
+        )
+    return " ".join(p for p in parts if p)
+
+
 def _compute_display_fields(record: AuctionRecord) -> dict[str, Any]:
     lots = list(record.lots)
     raw_location = _clean_text(record.location) or _clean_text(lots[0].location if lots else None) or None
@@ -415,17 +442,7 @@ def _compute_display_fields(record: AuctionRecord) -> dict[str, Any]:
         seller=record.seller,
     )
 
-    blob = " ".join(
-        filter(
-            None,
-            [
-                record.item_summary,
-                record.location,
-                *(lot.item_title for lot in lots),
-                *(lot.item_description or "" for lot in lots),
-            ],
-        )
-    )
+    blob = _material_classify_blob(record)
     mat_key, mat_label = _classify_material(blob, record.asset_category)
     qty_summary, total_mt = _build_quantity_summary(lots)
     display_title = _build_display_title(record, lots, mat_key, total_mt)

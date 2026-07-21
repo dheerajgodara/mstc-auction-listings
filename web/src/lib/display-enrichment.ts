@@ -181,6 +181,11 @@ function classifyMaterial(
       /tower|transmission|earth\s*wire|acsr|conductor|moose|panther|deer/i,
       "transmission_scrap",
     ],
+    // Ferrous before aluminium so mixed lots don't mis-hub to aluminium.
+    [
+      /ms\s*scrap|ferrous|iron\s*scrap|steel\s*scrap|\bhms\b|ci\s*scrap|cast\s*iron/i,
+      "ferrous_scrap",
+    ],
     [/alumin|aluminium|aluminum/i, "aluminium_conductor"],
     [/cable/i, "cable_scrap"],
     [/transformer\s*oil|insulating\s*oil/i, "transformer_oil"],
@@ -190,7 +195,6 @@ function classifyMaterial(
     [/\bcoal\b/i, "coal"],
     [/mineral|ore|bauxite|iron\s*ore/i, "minerals"],
     [/property|land|building|flat/i, "property"],
-    [/ms\s*scrap|ferrous|iron\s*scrap|steel\s*scrap|hms/i, "ferrous_scrap"],
     [/scrap/i, "ferrous_scrap"],
   ];
   for (const [re, key] of patterns) {
@@ -438,8 +442,17 @@ export function enrichAuctionDisplay(auction: AuctionRecord): AuctionRecord {
   const blob = [
     auction.item_summary,
     auction.location,
+    auction.asset_category,
+    auction.search_text,
     ...lots.map((l) => l.item_title),
     ...lots.map((l) => l.item_description ?? ""),
+    ...lots.map((l) => l.lot_description_text ?? ""),
+    ...lots.map((l) => l.lot_details_text ?? ""),
+    ...lots.map((l) => l.lot_parameters_text ?? ""),
+    ...lots.map((l) => l.lot_other_details_text ?? ""),
+    ...lots.map((l) => l.category ?? ""),
+    ...lots.map((l) => l.product_type ?? ""),
+    ...lots.map((l) => l.pcb_group ?? ""),
   ]
     .filter(Boolean)
     .join(" ");

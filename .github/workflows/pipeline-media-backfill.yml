@@ -1,0 +1,94 @@
+name: Pipeline Media Backfill
+
+# Manual recovery for orphan lot.documents / thumbs. Do not run until deploy12.
+on:
+  workflow_dispatch:
+    inputs:
+      max_docs:
+        description: "Max documents to download this run"
+        required: false
+        default: "500"
+      auction_ids:
+        description: "Comma-separated auction ids (empty = auto-detect orphans)"
+        required: false
+        default: "589631"
+      push_media:
+        description: "Rsync docs/thumbs/pdfs to Hostinger"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  media-backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    concurrency:
+      group: auction-pipeline-serial
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Configure SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
+          chmod 600 ~/.ssh/hostinger_key
+
+      - name: Bootstrap assets + run media backfill
+        env:
+          PYTHONUNBUFFERED: "1"
+          HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
+          HOSTINGER_PORT: ${{ secrets.HOSTINGER_PORT }}
+          HOSTINGER_USERNAME: ${{ secrets.HOSTINGER_USERNAME }}
+          HOSTINGER_SSH_KEY: ~/.ssh/hostinger_key
+          HOSTINGER_REMOTE_DIR: ${{ secrets.HOSTINGER_REMOTE_DIR }}
+          MEDIA_PUSH_REQUIRED: "0"
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. python - <<'PY'
+          from scraper.asset_bootstrap import bootstrap_production_assets
+          from scraper.config import REPO_ROOT
+          from scraper.refresh_and_deploy import _bootstrap_previous_production_from_live
+          from scraper.config import DEFAULT_JSON_OUT, SITE_BASE_URL
+          warnings = []
+          _bootstrap_previous_production_from_live(
+              production_json=DEFAULT_JSON_OUT,
+              base_url=SITE_BASE_URL or None,
+              warnings=warnings,
+          )
+          bootstrap_production_assets(public_dir=REPO_ROOT / "web" / "public")
+          print("bootstrap warnings:", warnings)
+          PY
+          IDS="${{ inputs.auction_ids }}"
+          ARGS=(--max-docs "${{ inputs.max_docs }}")
+          if [ "${{ inputs.push_media }}" = "false" ]; then
+            ARGS+=(--no-push)
+          fi
+          if [ -n "$IDS" ]; then
+            IFS=',' read -ra PARTS <<< "$IDS"
+            for id in "${PARTS[@]}"; do
+              id="$(echo "$id" | xargs)"
+              [ -n "$id" ] && ARGS+=(--auction-id "$id")
+            done
+          fi
+          PYTHONPATH=. python -m scraper.media_backfill "${ARGS[@]}"
+
+      - name: Upload updated auctions.json artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-backfill-auctions-json
+          path: web/public/data/auctions.json
+          if-no-files-found: warn

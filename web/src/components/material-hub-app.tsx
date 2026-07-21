@@ -37,7 +37,9 @@ export function MaterialHubApp({ materialId }: { materialId: string }) {
         <div className="container-marketplace mb-4 space-y-2">
           <h1 className="text-display text-foreground">{label}</h1>
           <p className="text-body text-muted-foreground">
-            {filtered.length} auctions with this material category.
+            {loading
+              ? "Loading auctions…"
+              : `${filtered.length} auctions with this material category.`}
           </p>
         </div>
         {loading ? (

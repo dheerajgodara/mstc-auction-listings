@@ -222,10 +222,12 @@ PARSE_WAVE_SIZE = int(os.getenv("PARSE_WAVE_SIZE", "100"))
 PARSE_WORKERS = int(os.getenv("PARSE_WORKERS", "0"))  # 0 = auto cpu-1
 PARSE_PDF_TIMEOUT_SEC = int(os.getenv("PARSE_PDF_TIMEOUT_SEC", "60"))
 PARSE_ENGINE = (os.getenv("PARSE_ENGINE", "pymupdf") or "pymupdf").strip().lower()
+# Lot photo/annexure download budget per parse-assets run (0 = skip docs).
+PARSE_ASSETS_MAX_DOCS = int(os.getenv("PARSE_ASSETS_MAX_DOCS", "80"))
 PIPELINE_ACTIVE_SOURCES = ("mstc", "gem_forward")
 DEFAULT_PARSED_DIR = REPO_ROOT / "work" / "parsed"
-# Bump when MuPDF-primary lot extraction OR GeM adapter body mapping changes.
-PARSER_CACHE_VERSION = os.getenv("PARSER_CACHE_VERSION", "3")
+# Bump when MuPDF-primary lot extraction, GeM adapter body, or catalogue PDF extract changes.
+PARSER_CACHE_VERSION = os.getenv("PARSER_CACHE_VERSION", "4")
 TELEGRAM_NOOP_SILENT = os.getenv("TELEGRAM_NOOP_SILENT", "1").strip() not in {
     "0",
     "false",
