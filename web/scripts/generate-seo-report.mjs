@@ -33,7 +33,7 @@ import {
   readRootIndex,
   resolveRegressionDetailPages,
   sitemapUrlViolations,
-  sitemapUrlsFromXml,
+  collectHtmlSitemapUrls,
   visibleTextLength,
 } from "./seo-lib.mjs";
 
@@ -422,8 +422,7 @@ function sitemapReport() {
   if (!fs.existsSync(sitemapPath)) {
     return { exists: false, warnings: [{ type: "missing", severity: "critical", message: "sitemap.xml missing" }] };
   }
-  const xml = fs.readFileSync(sitemapPath, "utf8");
-  const urls = sitemapUrlsFromXml(xml);
+  const urls = collectHtmlSitemapUrls();
   const byType = { home: 0, detail: 0, landing: 0, state: 0, commerce: 0 };
   const bySource = { mstc: 0, "gem-forward": 0, eauction: 0 };
   const warnings = [];
@@ -473,6 +472,11 @@ function sitemapReport() {
     if (slug in routeMix) routeMix[slug] += 1;
   }
 
+  const auctionsSitemap = path.join(outDir, "sitemap-auctions.xml");
+  const lastmodPresent = fs.existsSync(auctionsSitemap)
+    ? fs.readFileSync(auctionsSitemap, "utf8").includes("<lastmod>")
+    : urls.length > 0;
+
   return {
     exists: true,
     total_urls: urls.length,
@@ -484,7 +488,8 @@ function sitemapReport() {
     expected_detail_routes: expectedDetail ?? null,
     detail_delta: expectedDetail != null ? byType.detail - expectedDetail : null,
     warnings,
-    lastmod_present: xml.includes("<lastmod>"),
+    lastmod_present: lastmodPresent,
+    html_sitemap_index: true,
   };
 }
 

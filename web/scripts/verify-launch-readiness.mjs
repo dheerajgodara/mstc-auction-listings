@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   FORBIDDEN_SITEMAP_UTILITY_PATHS,
   readHtml,
-  sitemapUrlsFromXml,
+  collectHtmlSitemapUrls,
 } from "./seo-lib.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -138,7 +138,7 @@ check("launch-readiness page noindex", hasNoindex(launchHtml));
 
 const sitemapPath = path.join(outDir, "sitemap.xml");
 if (fs.existsSync(sitemapPath)) {
-  const urls = sitemapUrlsFromXml(fs.readFileSync(sitemapPath, "utf8"));
+  const urls = collectHtmlSitemapUrls();
   check(
     "sitemap excludes /launch-readiness/",
     !urls.some((u) => u.includes("/launch-readiness/")),

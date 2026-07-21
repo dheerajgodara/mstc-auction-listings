@@ -7,7 +7,7 @@ import {
   FORBIDDEN_SITEMAP_UTILITY_PATHS,
   readHtml,
   resolveRegressionDetailPages,
-  sitemapUrlsFromXml,
+  collectHtmlSitemapUrls,
 } from "./seo-lib.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -239,7 +239,7 @@ for (const page of PAYWALL_UTILITY_PAGES) {
 }
 
 if (fs.existsSync(path.join(outDir, "sitemap.xml"))) {
-  const sitemapUrls = sitemapUrlsFromXml(fs.readFileSync(path.join(outDir, "sitemap.xml"), "utf8"));
+  const sitemapUrls = collectHtmlSitemapUrls();
   check("sitemap includes pricing", sitemapUrls.some((u) => u.includes("/pricing/")));
   for (const segment of FORBIDDEN_SITEMAP_UTILITY_PATHS) {
     check(`sitemap excludes ${segment}`, !sitemapUrls.some((u) => u.includes(segment)));

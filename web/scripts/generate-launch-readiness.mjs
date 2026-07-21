@@ -15,8 +15,8 @@ import {
   hasStagingLeak,
   readHtml,
   readRootIndex,
+  collectHtmlSitemapUrls,
   resolveRegressionDetailPages,
-  sitemapUrlsFromXml,
 } from "./seo-lib.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -317,7 +317,7 @@ function evaluateSeoGates() {
   const sitemapXml = readOut("sitemap.xml");
   const robotsTxt = readOut("robots.txt");
   const seoReport = readJsonOut("seo-report.json");
-  const urls = sitemapXml ? sitemapUrlsFromXml(sitemapXml) : [];
+  const urls = sitemapXml ? collectHtmlSitemapUrls() : [];
   const detailUrls = urls.filter((u) => /\/(mstc|gem-forward|eauction)\/[^/]+\/$/.test(u));
   const hasPricing = urls.some((u) => u.includes("/pricing/"));
   const forbiddenUtility = urls.filter((u) =>
