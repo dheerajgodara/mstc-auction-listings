@@ -213,6 +213,39 @@ def build_lane_card(
     return _build_progress(lane, label, stats, url)
 
 
+def _download_result_line(stats: dict[str, Any]) -> str:
+    """Compact OK/fail/rate line for download lanes (progress and attention cards)."""
+    ok = _i(stats, "downloaded", "ok_count")
+    failed = _i(stats, "failed", "fail_count")
+    if ok == 0 and failed == 0:
+        return ""
+    attempted = ok + failed
+    parts = [f"{_fmt_int(ok)} OK"]
+    if failed:
+        parts.append(f"{_fmt_int(failed)} failed")
+    if attempted > 0:
+        pct = round(100.0 * ok / attempted)
+        parts.append(f"{pct}% ok")
+    rate = _fmt_rate(ok, stats.get("wall_seconds"))
+    if rate:
+        parts.append(rate)
+    return _join_metrics(parts)
+
+
+def _download_backlog_line(stats: dict[str, Any]) -> str:
+    need = _i(stats, "still_need_files", "download_pending", "backlog_left")
+    ready_proc = _i(stats, "ready_to_process")
+    live = _i(stats, "live_on_site", "live_export_count")
+    ctx_parts = []
+    if need:
+        ctx_parts.append(f"Still need files: {_fmt_int(need)}")
+    if ready_proc:
+        ctx_parts.append(f"Ready to process: {_fmt_int(ready_proc)}")
+    if live:
+        ctx_parts.append(f"Live on site: {_fmt_int(live)}")
+    return _join_metrics(ctx_parts) if ctx_parts else ""
+
+
 def _build_failure_or_action(
     label: str,
     severity: Severity,
@@ -221,6 +254,13 @@ def _build_failure_or_action(
     stats: dict[str, Any],
 ) -> str:
     lines = [f"<b>{_h(label)}</b>", ""]
+    # Prefer real wave numbers over a bare pass/fail headline.
+    numbers = _download_result_line(stats)
+    if numbers:
+        lines.append(numbers)
+        backlog = _download_backlog_line(stats)
+        if backlog:
+            lines.append(backlog)
     if severity == "critical" or str(stats.get("event") or "") == "failed":
         outcome = str(stats.get("outcome") or "").strip()
         if outcome:
@@ -229,7 +269,14 @@ def _build_failure_or_action(
             lines.append("<b>FAILED</b>")
     else:
         outcome = str(stats.get("outcome") or "Needs attention").strip()
-        lines.append(f"<b>Needs attention</b> — {_h(_clip(outcome, 100))}")
+        if numbers:
+            # Numbers already carry the story; keep attention as a short flag.
+            if outcome == "Needs attention":
+                lines.append("<b>Needs attention</b> — high fail share this wave")
+            else:
+                lines.append(f"<b>Needs attention</b> — {_h(_clip(outcome, 100))}")
+        else:
+            lines.append(f"<b>Needs attention</b> — {_h(_clip(outcome, 100))}")
     if err:
         lines.append(f"<code>{_h(err)}</code>")
     context = str(stats.get("context") or "").strip()
@@ -275,29 +322,14 @@ def _build_progress(lane: str, label: str, stats: dict[str, Any], url: str) -> s
 
     elif lane.startswith("download_"):
         added = _i(stats, "downloaded", "ok_count")
-        failed = _i(stats, "failed")
-        rate = _fmt_rate(added, stats.get("wall_seconds"))
+        failed = _i(stats, "failed", "fail_count")
         if added == 0 and failed == 0:
             lines.append("No new files this run")
         else:
-            parts = [f"+{_fmt_int(added)} downloaded"]
-            if failed:
-                parts.append(f"{_fmt_int(failed)} failed")
-            if rate:
-                parts.append(rate)
-            lines.append(_join_metrics(parts))
-        ctx_parts = []
-        need = _i(stats, "still_need_files", "download_pending", "backlog_left")
-        ready_proc = _i(stats, "ready_to_process")
-        live = _i(stats, "live_on_site", "live_export_count")
-        if need:
-            ctx_parts.append(f"Still need files: {_fmt_int(need)}")
-        if ready_proc:
-            ctx_parts.append(f"Ready to process: {_fmt_int(ready_proc)}")
-        if live:
-            ctx_parts.append(f"Live on site: {_fmt_int(live)}")
-        if ctx_parts:
-            lines.append(_join_metrics(ctx_parts))
+            lines.append(_download_result_line(stats))
+        backlog = _download_backlog_line(stats)
+        if backlog:
+            lines.append(backlog)
 
     elif lane == "publish_media":
         added = _i(stats, "ok_count", "downloaded")
@@ -515,6 +547,20 @@ def classify_lane_severity(
     if lane.startswith("download_"):
         if _i(stats, "downloaded", "ok_count") == 0 and _i(stats, "failed") == 0:
             return "silent"
+        # MSTC portal 500s routinely produce 10–25 fails in a healthy 150-cap wave.
+        # Prefer progress cards with real OK/fail counts; only escalate when the wave
+        # actually looks broken (majority fail, zero OK, or health abort).
+        ok = _i(stats, "downloaded", "ok_count")
+        fail = _i(stats, "failed", "fail_count")
+        attempted = ok + fail
+        status = str(stats.get("status") or "").strip().lower()
+        if status in {"aborted_health", "aborted"}:
+            return "action"
+        if attempted >= 4 and ok == 0:
+            return "action"
+        if attempted >= 4 and (fail / attempted) >= 0.5:
+            return "action"
+        return "progress"
     if lane == "parse":
         if (
             _i(stats, "parsed") == 0

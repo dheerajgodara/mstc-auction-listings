@@ -302,15 +302,21 @@ def run_vps_mstc_download(
             "wall_seconds": round(wall, 1),
             "warnings": warnings,
         }
+        telegram_stats: dict[str, Any] = {
+            "status": status,
+            "downloaded": downloaded,
+            "failed": failed,
+            "still_need_files": pending_after,
+            "wall_seconds": wall,
+        }
+        if aborted_health:
+            telegram_stats["outcome"] = "health gate aborted wave"
+        elif failed > downloaded and (downloaded + failed) >= 4:
+            telegram_stats["outcome"] = "wave finished with majority fails"
         send_lane_report(
             "download_mstc",
             "finished",
-            {
-                "downloaded": downloaded,
-                "failed": failed,
-                "still_need_files": pending_after,
-                "wall_seconds": wall,
-            },
+            telegram_stats,
             noop=downloaded == 0 and failed == 0,
         )
         _phase(

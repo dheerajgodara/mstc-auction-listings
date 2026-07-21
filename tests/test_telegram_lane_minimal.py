@@ -59,10 +59,46 @@ def test_download_progress_human():
     )
     assert msg == (
         "<b>Download MSTC</b>\n"
-        "+28 downloaded · 1 failed · 6.2/min\n"
+        "28 OK · 1 failed · 97% ok · 6.2/min\n"
         "Still need files: 1,820 · Ready to process: 140 · Live on site: 375"
     )
-    _assert_lane_ok(msg, must_contain=["Download MSTC", "+28", "Still need files"])
+    _assert_lane_ok(msg, must_contain=["Download MSTC", "28 OK", "Still need files"])
+
+
+def test_download_typical_mstc_wave_is_progress_with_numbers():
+    """Portal 500 noise (~15–25 fails / 150) must not hide behind Needs attention."""
+    stats = {
+        "downloaded": 129,
+        "failed": 21,
+        "still_need_files": 1130,
+        "wall_seconds": 3760,
+        "status": "success",
+    }
+    assert classify_lane_severity("download_mstc", "finished", stats) == "progress"
+    msg = build_lane_message("download_mstc", "finished", stats)
+    assert "Needs attention" not in msg
+    assert "129 OK" in msg
+    assert "21 failed" in msg
+    assert "86% ok" in msg
+    assert "Still need files: 1,130" in msg
+
+
+def test_download_majority_fail_is_action_but_shows_numbers():
+    stats = {
+        "downloaded": 40,
+        "failed": 110,
+        "still_need_files": 900,
+        "wall_seconds": 3600,
+        "status": "success",
+        "outcome": "wave finished with majority fails",
+        "github_run_url": "https://github.com/x/y/actions/runs/9",
+    }
+    assert classify_lane_severity("download_mstc", "finished", stats) == "action"
+    msg = build_lane_message("download_mstc", "finished", stats)
+    assert "40 OK" in msg
+    assert "110 failed" in msg
+    assert "Needs attention" in msg
+    assert "Open run" in msg
 
 
 def test_parse_progress_human():
