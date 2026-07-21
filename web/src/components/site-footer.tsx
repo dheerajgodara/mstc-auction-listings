@@ -32,7 +32,7 @@ const FOOTER_SECTIONS = [
       { href: "watchlist/", label: "Watchlist" },
       { href: "map/", label: "Map" },
       { href: "saved/", label: "Saved" },
-      { href: "app/", label: "App" },
+      { href: "app/", label: "Install app" },
       { href: "status/", label: "Status" },
       { href: "hub/region/ncr/", label: "Regions" },
     ],
