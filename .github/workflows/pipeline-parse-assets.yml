@@ -2,14 +2,14 @@ name: Lane Parse Assets
 
 on:
   schedule:
-    # Steady-state: hourly at :11 UTC (~30m after download :41; IST ≈ :41)
-    - cron: "11 * * * *"
+    # Steady-state: every 30m at :11 and :41 UTC (IST ≈ :41 / :11)
+    - cron: "11,41 * * * *"
   workflow_dispatch:
     inputs:
       max_parse:
-        description: "Per-run parse cap (default 200 steady-state)"
+        description: "Per-run parse cap (default 400 steady-state)"
         required: false
-        default: "200"
+        default: "400"
       auction_ids:
         description: "Comma-separated source_auction_id filter (smoke)"
         required: false
@@ -62,7 +62,7 @@ jobs:
           echo "cron_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ) event=${{ github.event_name }}"
           EXTRA=""
           MAX_PARSE="${{ github.event.inputs.max_parse }}"
-          if [ -z "$MAX_PARSE" ]; then MAX_PARSE=200; fi
+          if [ -z "$MAX_PARSE" ]; then MAX_PARSE=400; fi
           EXTRA="--max-parse $MAX_PARSE"
           if [ -n "${{ github.event.inputs.auction_ids }}" ]; then
             EXTRA="$EXTRA --auction-ids ${{ github.event.inputs.auction_ids }}"
