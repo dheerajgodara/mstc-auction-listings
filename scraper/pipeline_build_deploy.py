@@ -365,7 +365,12 @@ def run_build_deploy(
             # pipeline_deploy may enforce higher min_count — set env override
             if allow_small_export:
                 os.environ["PIPELINE_ALLOW_SMALL_EXPORT"] = "1"
-            run_pipeline_deploy(deploy=True, force=True, break_stale_lock=True)
+            run_pipeline_deploy(
+                deploy=True,
+                force=True,
+                break_stale_lock=True,
+                min_closing_date=min_closing,
+            )
 
         for a in export.get("auctions") or []:
             key = stable_auction_key(a)

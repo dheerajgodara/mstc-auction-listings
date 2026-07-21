@@ -88,6 +88,7 @@ def run_pipeline_deploy(
     deploy: bool = True,
     break_stale_lock: bool = True,
     force: bool = False,
+    min_closing_date: str | None = None,
 ) -> dict[str, Any]:
     run_id = f"deploy_{make_run_id()}"
     run_dir = repo_root / "work" / "runs" / run_id
@@ -277,10 +278,14 @@ def run_pipeline_deploy(
             export_count = 0
         adaptive_min = 0 if allow_small else max(1, min(50, export_count or 1))
 
+        # Use the same closing boundary the export was stripped with (if provided).
+        # Re-resolving "now+12h" after a multi-minute build ages the floor forward and
+        # falsely rejects auctions that just barely cleared the strip.
+        predeploy_min_closing = (min_closing_date or "").strip() or resolve_min_closing().isoformat()
         predeploy = verify_predeploy_build(
             out_dir=out_dir,
             min_count=adaptive_min,
-            min_closing_date=resolve_min_closing().isoformat(),
+            min_closing_date=predeploy_min_closing,
             require_sources=[] if allow_small or export_count < 10 else ["mstc"],
             warn_only_sources=["gem_forward", "eauction"],
         )
