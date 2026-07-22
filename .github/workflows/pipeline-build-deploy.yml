@@ -28,6 +28,10 @@ on:
           - "false"
           - "true"
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   build-deploy:
     runs-on: ubuntu-latest
@@ -57,6 +61,13 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
+      - name: Restore ledger cache
+        uses: actions/cache@v4
+        with:
+          path: work/pipeline_ledger.json
+          key: pipeline-ledger-v1-${{ github.run_id }}
+          restore-keys: |
+            pipeline-ledger-v1-
       - name: Migrate ledger to v3 (optional)
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.migrate_ledger_v3 == 'true' }}
         env:
@@ -82,6 +93,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           AI_ENRICHMENT_DISABLE: "1"
           PIPELINE_JOB_TIMEBOX_MIN: "150"
+          SSH_CONNECT_TIMEOUT: "20"
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -101,3 +113,9 @@ jobs:
             export PIPELINE_ALLOW_SMALL_EXPORT=1
           fi
           PYTHONPATH=. python -m scraper.pipeline_build_deploy --break-stale-lock $EXTRA
+      - name: Save ledger cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: work/pipeline_ledger.json
+          key: pipeline-ledger-v1-${{ github.run_id }}

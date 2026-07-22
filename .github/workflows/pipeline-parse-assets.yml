@@ -37,6 +37,13 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/hostinger_key
           chmod 600 ~/.ssh/hostinger_key
+      - name: Restore ledger cache
+        uses: actions/cache@v4
+        with:
+          path: work/pipeline_ledger.json
+          key: pipeline-ledger-v1-${{ github.run_id }}
+          restore-keys: |
+            pipeline-ledger-v1-
       - name: Parse wave (PyMuPDF pool + batch flush)
         env:
           PYTHONUNBUFFERED: "1"
@@ -57,6 +64,7 @@ jobs:
           GEM_REQUEUE_MAX_PER_RUN: "40"
           GEM_REQUEUE_ENABLE: "0"
           PIPELINE_JOB_TIMEBOX_MIN: "100"
+          SSH_CONNECT_TIMEOUT: "20"
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -74,3 +82,9 @@ jobs:
             EXTRA="$EXTRA --auction-ids ${{ github.event.inputs.auction_ids }}"
           fi
           PYTHONPATH=. python -m scraper.pipeline_parse_assets --break-stale-lock $EXTRA
+      - name: Save ledger cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: work/pipeline_ledger.json
+          key: pipeline-ledger-v1-${{ github.run_id }}

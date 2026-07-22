@@ -24,14 +24,16 @@ from scraper.export_guard import write_auctions_json
 from scraper.export_hygiene import repair_absolute_asset_paths, strip_aged_out_auctions
 from scraper.filters import make_run_id, resolve_min_closing
 from scraper.import_tracking import stable_auction_key
-from scraper.lane_resume import kick_if_needed, record_resume
+from scraper.lane_resume import dispatch_workflow, kick_if_needed, record_resume
 from scraper.media_urls import absolutize_auction_media, absolutize_export_media
 from scraper.object_store import media_key_from_url
 from scraper.parse_cache import iter_local_parsed, load_parse_artifact, pull_parsed_tree
 from scraper.pipeline_deploy import run_pipeline_deploy
 from scraper.pipeline_ledger import (
+    LAST_LEDGER_PULL,
     compute_publishable,
     count_publishable_future,
+    ledger_file_usable,
     load_ledger,
     mark_deploy,
     mark_parse,
@@ -57,6 +59,71 @@ logger = logging.getLogger("scraper.pipeline_build_deploy")
 def _phase(msg: str) -> None:
     print(f"[build_deploy] {msg}", flush=True)
     logger.info(msg)
+
+
+def _transport_redispatch_allowed() -> bool:
+    """One auto-redispatch per job unless already a recovery run."""
+    if os.environ.get("BUILD_DEPLOY_TRANSPORT_REDISPATCH") == "1":
+        return False
+    if os.environ.get("BUILD_DEPLOY_SKIP_TRANSPORT_REDISPATCH") == "1":
+        return False
+    return True
+
+
+def _maybe_redispatch_transport(error: str) -> bool:
+    if not _transport_redispatch_allowed():
+        return False
+    prior = pull_pipeline_json("build_deploy_transport_resume.json") or {}
+    prior_at = str(prior.get("recorded_at") or "")
+    # Debounce: skip if we redispatched in the last 20 minutes.
+    if prior_at:
+        try:
+            dt = datetime.fromisoformat(prior_at.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=IST)
+            age_min = (datetime.now(IST) - dt.astimezone(IST)).total_seconds() / 60.0
+            if age_min < 20:
+                _phase(f"skip transport redispatch (debounced {age_min:.0f}m ago)")
+                return False
+        except Exception:
+            pass
+    ok = dispatch_workflow(
+        "pipeline-build-deploy.yml",
+        inputs={"allow_small_export": "true"},
+    )
+    if ok:
+        record_resume(
+            "build_deploy_transport",
+            {
+                "reason": "hostinger_transport",
+                "error": error[:400],
+                "ledger_source": LAST_LEDGER_PULL.get("source"),
+            },
+        )
+        _phase("redispatched pipeline-build-deploy.yml after Hostinger transport failure")
+    return ok
+
+
+def _recover_ledger(ledger_path: Path) -> bool:
+    """Hostinger pull with backoff rounds, then R2/local via pull_ledger."""
+    import time
+
+    from scraper.hostinger_ssh import clear_stale_control_sockets
+
+    clear_stale_control_sockets()
+    pulled = pull_ledger(local_path=ledger_path, attempts=4)
+    if pulled and ledger_file_usable(ledger_path, max_age_hours=None):
+        return True
+    # Extra Hostinger recovery rounds (covers MaxStartups / concurrent parse).
+    for round_i in range(1, 4):
+        wait_s = 30 * round_i
+        _phase(f"ledger transport recovery round {round_i}/3 sleep={wait_s}s")
+        time.sleep(wait_s)
+        clear_stale_control_sockets()
+        pulled = pull_ledger(local_path=ledger_path, attempts=2)
+        if pulled and ledger_file_usable(ledger_path, max_age_hours=None):
+            return True
+    return ledger_file_usable(ledger_path, max_age_hours=None)
 
 
 def reconcile_parse_marks_from_artifacts(ledger: Any, parsed_root: Path) -> int:
@@ -251,10 +318,33 @@ def run_build_deploy(
     min_closing_for_fail: str | None = None
 
     try:
-        pulled = pull_ledger(local_path=ledger_path)
-        pull_parsed_tree(local_root=parsed_root)
+        recovered = _recover_ledger(ledger_path)
+        src = LAST_LEDGER_PULL.get("source")
+        if src:
+            _phase(f"ledger_source={src}")
+        parsed_n = pull_parsed_tree(local_root=parsed_root, attempts=3)
+        _phase(f"parsed_tree_files={parsed_n}")
         ledger = load_ledger(ledger_path)
-        if not pulled and not ledger.items:
+        if not recovered and not ledger.items:
+            err = (
+                f"Hostinger SSH unreachable — tried R2 fallback; "
+                f"local ledger empty ({LAST_LEDGER_PULL.get('error') or 'no ledger'})"
+            )
+            redispatched = _maybe_redispatch_transport(err)
+            send_lane_report(
+                "build_deploy",
+                "failed",
+                {
+                    "error": err,
+                    "ledger_source": LAST_LEDGER_PULL.get("source"),
+                    "ssh_error": LAST_LEDGER_PULL.get("error"),
+                    "redispatched": redispatched,
+                },
+            )
+            raise RuntimeError(
+                f"{err}; redispatched={redispatched}"
+            )
+        if not ledger.items:
             raise RuntimeError(
                 "ledger pull failed and local ledger is empty — refusing build-deploy"
             )
@@ -267,6 +357,29 @@ def run_build_deploy(
             _phase(f"reconciled parse marks from artifacts: {healed}")
         publishable = select_publishable(ledger)
         _phase(f"publishable={len(publishable)} ledger_total={len(ledger.items)}")
+
+        if parsed_n == 0 and publishable:
+            # Transport flake emptied parsed tree — retry once more then redispatch.
+            _phase("parsed tree empty with publishable rows — retrying pull")
+            parsed_n = pull_parsed_tree(local_root=parsed_root, attempts=2)
+            _phase(f"parsed_tree_files_retry={parsed_n}")
+            if parsed_n == 0:
+                err = (
+                    "Hostinger SSH unreachable for parsed/ tree "
+                    f"(publishable={len(publishable)})"
+                )
+                redispatched = _maybe_redispatch_transport(err)
+                send_lane_report(
+                    "build_deploy",
+                    "failed",
+                    {
+                        "error": err,
+                        "ledger_source": LAST_LEDGER_PULL.get("source"),
+                        "redispatched": redispatched,
+                        "ready_for_site": count_publishable_future(ledger),
+                    },
+                )
+                raise RuntimeError(f"{err}; redispatched={redispatched}")
 
         export = materialize_publishable_only(
             ledger_items=publishable,

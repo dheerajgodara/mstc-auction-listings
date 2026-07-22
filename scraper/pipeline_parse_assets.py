@@ -835,7 +835,7 @@ def run_parse_assets(
                 record_resume("parse", {"reason": reason, "backlog_left": backlog})
                 dispatch_workflow("pipeline-parse-assets.yml")
 
-        # Event chain: wake deploy when new future-closing publishable rows exist
+        # Event chain: wake deploy when new parses land (even if deploy marks look done).
         ledger_final = load_ledger(ledger_path)
         future_n = count_publishable_future(ledger_final)
         future_pending_deploy = sum(
@@ -843,11 +843,16 @@ def run_parse_assets(
         )
         kicked_deploy = False
         deploy_kick_reason = ""
-        if (parsed_n > 0 or skipped > 0) and future_pending_deploy > 0:
+        kick_backlog = future_pending_deploy
+        if parsed_n > 0 and kick_backlog <= 0:
+            # New catalogues processed but deploy already marked done / aged-out filter —
+            # still wake Update site so live export can refresh.
+            kick_backlog = int(parsed_n)
+        if (parsed_n > 0 or skipped > 0) and kick_backlog > 0:
             kicked_deploy, deploy_kick_reason = kick_if_needed(
                 "pipeline-build-deploy.yml",
                 reason="parse_done_future_publishable",
-                backlog=future_pending_deploy,
+                backlog=kick_backlog,
                 inputs={"allow_small_export": "true"},
             )
             if kicked_deploy:
@@ -856,6 +861,8 @@ def run_parse_assets(
                     {
                         "reason": deploy_kick_reason,
                         "future_pending_deploy": future_pending_deploy,
+                        "kick_backlog": kick_backlog,
+                        "parsed": parsed_n,
                     },
                 )
 

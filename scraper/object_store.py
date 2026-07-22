@@ -104,8 +104,12 @@ def upload_file(
     *,
     key: str,
     content_type: str | None = None,
+    public_acl: bool = True,
 ) -> dict[str, Any]:
-    """Upload a local file to R2. Returns {ok, url?, error?, key}."""
+    """Upload a local file to R2. Returns {ok, url?, error?, key}.
+
+    public_acl=False keeps private objects (e.g. pipeline ledger) off public-read.
+    """
     path = Path(local_path)
     if not path.is_file():
         return {"ok": False, "key": key, "error": "local file missing"}
@@ -124,14 +128,50 @@ def upload_file(
         try:
             client.upload_file(str(path), R2_BUCKET, key.lstrip("/"), ExtraArgs=extra)
         except Exception:
+            if not public_acl:
+                raise
             extra["ACL"] = "public-read"
             client.upload_file(str(path), R2_BUCKET, key.lstrip("/"), ExtraArgs=extra)
-        url = public_object_url(key)
-        logger.info("R2 upload ok key=%s bytes=%s", key, path.stat().st_size)
+        url = public_object_url(key) if public_acl else None
+        logger.info("R2 upload ok key=%s bytes=%s public_acl=%s", key, path.stat().st_size, public_acl)
         return {"ok": True, "key": key.lstrip("/"), "url": url, "bucket": R2_BUCKET}
     except Exception as exc:
         logger.warning("R2 upload failed key=%s: %s", key, exc)
         return {"ok": False, "key": key, "error": str(exc)}
+
+
+# Durable secondary for Hostinger auction_pipeline/pipeline_ledger.json (private).
+LEDGER_R2_KEY = "pipeline/pipeline_ledger.json"
+
+
+def upload_ledger_mirror(local_path: Path) -> dict[str, Any]:
+    """Upload pipeline ledger to private R2 key (Hostinger SPOF fallback)."""
+    return upload_file(
+        local_path,
+        key=LEDGER_R2_KEY,
+        content_type="application/json",
+        public_acl=False,
+    )
+
+
+def download_ledger_mirror(dest: Path) -> dict[str, Any]:
+    """Download private ledger mirror via S3 API (not public CDN)."""
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not r2_configured():
+        return {"ok": False, "error": "R2 not configured"}
+    try:
+        client = _s3_client()
+        client.download_file(R2_BUCKET, LEDGER_R2_KEY, str(dest))
+        return {
+            "ok": True,
+            "path": str(dest),
+            "bytes": dest.stat().st_size,
+            "key": LEDGER_R2_KEY,
+        }
+    except Exception as exc:
+        logger.warning("R2 ledger download failed: %s", exc)
+        return {"ok": False, "error": str(exc), "key": LEDGER_R2_KEY}
 
 
 def upload_hostinger_rel(local_path: Path, hostinger_doc_path: str) -> dict[str, Any]:

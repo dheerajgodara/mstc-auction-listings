@@ -217,8 +217,10 @@ def push_and_verify_parsed_file(
     )
 
 
-def pull_parsed_tree(*, local_root: Path | None = None) -> int:
+def pull_parsed_tree(*, local_root: Path | None = None, attempts: int = 3) -> int:
     """Pull Hostinger parsed/ into local work/parsed. Returns file count estimate."""
+    import time
+
     cfg = _hostinger_ssh_config()
     local_root = Path(local_root or DEFAULT_PARSED_DIR)
     if cfg is None or shutil.which("rsync") is None:
@@ -227,18 +229,37 @@ def pull_parsed_tree(*, local_root: Path | None = None) -> int:
     target = f"{cfg['username']}@{cfg['host']}"
     local_root.mkdir(parents=True, exist_ok=True)
     remote = f"{target}:{remote_root}/parsed/"
-    try:
-        subprocess.run(
-            ["rsync", "-az", "-e", _ssh_cmd(cfg), remote, str(local_root) + "/"],
-            check=True,
-            timeout=600,
-            capture_output=True,
-            text=True,
-        )
-    except Exception as exc:
-        logger.info("pull parsed tree skipped/failed: %s", exc)
-        return 0
-    return sum(1 for _ in local_root.rglob("*.json"))
+    last_exc: Exception | None = None
+    tries = max(1, int(attempts))
+    for attempt in range(1, tries + 1):
+        try:
+            from scraper.hostinger_ssh import rsync_timeout_args, run_rsync_with_retries
+
+            cmd = [
+                "rsync",
+                "-az",
+                *rsync_timeout_args(),
+                "-e",
+                _ssh_cmd(cfg),
+                remote,
+                str(local_root) + "/",
+            ]
+            run_rsync_with_retries(
+                cmd,
+                timeout_sec=600,
+                label="parsed-tree-pull",
+                attempts=2,
+            )
+            return sum(1 for _ in local_root.rglob("*.json"))
+        except Exception as exc:
+            last_exc = exc
+            logger.info(
+                "pull parsed tree attempt %s/%s failed: %s", attempt, tries, exc
+            )
+            if attempt < tries:
+                time.sleep(min(45, 15 * attempt))
+    logger.info("pull parsed tree skipped/failed: %s", last_exc)
+    return sum(1 for _ in local_root.rglob("*.json")) if local_root.is_dir() else 0
 
 
 def iter_local_parsed(root: Path | None = None) -> list[Path]:
