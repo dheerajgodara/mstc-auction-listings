@@ -246,6 +246,9 @@ def run_build_deploy(
     production_json = Path(DEFAULT_JSON_OUT)
     parsed_root = Path(DEFAULT_PARSED_DIR)
     ledger_path = Path(DEFAULT_PIPELINE_LEDGER)
+    export_count_for_fail: int | None = None
+    ledger_for_fail = None
+    min_closing_for_fail: str | None = None
 
     try:
         pulled = pull_ledger(local_path=ledger_path)
@@ -292,8 +295,29 @@ def run_build_deploy(
         export = strip.export
         repair = repair_absolute_asset_paths(export)
         export = repair.export
+        # Drop orphan thumb refs before CDN absolutize (P2 annex thumbs not on disk/CDN).
+        public_dir = repo_root / "web" / "public"
+        from scraper.asset_integrity import scrub_export_lot_documents
+
+        scrubbed = scrub_export_lot_documents(export, public_dir=public_dir)
+        if any(scrubbed.values()):
+            _phase(
+                f"scrubbed_missing_assets docs={scrubbed.get('docs', 0)} "
+                f"thumbs={scrubbed.get('thumbs', 0)}"
+            )
         absolutize_export_media(export)
+        # Second pass: absolutized CDN URLs whose local key is still missing.
+        scrubbed2 = scrub_export_lot_documents(export, public_dir=public_dir)
+        if any(scrubbed2.values()):
+            _phase(
+                f"scrubbed_cdn_orphan_thumbs docs={scrubbed2.get('docs', 0)} "
+                f"thumbs={scrubbed2.get('thumbs', 0)}"
+            )
+            absolutize_export_media(export)
         export["count"] = len(export.get("auctions") or [])
+        export_count_for_fail = int(export["count"])
+        ledger_for_fail = ledger
+        min_closing_for_fail = min_closing
         _phase(
             f"export_ready={export['count']} "
             f"(stripped_aged={len(strip.dropped)} repaired_paths={len(repair.repaired)})"
@@ -450,7 +474,40 @@ def run_build_deploy(
         )
         return payload
     except Exception as exc:
-        send_lane_report("build_deploy", "failed", {"error": str(exc)})
+        live_n = export_count_for_fail
+        try:
+            from scraper.http_verify import fetch_live_export_count
+
+            fetched = fetch_live_export_count(base_url=SITE_BASE_URL or None)
+            if fetched is not None:
+                live_n = fetched
+        except Exception:
+            pass
+        ready = None
+        if ledger_for_fail is not None:
+            try:
+                ready = count_publishable_future(
+                    ledger_for_fail, min_closing_date=min_closing_for_fail
+                )
+                publish_pipeline_status(
+                    ledger_for_fail,
+                    lane="build_deploy",
+                    wake_reason="failed",
+                    live_n=live_n if live_n is not None else 0,
+                    extra={"error": str(exc), "published_attempt": export_count_for_fail},
+                )
+            except Exception:
+                pass
+        send_lane_report(
+            "build_deploy",
+            "failed",
+            {
+                "error": str(exc),
+                "live_on_site": live_n,
+                "ready_for_site": ready,
+                "published": export_count_for_fail,
+            },
+        )
         raise
     finally:
         release_refresh_lock(lock_path=lock_path, run_id=run_id)

@@ -10,6 +10,7 @@ from scraper.pipeline_ledger import (
     compute_publishable,
     empty_ledger,
     estimated_download_runs_to_clear,
+    heal_poison_no_lots_parses,
     mark_download,
     mark_parse,
     merge_ledger_item,
@@ -97,6 +98,62 @@ def test_ledger_select_parse_prefers_mstc():
     )
     selected = select_for_parse(ledger, limit=1)
     assert [s.stable_key for s in selected] == ["mstc:1"]
+
+
+def test_mark_parse_no_lots_blocks_immediately():
+    ledger = empty_ledger()
+    ledger.items.append(
+        LedgerItem(
+            stable_key="mstc:591898",
+            source="mstc",
+            source_auction_id="591898",
+            download="done",
+            parse="pending",
+            hostinger_doc_path="pdfs/591898.pdf",
+            first_queued_at=datetime.now(IST).isoformat(),
+            updated_at=datetime.now(IST).isoformat(),
+        )
+    )
+    mark_parse(ledger, "mstc:591898", ok=False, error="no lots")
+    item = ledger.by_key()["mstc:591898"]
+    assert item.parse == "blocked"
+    assert item.parse_attempts == 1
+    assert select_for_parse(ledger) == []
+
+
+def test_heal_poison_no_lots_parses_blocks_known_ids():
+    ledger = empty_ledger()
+    now = datetime.now(IST).isoformat()
+    ledger.items.append(
+        LedgerItem(
+            stable_key="mstc:592636",
+            source="mstc",
+            source_auction_id="592636",
+            download="done",
+            parse="failed",
+            parse_error="no lots",
+            hostinger_doc_path="pdfs/592636.pdf",
+            first_queued_at=now,
+            updated_at=now,
+        )
+    )
+    ledger.items.append(
+        LedgerItem(
+            stable_key="mstc:1",
+            source="mstc",
+            source_auction_id="1",
+            download="done",
+            parse="failed",
+            parse_error="boom",
+            hostinger_doc_path="pdfs/1.pdf",
+            first_queued_at=now,
+            updated_at=now,
+        )
+    )
+    assert heal_poison_no_lots_parses(ledger) == 1
+    assert ledger.by_key()["mstc:592636"].parse == "blocked"
+    assert ledger.by_key()["mstc:1"].parse == "failed"
+    assert [i.stable_key for i in select_for_parse(ledger)] == ["mstc:1"]
 
 
 def test_ledger_mark_download_and_parse_retries(tmp_path: Path):

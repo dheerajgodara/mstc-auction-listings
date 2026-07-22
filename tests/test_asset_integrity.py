@@ -66,6 +66,59 @@ def test_scrub_keeps_existing_files(tmp_path: Path):
     assert lot["preview_images"] == ["thumbs/589631/120.0/Photo_test.webp"]
 
 
+def test_scrub_removes_missing_annex_webp_thumb(tmp_path: Path):
+    """Orphan Annex_*.webp thumb refs are cleared even when PDF doc still exists."""
+    public = tmp_path
+    doc_path = public / "docs" / "591898" / "Annex_1.pdf"
+    doc_path.parent.mkdir(parents=True)
+    doc_path.write_bytes(b"%PDF-1.4 fake")
+    # thumbs/591898/1/Annex_1.webp intentionally missing
+    lot = {
+        "lot_id": "1",
+        "documents": [
+            {
+                "type": "annexure",
+                "filename": "Annex_1.pdf",
+                "cached_url": "docs/591898/Annex_1.pdf",
+                "thumbnail_url": "thumbs/591898/1/Annex_1.webp",
+                "status": "thumbnail_ready",
+            }
+        ],
+        "preview_images": ["thumbs/591898/1/Annex_1.webp"],
+    }
+    removed = scrub_lot_documents(lot, public_dir=public)
+    assert removed["thumbs"] == 1
+    assert removed["docs"] == 0
+    doc = lot["documents"][0]
+    assert doc["cached_url"] == "docs/591898/Annex_1.pdf"
+    assert doc["thumbnail_url"] is None
+    assert doc["status"] == "downloaded"
+    assert lot["preview_images"] == []
+
+
+def test_scrub_removes_missing_cdn_annex_thumb(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("R2_PUBLIC_BASE_URL", "https://cdn.example.com")
+    lot = {
+        "lot_id": "1",
+        "documents": [
+            {
+                "type": "annexure",
+                "filename": "Annex_2.pdf",
+                "cached_url": "docs/592636/Annex_2.pdf",
+                "thumbnail_url": "https://cdn.example.com/thumbs/592636/1/Annex_2.webp",
+                "status": "thumbnail_ready",
+            }
+        ],
+        "preview_images": [],
+    }
+    (tmp_path / "docs" / "592636").mkdir(parents=True)
+    (tmp_path / "docs" / "592636" / "Annex_2.pdf").write_bytes(b"%PDF")
+    removed = scrub_lot_documents(lot, public_dir=tmp_path)
+    assert removed["thumbs"] == 1
+    assert lot["documents"][0]["thumbnail_url"] is None
+    assert lot["documents"][0]["status"] == "downloaded"
+
+
 def test_find_missing_assets_includes_lot_documents(tmp_path: Path):
     export = {
         "auctions": [

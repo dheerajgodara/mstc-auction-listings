@@ -139,9 +139,17 @@ def scrub_lot_documents(lot: dict, *, public_dir: Path) -> dict[str, int]:
                     updated["error"] = f"local asset not cached yet: {rel}"
 
         thumb = updated.get("thumbnail_url")
-        if local_asset_kind(thumb) is not None:
-            rel = normalize_rel(thumb)
-            if not _file_exists(public_dir, rel):
+        if thumb:
+            rel = None
+            if local_asset_kind(thumb) is not None:
+                rel = normalize_rel(thumb)
+            elif str(thumb).startswith(("http://", "https://")):
+                from scraper.object_store import media_key_from_url
+
+                key = media_key_from_url(str(thumb))
+                if key and key.startswith(LOCAL_ASSET_PREFIXES):
+                    rel = key
+            if rel and not _file_exists(public_dir, rel):
                 removed["thumbs"] += 1
                 updated["thumbnail_url"] = None
                 if updated.get("status") == "thumbnail_ready":

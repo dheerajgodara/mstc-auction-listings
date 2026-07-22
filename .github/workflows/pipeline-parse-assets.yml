@@ -15,6 +15,10 @@ on:
         required: false
         default: ""
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   parse-assets:
     runs-on: ubuntu-latest

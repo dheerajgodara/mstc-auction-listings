@@ -255,18 +255,23 @@ def run_pipeline_download(
 
         ok_pf, pf_msg = preflight_hostinger()
         _phase(pf_msg)
-        # Hard-fail only when SSH is configured but Hostinger is unreachable.
-        # Incomplete env is handled by MEDIA_PUSH_REQUIRED below (and unit tests).
+        # Hard-fail only when SSH is required. MEDIA_R2_ONLY + R2 → soft-fail (ledger best-effort).
         if not ok_pf and _live_ssh_cfg() is not None:
-            send_lane_report(
-                lane_id,
-                "failed",
-                {
-                    "error": f"Hostinger stalled (preflight): {pf_msg}",
-                    "github_run_url": _github_run_url(),
-                },
-            )
-            raise RuntimeError(f"Hostinger preflight failed: {pf_msg}")
+            from scraper.object_store import media_r2_only, r2_configured
+
+            if media_r2_only() and r2_configured():
+                _phase(f"Hostinger preflight soft-fail (MEDIA_R2_ONLY): {pf_msg}")
+                warnings.append(f"Hostinger preflight soft-fail: {pf_msg}")
+            else:
+                send_lane_report(
+                    lane_id,
+                    "failed",
+                    {
+                        "error": f"Hostinger stalled (preflight): {pf_msg}",
+                        "github_run_url": _github_run_url(),
+                    },
+                )
+                raise RuntimeError(f"Hostinger preflight failed: {pf_msg}")
 
         if media_push_required() and _hostinger_ssh_config() is None:
             from scraper.object_store import media_r2_only, r2_configured

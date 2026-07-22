@@ -26,7 +26,7 @@ SSH_SERVER_ALIVE_COUNT_MAX = int(os.getenv("SSH_SERVER_ALIVE_COUNT_MAX", "3"))
 RSYNC_IO_TIMEOUT = int(os.getenv("RSYNC_IO_TIMEOUT", "120"))
 SSH_CONTROL_PERSIST = int(os.getenv("SSH_CONTROL_PERSIST", "120"))
 SSH_CONTROL_PATH_TMPL = os.getenv("SSH_CONTROL_PATH_TMPL", "/tmp/mstc_ssh_%C")
-SSH_PREFLIGHT_TIMEOUT = int(os.getenv("SSH_PREFLIGHT_TIMEOUT", "10"))
+SSH_PREFLIGHT_TIMEOUT = int(os.getenv("SSH_PREFLIGHT_TIMEOUT", "25"))
 
 
 def hostinger_ssh_config() -> dict[str, str] | None:
@@ -164,35 +164,43 @@ def is_transport_error(exc: BaseException) -> bool:
 
 
 def preflight_hostinger(*, timeout_sec: int | None = None) -> tuple[bool, str]:
-    """10s ssh echo — abort lanes early when Hostinger is unreachable."""
+    """ssh echo — abort lanes early when Hostinger is unreachable (retry once on timeout)."""
     cfg = hostinger_ssh_config()
     if cfg is None:
         return False, "Hostinger SSH env incomplete"
     if shutil.which("ssh") is None:
         return False, "ssh binary missing"
-    t0 = time.monotonic()
-    target = f"{cfg['username']}@{cfg['host']}"
-    cmd = ssh_argv(cfg, multiplex=False) + [target, "echo ok"]
     to = int(timeout_sec if timeout_sec is not None else SSH_PREFLIGHT_TIMEOUT)
-    try:
-        # OS timeout belt-and-suspenders around connect hangs
-        if shutil.which("timeout"):
-            cmd = ["timeout", str(to + 2), *cmd]
-        proc = subprocess.run(
-            cmd,
-            check=True,
-            timeout=to + 5,
-            capture_output=True,
-            text=True,
-        )
-        ms = int((time.monotonic() - t0) * 1000)
-        out = (proc.stdout or "").strip()
-        if "ok" not in out.lower():
-            return False, f"preflight unexpected output ({ms}ms): {out[:80]!r}"
-        return True, f"preflight ok connect_ms={ms}"
-    except Exception as exc:
-        ms = int((time.monotonic() - t0) * 1000)
-        return False, f"preflight failed ({ms}ms): {exc}"
+    last_msg = ""
+    for attempt in range(2):
+        t0 = time.monotonic()
+        target = f"{cfg['username']}@{cfg['host']}"
+        cmd = ssh_argv(cfg, multiplex=False) + [target, "echo ok"]
+        try:
+            if shutil.which("timeout"):
+                cmd = ["timeout", str(to + 2), *cmd]
+            proc = subprocess.run(
+                cmd,
+                check=True,
+                timeout=to + 5,
+                capture_output=True,
+                text=True,
+            )
+            ms = int((time.monotonic() - t0) * 1000)
+            out = (proc.stdout or "").strip()
+            if "ok" not in out.lower():
+                last_msg = f"preflight unexpected output ({ms}ms): {out[:80]!r}"
+                continue
+            return True, f"preflight ok connect_ms={ms} attempt={attempt + 1}"
+        except Exception as exc:
+            ms = int((time.monotonic() - t0) * 1000)
+            last_msg = f"preflight failed ({ms}ms): {exc}"
+            # Retry once on OS timeout (124) / connect hang.
+            if attempt == 0 and ("124" in str(exc) or "timed out" in str(exc).lower()):
+                time.sleep(1.5)
+                continue
+            break
+    return False, last_msg
 
 
 def run_ssh(

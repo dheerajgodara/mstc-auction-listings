@@ -34,6 +34,22 @@ MAX_STAGE_ATTEMPTS = 5
 LEDGER_SCHEMA_VERSION = 3
 ACTIVE_SOURCES = frozenset({"mstc", "gem_forward"})
 
+# MSTC PDFs that repeatedly parse to zero lots — block once so they stop burning the queue.
+POISON_NO_LOTS_MSTC_IDS = frozenset(
+    {
+        "591898",
+        "592636",
+        "592640",
+        "592642",
+        "592643",
+        "592677",
+        "592679",
+        "592680",
+        "592681",
+        "592763",
+    }
+)
+
 
 class LedgerItem(BaseModel):
     """v3 per-auction row. Unknown legacy keys discarded (extra=ignore)."""
@@ -579,6 +595,25 @@ def select_for_parse(ledger: PipelineLedger, *, limit: int | None = None) -> lis
     return eligible[:limit]
 
 
+def heal_poison_no_lots_parses(ledger: PipelineLedger) -> int:
+    """Force-block known no-lots MSTC rows still marked failed/pending."""
+    healed = 0
+    for item in ledger.items:
+        if item.source != "mstc":
+            continue
+        if str(item.source_auction_id) not in POISON_NO_LOTS_MSTC_IDS:
+            continue
+        if item.parse in ("blocked", "done"):
+            continue
+        if item.parse not in ("failed", "pending"):
+            continue
+        item.parse = "blocked"
+        item.parse_error = item.parse_error or "no lots"
+        item.updated_at = _now_iso()
+        healed += 1
+    return healed
+
+
 def select_publishable(ledger: PipelineLedger) -> list[LedgerItem]:
     return [i for i in ledger.items if compute_publishable(i) and not i.removed_from_source]
 
@@ -1010,10 +1045,13 @@ def mark_parse(
         item.parse_error = error or "parse durability incomplete — hostinger artifact required"
         item.parse = "pending"
     else:
-        # Content failure (e.g. no lots).
+        # Content failure (e.g. no lots) — block immediately; do not spin forever.
         item.lots_count = 0
-        item.parse_error = error or "no lots"
-        if item.parse_attempts >= MAX_STAGE_ATTEMPTS:
+        err = (error or "no lots").strip() or "no lots"
+        item.parse_error = err
+        if err.lower() in {"no lots", "no lot"} or "no lots" in err.lower():
+            item.parse = "blocked"
+        elif item.parse_attempts >= MAX_STAGE_ATTEMPTS:
             item.parse = "blocked"
         else:
             item.parse = "failed"

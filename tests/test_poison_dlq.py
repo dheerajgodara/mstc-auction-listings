@@ -147,6 +147,37 @@ def test_verify_live_site_invalid_thumb_is_warning(monkeypatch, tmp_path: Path):
     assert any("invalid" in w.lower() or "skipped" in w.lower() for w in result.warnings)
 
 
+def test_verify_live_site_thumb_404_is_warning_when_core_ok(monkeypatch):
+    def fake_status(url: str, *, timeout: int = 60):
+        if "Annex_" in url or url.endswith(".webp"):
+            return 404, b"missing", None
+        if url.rstrip("/").endswith("/auctions") or url.endswith("/auctions/"):
+            return 200, b'<html>"count": 42</html>', None
+        if "auctions.json" in url:
+            return 200, b"{}", None
+        if "auctions-data.js" in url:
+            return 200, b'window.__AUCTIONS_EXPORT__={"count":42}', None
+        if "sitemap.xml" in url:
+            return 200, b"<urlset></urlset>", None
+        if url.endswith(".pdf"):
+            return 200, b"%PDF", None
+        return 200, b"ok", None
+
+    monkeypatch.setattr("scraper.http_verify._http_status", fake_status)
+    monkeypatch.setattr(
+        "scraper.http_verify._pick_sample_urls",
+        lambda *a, **k: (
+            "pdfs/1.pdf",
+            "https://cdn.example.com/thumbs/591898/1/Annex_1.webp",
+            [],
+        ),
+    )
+    result = verify_live_site(base_url="https://scrapauctionindia.com/auctions")
+    assert result.passed is True
+    assert not any("thumbnail" in e.lower() for e in result.errors)
+    assert any("sample thumbnail returned HTTP 404" in w for w in result.warnings)
+
+
 def test_drain_continues_when_parse_succeeds_after_quarantine(tmp_path, monkeypatch):
     monkeypatch.setattr("scraper.pipeline_drain.REPO_ROOT", tmp_path)
     monkeypatch.setattr("scraper.pipeline_drain.DEFAULT_PIPELINE_LEDGER", tmp_path / "pipeline_ledger.json")

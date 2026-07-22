@@ -51,6 +51,7 @@ from scraper.parse_journal import ParseJournal
 from scraper.pipeline_ledger import (
     count_publishable_future,
     fail_budget_ok,
+    heal_poison_no_lots_parses,
     item_passes_min_closing,
     load_ledger,
     mark_parse,
@@ -437,6 +438,12 @@ def run_parse_assets(
         ledger = load_ledger(ledger_path)
         if not pulled and not ledger.items:
             raise RuntimeError("ledger pull failed and local ledger is empty — refusing parse")
+
+        healed_poison = heal_poison_no_lots_parses(ledger)
+        if healed_poison:
+            write_ledger(ledger, ledger_path)
+            push_ledger(local_path=ledger_path)
+            _phase(f"healed_poison_no_lots={healed_poison}")
 
         pulled_parsed_n = pull_parsed_tree(local_root=parsed_root)
         if pulled_parsed_n:
