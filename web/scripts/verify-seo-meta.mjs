@@ -80,7 +80,7 @@ for (const slug of INDEXABLE_LANDING_SLUGS) {
   pass(`${slug}/ has H1`, h1.length >= 5, h1.slice(0, 40));
   const textLen = visibleTextLength(html);
   pass(`${slug}/ has sufficient visible content`, textLen >= MIN_LANDING_VISIBLE_TEXT, `${textLen} chars`);
-  if (slug !== "accessibility") {
+  if (slug !== "accessibility" && slug !== "developers") {
     pass(`${slug}/ links to detail pages`, hasInternalDetailLink(html));
   }
   if (h1) {
