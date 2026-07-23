@@ -15,7 +15,7 @@ from scraper.category_map import should_exclude_category
 from scraper.config import GEM_FORWARD_PER_PAGE, OFFICE_CODES
 from scraper.eauction_scraper import scrape_eauction_tabs
 from scraper.export_guard import write_auctions_json
-from scraper.filters import apply_future_filter, parse_min_closing_boundary
+from scraper.filters import parse_min_closing_boundary, partition_closing_lanes
 from scraper.gem_forward_client import GemForwardClient
 from scraper.gem_forward_scraper import scrape_gem_forward
 from scraper.main import listing_to_base
@@ -53,8 +53,19 @@ def discover_mstc(
         fetched_offices.append(office_code)
         records.extend(office_records)
     before = len(records)
-    records, filter_stats = apply_future_filter(records, min_closing)
-    return records, {
+    live, archive, lane_stats = partition_closing_lanes(records, min_closing=min_closing)
+    # Upsert both live + archive shells; live runway still enforced at export.
+    combined = list(live) + list(archive)
+    filter_stats = {
+        "before_filter": before,
+        "kept": len(live),
+        "excluded_past_closing": int(lane_stats.get("archive") or 0)
+        + int(lane_stats.get("excluded_too_old") or 0),
+        "excluded_missing_closing": int(lane_stats.get("excluded_missing_closing") or 0),
+        "archive_kept": int(lane_stats.get("archive") or 0),
+        "lanes": lane_stats,
+    }
+    return combined, {
         "source": "mstc",
         "complete": set(fetched_offices) == set(requested_offices),
         "before_filter": before,
@@ -63,6 +74,8 @@ def discover_mstc(
         "failed_offices": sorted(set(requested_offices) - set(fetched_offices)),
         "office_counts": office_counts,
         "future_filter": filter_stats,
+        "live_count": len(live),
+        "archive_count": len(archive),
     }
 
 
@@ -86,13 +99,25 @@ def discover_gem_forward(
     ]
     records = [r for r in records if not should_exclude_category(r.asset_category, source="gem_forward")]
     before = len(records)
-    records, filter_stats = apply_future_filter(records, min_closing)
-    return records, {
+    live, archive, lane_stats = partition_closing_lanes(records, min_closing=min_closing)
+    combined = list(live) + list(archive)
+    filter_stats = {
+        "before_filter": before,
+        "kept": len(live),
+        "excluded_past_closing": int(lane_stats.get("archive") or 0)
+        + int(lane_stats.get("excluded_too_old") or 0),
+        "excluded_missing_closing": int(lane_stats.get("excluded_missing_closing") or 0),
+        "archive_kept": int(lane_stats.get("archive") or 0),
+        "lanes": lane_stats,
+    }
+    return combined, {
         "source": "gem_forward",
         "complete": limit is None,
         "before_filter": before,
         "transport": client._active_transport,
         "future_filter": filter_stats,
+        "live_count": len(live),
+        "archive_count": len(archive),
     }
 
 
@@ -112,13 +137,25 @@ def discover_eauction(
     records = [adapt_eauction_record(row) for row in rows]
     records = [r for r in records if not should_exclude_category(r.asset_category, source="eauction")]
     before = len(records)
-    records, filter_stats = apply_future_filter(records, min_closing)
-    return records, {
+    live, archive, lane_stats = partition_closing_lanes(records, min_closing=min_closing)
+    combined = list(live) + list(archive)
+    filter_stats = {
+        "before_filter": before,
+        "kept": len(live),
+        "excluded_past_closing": int(lane_stats.get("archive") or 0)
+        + int(lane_stats.get("excluded_too_old") or 0),
+        "excluded_missing_closing": int(lane_stats.get("excluded_missing_closing") or 0),
+        "archive_kept": int(lane_stats.get("archive") or 0),
+        "lanes": lane_stats,
+    }
+    return combined, {
         **stats,
         "source": "eauction",
         "complete": limit is None and max_pages is None,
         "before_filter": before,
         "future_filter": filter_stats,
+        "live_count": len(live),
+        "archive_count": len(archive),
     }
 
 
@@ -169,6 +206,8 @@ def run_discovery(
             "by_source": _count_by(records, "source"),
             "by_category": _count_by(records, "asset_category"),
             "source_stats": source_stats,
+            "live_count": sum(int(s.get("live_count") or 0) for s in source_stats.values()),
+            "archive_count": sum(int(s.get("archive_count") or 0) for s in source_stats.values()),
         },
     )
     write_auctions_json(out_path, export.model_dump(mode="json"), allow_small_output=allow_small_output)

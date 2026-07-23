@@ -17,6 +17,7 @@ from scraper.auction_quarantine import (
 )
 from scraper.export_hygiene import (
     apply_quarantine_skips,
+    build_archive_export,
     classify_strict_errors,
     format_dropped_telegram_note,
     poison_threshold,
@@ -257,3 +258,82 @@ def test_ledger_parse_not_done_until_explicit_mark():
     mark_parse(ledger, "mstc:1", ok=True, lots_count=1, deploy_ready=True)
     assert ledger.items[0].parse == "done"
     assert ledger.items[0].lots_count == 1
+
+
+def test_build_archive_export_keeps_shell_without_lots():
+    now = datetime(2026, 7, 23, 14, 30, tzinfo=IST)
+    live = _export(
+        [
+            _row(
+                "live1",
+                closing=(now + timedelta(days=2)).isoformat(),
+            )
+        ]
+    )
+    # Simulate strip dropping a same-day AIR copper lot
+    stripped = strip_aged_out_auctions(
+        _export(
+            [
+                _row("590217", closing=datetime(2026, 7, 23, 17, 0, tzinfo=IST).isoformat()),
+                _row("live1", closing=(now + timedelta(days=2)).isoformat()),
+            ]
+        ),
+        min_closing_date=(now + timedelta(hours=12)).isoformat(),
+        allow_large_aged_out_strip=True,
+    )
+    assert any(d["id"] == "590217" for d in stripped.dropped)
+    assert stripped.dropped[0].get("auction") is not None
+
+    ledger_item = LedgerItem(
+        stable_key="mstc:590217",
+        source="mstc",
+        source_auction_id="590217",
+        closing=datetime(2026, 7, 23, 17, 0, tzinfo=IST).isoformat(),
+        opening=datetime(2026, 7, 23, 12, 0, tzinfo=IST).isoformat(),
+        seller="All India Radio",
+        state="Rajasthan",
+        detail_url="https://www.mstcindia.co.in/TenderEntry/Lot_Item_Details_AucID.aspx?ARID=590217",
+        discover="done",
+        download="pending",
+        parse="pending",
+        priority_score=10,
+        first_seen_at=now.isoformat(),
+        updated_at=now.isoformat(),
+    )
+    archive = build_archive_export(
+        live_export=stripped.export,
+        stripped_dropped=stripped.dropped,
+        ledger_items=[ledger_item],
+        discovery_by_key={
+            "mstc:590217": {
+                "id": "590217",
+                "source": "mstc",
+                "auction_number": "MSTC/JPR/All India Radio/2/Jodhpur/26-27/19431",
+                "closing": datetime(2026, 7, 23, 17, 0, tzinfo=IST).isoformat(),
+                "display_title": "Copper Scrap",
+            }
+        },
+        now=now,
+    )
+    assert archive["count"] >= 1
+    ids = {a["id"] for a in archive["auctions"]}
+    assert "590217" in ids
+    row = next(a for a in archive["auctions"] if a["id"] == "590217")
+    assert row["in_archive"] is True
+    assert row["archive_reason"] in {"under_runway", "aged_out", "closed"}
+    assert row.get("catalogue_status") in {"none", "pending", "ready"}
+    # Live runway row must not appear in archive
+    assert "live1" not in ids
+
+
+def test_build_archive_export_gc_beyond_t30():
+    now = datetime(2026, 7, 23, 12, 0, tzinfo=IST)
+    old = _row("old", closing=(now - timedelta(days=40)).isoformat())
+    archive = build_archive_export(
+        live_export=_export([]),
+        stripped_dropped=[{"id": "old", "auction": old, "key": "mstc:old"}],
+        ledger_items=[],
+        discovery_by_key={},
+        now=now,
+    )
+    assert archive["count"] == 0

@@ -22,6 +22,7 @@ const FOOTER_SECTIONS = [
       { href: "aluminium-scrap/", label: "Aluminium" },
       { href: "large-scrap-lots/", label: "Large lots" },
       { href: "closing-soon/", label: "Closing soon" },
+      { href: "archive/", label: "Auction archive" },
       { href: "vehicle-auctions/", label: "Vehicles" },
     ],
   },

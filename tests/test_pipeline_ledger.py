@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -25,6 +25,10 @@ from scraper.raw_store import has_raw_html, load_raw_html, save_raw_html
 IST = ZoneInfo("Asia/Kolkata")
 
 
+def _future_closing(*, hours: int = 48) -> str:
+    return (datetime.now(IST) + timedelta(hours=hours)).isoformat()
+
+
 def test_raw_html_roundtrip(tmp_path: Path):
     path = save_raw_html("mstc", "582972", "<html>ok</html>", raw_dir=tmp_path)
     assert path.is_file()
@@ -34,6 +38,7 @@ def test_raw_html_roundtrip(tmp_path: Path):
 
 def test_ledger_select_download_respects_cap(tmp_path: Path):
     ledger = empty_ledger()
+    closing = _future_closing()
     for i, score in enumerate([10, 90, 50, 80]):
         ledger.items.append(
             LedgerItem(
@@ -42,6 +47,7 @@ def test_ledger_select_download_respects_cap(tmp_path: Path):
                 source_auction_id=str(i),
                 download="pending",
                 parse="pending",
+                closing=closing,
                 priority_score=score,
                 first_queued_at=datetime.now(IST).isoformat(),
                 updated_at=datetime.now(IST).isoformat(),
@@ -55,6 +61,7 @@ def test_ledger_select_download_respects_cap(tmp_path: Path):
             source_auction_id="g1",
             download="pending",
             parse="pending",
+            closing=closing,
             priority_score=99,
             first_queued_at=datetime.now(IST).isoformat(),
             updated_at=datetime.now(IST).isoformat(),
@@ -250,6 +257,7 @@ def test_select_for_download_skips_done_status_is_truth(tmp_path: Path):
             source_auction_id="new",
             download="pending",
             parse="pending",
+            closing=_future_closing(),
             portal_doc_url="https://example.com/y",
             priority_score=80,
             first_seen_at=now,
@@ -309,6 +317,7 @@ def test_select_for_download_prefers_pending_over_done(tmp_path: Path):
             source_auction_id="new",
             download="pending",
             parse="pending",
+            closing=_future_closing(),
             priority_score=1,
             first_seen_at=now,
             updated_at=now,
@@ -347,6 +356,7 @@ def test_select_for_download_failed_is_requeued(tmp_path: Path):
             source_auction_id="failed",
             download="failed",
             parse="pending",
+            closing=_future_closing(),
             priority_score=10,
             first_seen_at=now,
             updated_at=now,

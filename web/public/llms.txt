@@ -1,0 +1,67 @@
+# Scrap Auction India
+
+> Public auction discovery for Indian scrap and industrial lots (MSTC, GeM Forward, eAuction.gov.in).
+> Discovery only — bidding and payments happen only on official source portals.
+
+## What this site is
+
+Scrap Auction India aggregates public forward-auction listings so buyers and agents can search, filter, and research lots. We are not a bidding platform.
+
+## Sources
+
+- MSTC (mstcecommerce)
+- GeM Forward auctions
+- eAuction.gov.in
+
+## Start here (HTML)
+
+- Home: https://scrapauctionindia.com/auctions/
+- MSTC: https://scrapauctionindia.com/auctions/mstc-auctions/
+- GeM Forward: https://scrapauctionindia.com/auctions/gem-forward-auctions/
+- eAuction: https://scrapauctionindia.com/auctions/eauction-gov-in/
+- Developers: https://scrapauctionindia.com/auctions/developers/
+- HTML sitemap index: https://scrapauctionindia.com/auctions/sitemap.xml
+
+## HTML start URLs (crawlable cards in raw HTML)
+
+- Aluminium: https://scrapauctionindia.com/auctions/aluminium-scrap/
+- Metal scrap: https://scrapauctionindia.com/auctions/metal-scrap/
+- Large lots: https://scrapauctionindia.com/auctions/large-scrap-lots/
+- Closing soon: https://scrapauctionindia.com/auctions/closing-soon/
+- Auction archive (T-30 short-window + recently closed): https://scrapauctionindia.com/auctions/archive/
+
+## Machine / agent entrypoints (not in Google sitemap)
+
+- Manifest: https://scrapauctionindia.com/auctions/api/manifest.json
+- Schema: https://scrapauctionindia.com/auctions/api/schema.json
+- Latest auctions: https://scrapauctionindia.com/auctions/api/latest.json
+- Closing soon: https://scrapauctionindia.com/auctions/api/closing-soon.json
+- Search index (filter locally): https://scrapauctionindia.com/auctions/api/search-index.json
+- Topic feeds: https://scrapauctionindia.com/auctions/api/search/aluminium.json
+  also copper.json, vehicle-scrap.json, large-lots.json, closing-soon.json
+- Archive latest (T-30): https://scrapauctionindia.com/auctions/api/archive/latest.json
+- Archive search index: https://scrapauctionindia.com/auctions/api/archive/search-index.json
+- One auction: https://scrapauctionindia.com/auctions/api/auction/{source}/{id}.json
+  (source = mstc | gem-forward | eauction)
+- One archive auction: https://scrapauctionindia.com/auctions/api/archive/auction/{source}/{id}.json
+- Feeds: https://scrapauctionindia.com/auctions/feeds/latest.json
+- Machine URL list: https://scrapauctionindia.com/auctions/machine-sitemap.xml
+- Full agent docs: https://scrapauctionindia.com/auctions/llms-full.txt
+
+There is **no** dynamic query-string search API on this static host. Download search-index or a topic feed and filter offline.
+
+## Usage rules
+
+- Use for discovery, research, and tooling.
+- Always verify quantity, EMD, location, and closing on the official portal before bidding.
+- Do not treat this site as a bid execution channel.
+- Bulk app data under /auctions/data/ is not a public crawler API.
+
+## Crawler note
+
+Search bots (Googlebot, Bingbot, Applebot, OAI-SearchBot, ChatGPT-User, Claude-SearchBot, Claude-User, PerplexityBot) and training crawlers (GPTBot, ClaudeBot) are allowed on /auctions/ by design for AI visibility. /auctions/data/ remains disallowed.
+
+## Contact
+
+- Support: https://scrapauctionindia.com/auctions/support/
+- Status / import health: https://scrapauctionindia.com/auctions/status/

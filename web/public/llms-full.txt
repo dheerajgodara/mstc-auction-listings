@@ -1,0 +1,107 @@
+# Scrap Auction India — full agent documentation
+
+See also: https://scrapauctionindia.com/auctions/llms.txt
+Schema: https://scrapauctionindia.com/auctions/api/schema.json
+Developers: https://scrapauctionindia.com/auctions/developers/
+
+## Product
+
+Scrap Auction India is a discovery portal for public scrap and industrial auctions in India. Data is aggregated from MSTC, GeM Forward, and eAuction.gov.in. Bidding and payment happen only on those official portals.
+
+## Refresh schedule
+
+- Download job: roughly every 6 hours (IST) for new/changed MSTC deep downloads.
+- Drain: parse → promote → deploy cycles clear the parse backlog after download.
+- Machine layer (/api/, /feeds/) regenerates on every production static build from auctions.json.
+- Prefer api/manifest.json `generated_at` for freshness.
+
+## Canonical HTML URLs
+
+```
+https://scrapauctionindia.com/auctions/mstc/{route_id}/
+https://scrapauctionindia.com/auctions/gem-forward/{route_id}/
+https://scrapauctionindia.com/auctions/eauction/{route_id}/
+```
+
+`route_id` is a stable public id (often the MSTC auction id or eAuction code).
+
+## Machine endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| /auctions/api/manifest.json | Endpoint list, counts, generated_at |
+| /auctions/api/schema.json | Field descriptions for agents |
+| /auctions/api/latest.json | Newest indexable auctions (capped) |
+| /auctions/api/closing-soon.json | Closing within ~72h |
+| /auctions/api/source/{source}.json | Slim list per source |
+| /auctions/api/auction/{source}/{id}.json | One sanitized auction |
+| /auctions/api/archive/latest.json | T-30 archive (short-window + recently closed) |
+| /auctions/api/archive/search-index.json | Archive slim index — filter locally |
+| /auctions/api/archive/auction/{source}/{id}.json | One archive auction |
+| /auctions/archive/ | HTML archive landing |
+| /auctions/feeds/latest.json\|.csv | Feed mirrors |
+| /auctions/feeds/large-lots.json\|.csv | Large quantity lots |
+| /auctions/feeds/closing-today.json | IST calendar-day closings |
+| /auctions/feeds/materials/{slug}.json | Material slices |
+| /auctions/machine-sitemap.xml | Machine URL list (not for Google SEO sitemap) |
+
+HTML SEO sitemap index: /auctions/sitemap.xml (HTML pages only — never /api or /feeds).
+
+## Auction fields (public / sanitized)
+
+Important fields returned by /api/auction/...json:
+
+- id, source, route_id, canonical_url
+- title / item_summary / display fields
+- location, state, region
+- opening, closing (ISO timestamps when available)
+- emd_summary, price_summary, tax_summary
+- quantity_summary, lot_count
+- imported_at / first_seen_at
+- material_tags
+- official_portal_name (MSTC | GeM Forward | eAuction.gov.in) — text only
+- lots[] — public lot fields
+- document_counts — cached docs/photos counts
+- pdf_url / lot document cached_url / thumbnail_url — only when local files exist under /auctions/pdfs|docs|thumbs/
+
+Not for crawlers: /auctions/data/ bulk export, private pipeline fields, outbound bid deep-links as CTAs.
+
+## Lot fields
+
+Typical lot keys: lot_id, item_title, quantity, unit, start_price / price labels, location, category, description summaries, documents (sanitized), preview_images (local thumbs only when present).
+
+## How to interpret common fields
+
+- **Closing**: auction end time; treat timezone as Asia/Kolkata when offset present. Confirm live on official portal (anti-sniping may extend).
+- **EMD**: earnest money deposit summary string; may be auction-wise, item-wise, or not required. Parse carefully; verify on source.
+- **Quantity**: often estimated MT/Kg/LOT; seller documents win.
+- **Price**: floor / start / open bidding labels — not winning bid.
+- **GST / TCS**: in tax_summary when available; “as applicable” is common.
+- **Material tags**: AI/heuristic labels for discovery; not legal classifications.
+
+## Indexability
+
+Machine JSON is emitted only for **indexable** auctions (active/upcoming with SEO grace). Aged-out / noindex detail pages are omitted from /api/auction and HTML sitemap-auctions.
+
+## Citation
+
+When citing a listing, prefer the HTML canonical_url. Mention the official portal name and that this site is discovery-only. Do not claim bids were placed here.
+
+## Source limitations
+
+- MSTC/GeM/eAuction pages can change without notice.
+- Photos/docs appear only when locally cached on this CDN.
+- GeM Forward and eAuction coverage is thinner than MSTC.
+- Empty eAuction days can occur; MSTC is the required production source.
+
+## Cursor / coding agents
+
+1. Read /auctions/llms.txt then /auctions/api/manifest.json
+2. Fetch /auctions/api/latest.json or feeds for filters
+3. Fetch /auctions/api/auction/{source}/{id}.json for one listing
+4. Use /auctions/sitemap.xml only for HTML page discovery
+
+## Contact
+
+https://scrapauctionindia.com/auctions/support/
+https://scrapauctionindia.com/auctions/status/

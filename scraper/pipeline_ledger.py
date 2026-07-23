@@ -498,9 +498,10 @@ def download_eligible(item: LedgerItem, *, source: str | None = None) -> bool:
     closing = _item_closing_dt(item)
     if closing is None:
         return False
-    from scraper.filters import resolve_min_closing
+    from scraper.filters import archive_window_start
 
-    if closing < resolve_min_closing():
+    # Best-effort download for T-N archive + live; too-old closings stay ineligible.
+    if closing < archive_window_start():
         return False
     return True
 
@@ -798,6 +799,14 @@ def upsert_from_work_plan(
             )
         except Exception:
             priority = {"new": 90, "changed": 70, "needs_repair": 80}.get(decision, 10)
+
+        # Deprioritize under-runway / archive-only rows so live runway downloads first.
+        from scraper.filters import is_archive_eligible
+        from scraper.qa_summary import _parse_closing
+
+        closing_dt = _parse_closing(closing)
+        if closing_dt is not None and is_archive_eligible(closing_dt, now=now):
+            priority = max(5, int(priority) - 40)
 
         if not portal_doc:
             # Discover fail — record row but do not queue download

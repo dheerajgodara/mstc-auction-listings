@@ -125,3 +125,106 @@ def apply_future_filter(
         "excluded_past_closing": excluded_past,
         "excluded_missing_closing": excluded_missing,
     }
+
+
+def archive_retention_days() -> int:
+    from scraper.config import ARCHIVE_RETENTION_DAYS
+
+    return int(ARCHIVE_RETENTION_DAYS)
+
+
+def archive_window_start(*, now: datetime | None = None) -> datetime:
+    """Earliest closing still retained in the T-N archive (now − retention days, IST)."""
+    return _as_ist(now) - timedelta(days=archive_retention_days())
+
+
+def is_live_eligible(
+    closing: datetime | None,
+    *,
+    now: datetime | None = None,
+    hours_ahead: int | None = None,
+    min_closing: datetime | None = None,
+) -> bool:
+    """True when closing clears the live runway (default now + MIN_CLOSING_HOURS_AHEAD)."""
+    c = normalize_closing(closing)
+    if c is None:
+        return False
+    boundary = min_closing if min_closing is not None else min_closing_datetime(
+        now=now, hours_ahead=hours_ahead
+    )
+    return c >= boundary
+
+
+def is_archive_eligible(
+    closing: datetime | None,
+    *,
+    now: datetime | None = None,
+    hours_ahead: int | None = None,
+    min_closing: datetime | None = None,
+) -> bool:
+    """True when closing is inside T-N but below the live runway (kept-out of live feed)."""
+    c = normalize_closing(closing)
+    if c is None:
+        return False
+    start = archive_window_start(now=now)
+    if c < start:
+        return False
+    return not is_live_eligible(
+        c, now=now, hours_ahead=hours_ahead, min_closing=min_closing
+    )
+
+
+def archive_reason_for_closing(
+    closing: datetime | None,
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    """Classify why a row belongs in archive: under_runway | aged_out | closed."""
+    c = normalize_closing(closing)
+    if c is None:
+        return None
+    current = _as_ist(now)
+    if c < archive_window_start(now=current):
+        return None
+    if c < current:
+        return "closed"
+    if not is_live_eligible(c, now=current):
+        # Still open (or within runway gap) but not live-eligible → short window.
+        return "under_runway"
+    return None
+
+
+def partition_closing_lanes(
+    records: list[AuctionRecord],
+    *,
+    min_closing: datetime | None,
+    now: datetime | None = None,
+) -> tuple[list[AuctionRecord], list[AuctionRecord], dict[str, int]]:
+    """Split discovery rows into live runway vs T-N archive (discard older/missing)."""
+    current = _as_ist(now)
+    boundary = min_closing if min_closing is not None else min_closing_datetime(now=current)
+    window_start = archive_window_start(now=current)
+    live: list[AuctionRecord] = []
+    archive: list[AuctionRecord] = []
+    missing = 0
+    too_old = 0
+    for record in records:
+        closing = normalize_closing(record.closing)
+        if closing is None:
+            missing += 1
+            continue
+        if closing >= boundary:
+            live.append(record)
+        elif closing >= window_start:
+            archive.append(record)
+        else:
+            too_old += 1
+    return live, archive, {
+        "before_filter": len(records),
+        "live": len(live),
+        "archive": len(archive),
+        "excluded_missing_closing": missing,
+        "excluded_too_old": too_old,
+        "min_closing": boundary.isoformat(),
+        "archive_window_start": window_start.isoformat(),
+    }

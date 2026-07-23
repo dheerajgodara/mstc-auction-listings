@@ -69,12 +69,43 @@ const jsPath = path.join(outDataDir, "auctions-data.js");
 const jsBody = `window.__AUCTIONS_EXPORT__ = ${JSON.stringify(data)};\n`;
 fs.writeFileSync(jsPath, jsBody, "utf8");
 
+// T-30 archive companion (optional — empty shell if missing).
+const publicArchiveJson = path.join(webRoot, "public", "data", "archive-auctions.json");
+const outArchiveJson = path.join(outDataDir, "archive-auctions.json");
+let archiveData = {
+  generated_at: data.generated_at || new Date().toISOString(),
+  count: 0,
+  auctions: [],
+  stats: { archive: true },
+  schema_version: 1,
+};
+if (fs.existsSync(publicArchiveJson)) {
+  archiveData = readJson(publicArchiveJson);
+}
+fs.writeFileSync(outArchiveJson, JSON.stringify(archiveData, null, 2), "utf8");
+if (!fs.existsSync(publicArchiveJson)) {
+  fs.writeFileSync(publicArchiveJson, JSON.stringify(archiveData, null, 2) + "\n", "utf8");
+}
+const archiveJsPath = path.join(outDataDir, "archive-auctions-data.js");
+fs.writeFileSync(
+  archiveJsPath,
+  `window.__ARCHIVE_AUCTIONS_EXPORT__ = ${JSON.stringify(archiveData)};\n`,
+  "utf8",
+);
+const publicArchiveJs = path.join(webRoot, "public", "data", "archive-auctions-data.js");
+fs.writeFileSync(
+  publicArchiveJs,
+  `window.__ARCHIVE_AUCTIONS_EXPORT__ = ${JSON.stringify(archiveData)};\n`,
+  "utf8",
+);
+
 const dataVersion = data.run_id || data.automation_ran_at;
 const meta = {
   automation_ran_at: data.automation_ran_at,
   export_generated_at: data.export_generated_at ?? data.generated_at,
   run_id: data.run_id ?? dataVersion,
   count: data.count ?? data.auctions?.length ?? 0,
+  archive_count: archiveData.count ?? archiveData.auctions?.length ?? 0,
   data_version: dataVersion,
 };
 const metaPath = path.join(outDataDir, "export-meta.json");

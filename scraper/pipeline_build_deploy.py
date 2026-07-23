@@ -21,7 +21,11 @@ from scraper.config import (
     SITE_BASE_URL,
 )
 from scraper.export_guard import write_auctions_json
-from scraper.export_hygiene import repair_absolute_asset_paths, strip_aged_out_auctions
+from scraper.export_hygiene import (
+    build_archive_export,
+    repair_absolute_asset_paths,
+    strip_aged_out_auctions,
+)
 from scraper.filters import make_run_id, resolve_min_closing
 from scraper.import_tracking import stable_auction_key
 from scraper.lane_resume import dispatch_workflow, kick_if_needed, record_resume
@@ -408,6 +412,34 @@ def run_build_deploy(
         export = strip.export
         repair = repair_absolute_asset_paths(export)
         export = repair.export
+
+        # T-30 archive: under-runway + aged-out of live (shells OK; catalogues when ready).
+        archive_export = build_archive_export(
+            live_export=export,
+            stripped_dropped=strip.dropped,
+            ledger_items=ledger.items,
+            discovery_by_key=discovery_by_key,
+            parsed_root=parsed_root,
+        )
+        archive_path = production_json.parent / "archive-auctions.json"
+        archive_candidate = run_dir / "candidate_archive_auctions.json"
+        write_auctions_json(archive_candidate, archive_export, allow_small_output=True)
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        archive_path.write_text(
+            json.dumps(archive_export, indent=2, default=str) + "\n", encoding="utf-8"
+        )
+        archive_js = production_json.parent / "archive-auctions-data.js"
+        archive_js.write_text(
+            "window.__ARCHIVE_AUCTIONS_EXPORT__ = "
+            + json.dumps(archive_export, default=str)
+            + ";\n",
+            encoding="utf-8",
+        )
+        _phase(
+            f"archive_ready={archive_export.get('count', 0)} "
+            f"(catalogue_ready={(archive_export.get('stats') or {}).get('catalogue_ready', 0)})"
+        )
+
         # Drop orphan thumb refs before CDN absolutize (P2 annex thumbs not on disk/CDN).
         public_dir = repo_root / "web" / "public"
         from scraper.asset_integrity import scrub_export_lot_documents
@@ -553,6 +585,7 @@ def run_build_deploy(
             extra={
                 "published": export["count"],
                 "stripped_aged": len(strip.dropped),
+                "archive_exported": int(archive_export.get("count") or 0),
                 "future_pending_deploy": future_pending,
                 "self_resume": kicked,
             },

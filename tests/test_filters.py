@@ -122,3 +122,43 @@ def test_passes_min_closing_naive_datetime():
         lots=[],
     )
     assert passes_min_closing(record, parse_min_closing_date("2026-07-04")) is True
+
+
+def test_partition_closing_lanes_same_day_goes_to_archive():
+    from scraper.filters import is_archive_eligible, is_live_eligible, partition_closing_lanes
+
+    now = datetime(2026, 7, 23, 14, 0, tzinfo=IST)
+    boundary = min_closing_datetime(now=now, hours_ahead=12)
+    records = [
+        AuctionRecord(
+            id="19431",
+            auction_number="MSTC/JPR/All India Radio/2/Jodhpur/26-27/19431",
+            region="JPR",
+            office="JPR",
+            closing=datetime(2026, 7, 23, 17, 0, tzinfo=IST),
+            opening=datetime(2026, 7, 23, 12, 0, tzinfo=IST),
+            lots=[LotRecord(lot_id="1", item_title="Copper Scrap")],
+        ),
+        AuctionRecord(
+            id="future",
+            auction_number="future",
+            region="JPR",
+            office="JPR",
+            closing=now + timedelta(days=2),
+            lots=[LotRecord(lot_id="1", item_title="future")],
+        ),
+        AuctionRecord(
+            id="ancient",
+            auction_number="ancient",
+            region="JPR",
+            office="JPR",
+            closing=now - timedelta(days=45),
+            lots=[LotRecord(lot_id="1", item_title="old")],
+        ),
+    ]
+    live, archive, stats = partition_closing_lanes(records, min_closing=boundary, now=now)
+    assert {r.id for r in live} == {"future"}
+    assert {r.id for r in archive} == {"19431"}
+    assert stats["excluded_too_old"] == 1
+    assert is_archive_eligible(records[0].closing, now=now, min_closing=boundary)
+    assert not is_live_eligible(records[0].closing, now=now, min_closing=boundary)

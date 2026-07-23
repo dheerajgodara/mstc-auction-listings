@@ -7,6 +7,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -294,8 +295,9 @@ def strip_aged_out_auctions(
                 {
                     "id": auction.get("id") or auction.get("source_auction_id"),
                     "source": auction.get("source"),
-                    "closing": closing.isoformat(),
+                    "closing": closing.isoformat() if closing else None,
                     "key": stable_listing_key(auction),
+                    "auction": auction,
                 }
             )
             continue
@@ -450,3 +452,193 @@ def rewrite_unsafe_thumb_urls(export: dict[str, Any]) -> dict[str, int]:
                         doc["thumbnail_url"] = fixed
                         rewritten += 1
     return {"rewritten": rewritten}
+
+
+def _catalogue_status(auction: dict[str, Any]) -> str:
+    lots = auction.get("lots") or []
+    has_lots = isinstance(lots, list) and len(lots) > 0
+    has_doc = bool(
+        auction.get("object_doc_url")
+        or auction.get("hostinger_doc_url")
+        or auction.get("pdf_url")
+    )
+    if has_lots and has_doc:
+        return "ready"
+    if has_doc or has_lots:
+        return "pending"
+    return "none"
+
+
+def annotate_archive_auction(
+    auction: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    reason: str | None = None,
+) -> dict[str, Any] | None:
+    """Tag an auction for archive export; return None if outside T-N window or live-eligible."""
+    from scraper.filters import (
+        archive_reason_for_closing,
+        archive_window_start,
+        is_archive_eligible,
+        is_live_eligible,
+    )
+
+    closing = _parse_closing(auction.get("closing"))
+    if closing is None:
+        return None
+    current = now or datetime.now(IST)
+    if closing < archive_window_start(now=current):
+        return None
+    # Live runway rows stay on the main feed only.
+    if is_live_eligible(closing, now=current):
+        return None
+    if not is_archive_eligible(closing, now=current):
+        return None
+    out = dict(auction)
+    inferred = archive_reason_for_closing(closing, now=current)
+    out["archive_reason"] = inferred or reason or "aged_out"
+    out["catalogue_status"] = _catalogue_status(out)
+    out["in_archive"] = True
+    return out
+
+
+def shell_from_ledger_item(
+    item: Any,
+    *,
+    discovery: dict[str, Any] | None = None,
+    parsed_record: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Best-effort archive shell from ledger + optional discovery/parse."""
+    disc = discovery or {}
+    rec = dict(parsed_record or {})
+    aid = str(getattr(item, "source_auction_id", None) or disc.get("id") or "")
+    source = str(getattr(item, "source", None) or disc.get("source") or "mstc")
+    shell: dict[str, Any] = {
+        "id": aid,
+        "source_auction_id": aid,
+        "source": source,
+        "auction_number": disc.get("auction_number") or rec.get("auction_number"),
+        "opening": getattr(item, "opening", None) or disc.get("opening") or rec.get("opening"),
+        "closing": getattr(item, "closing", None) or disc.get("closing") or rec.get("closing"),
+        "seller": getattr(item, "seller", None) or disc.get("seller") or rec.get("seller"),
+        "state": getattr(item, "state", None) or disc.get("state") or rec.get("state"),
+        "detail_url": getattr(item, "detail_url", None) or disc.get("detail_url") or rec.get("detail_url"),
+        "platform": disc.get("platform") or rec.get("platform") or source,
+        "asset_category": disc.get("asset_category") or rec.get("asset_category") or "other",
+        "region": disc.get("region") or rec.get("region") or getattr(item, "state", None) or "",
+        "office": disc.get("office") or rec.get("office") or "",
+        "lots": rec.get("lots") if isinstance(rec.get("lots"), list) else [],
+        "status": "listing_only" if not (rec.get("lots") or []) else rec.get("status") or "partial",
+        "enrichment_status": rec.get("enrichment_status") or "discovery",
+    }
+    if not shell.get("auction_number"):
+        shell["auction_number"] = aid
+    for fld in (
+        "display_title",
+        "title",
+        "office",
+        "region",
+        "pdf_url",
+        "object_doc_url",
+        "hostinger_doc_url",
+        "hostinger_doc_path",
+        "document_urls",
+        "display_location_city",
+        "display_location_state",
+        "display_quantity_summary",
+        "ai_buyer_summary",
+        "ai_clean_heading",
+    ):
+        if disc.get(fld) not in (None, ""):
+            shell[fld] = disc[fld]
+        elif rec.get(fld) not in (None, ""):
+            shell[fld] = rec[fld]
+    # Prefer CDN doc from ledger when present
+    from scraper.pipeline_ledger import media_doc_path, media_doc_url
+
+    url = media_doc_url(item)
+    path = media_doc_path(item)
+    if url:
+        shell["object_doc_url"] = url
+        shell["hostinger_doc_url"] = url
+        shell["pdf_url"] = url
+    if path:
+        shell["hostinger_doc_path"] = path
+    return shell
+
+
+def build_archive_export(
+    *,
+    live_export: dict[str, Any],
+    stripped_dropped: list[dict[str, Any]],
+    ledger_items: list[Any],
+    discovery_by_key: dict[str, dict[str, Any]],
+    parsed_root: Path | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Build T-N archive export: stripped live rows + under-runway ledger shells."""
+    from scraper.filters import is_archive_eligible
+    from scraper.parse_cache import load_parse_artifact
+
+    current = now or datetime.now(IST)
+    live_keys = {stable_listing_key(a) for a in (live_export.get("auctions") or [])}
+    by_key: dict[str, dict[str, Any]] = {}
+
+    def _put(auction: dict[str, Any], *, reason: str | None = None) -> None:
+        annotated = annotate_archive_auction(auction, now=current, reason=reason)
+        if not annotated:
+            return
+        key = stable_listing_key(annotated)
+        if key in live_keys:
+            return
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = annotated
+            return
+        # Prefer richer catalogue when merging duplicates.
+        if _catalogue_status(annotated) == "ready" and _catalogue_status(existing) != "ready":
+            by_key[key] = annotated
+        elif not (existing.get("lots") or []) and (annotated.get("lots") or []):
+            by_key[key] = annotated
+
+    for drop in stripped_dropped or []:
+        auction = drop.get("auction") if isinstance(drop, dict) else None
+        if isinstance(auction, dict):
+            _put(auction, reason="aged_out")
+
+    for item in ledger_items or []:
+        key = getattr(item, "stable_key", None)
+        if not key:
+            continue
+        closing = _parse_closing(getattr(item, "closing", None))
+        if closing is None or not is_archive_eligible(closing, now=current):
+            continue
+        if key in live_keys or key in by_key:
+            # Upgrade catalogue if we have parse later
+            pass
+        disc = discovery_by_key.get(key) or {}
+        parsed_rec = None
+        if parsed_root is not None:
+            path = parsed_root / item.source / f"{item.source_auction_id}.json"
+            art = load_parse_artifact(path) if path.is_file() else None
+            if art and isinstance(art.get("record"), dict):
+                parsed_rec = art["record"]
+        shell = shell_from_ledger_item(item, discovery=disc, parsed_record=parsed_rec)
+        reason = "closed" if closing < current else "under_runway"
+        _put(shell, reason=reason)
+
+    auctions = sorted(by_key.values(), key=lambda a: str(a.get("closing") or ""), reverse=True)
+    return {
+        "generated_at": current.isoformat(),
+        "count": len(auctions),
+        "auctions": auctions,
+        "stats": {
+            "archive": True,
+            "retention_days": __import__("scraper.config", fromlist=["ARCHIVE_RETENTION_DAYS"]).ARCHIVE_RETENTION_DAYS,
+            "by_reason": dict(
+                Counter(str(a.get("archive_reason") or "unknown") for a in auctions)
+            ),
+            "catalogue_ready": sum(1 for a in auctions if a.get("catalogue_status") == "ready"),
+        },
+        "schema_version": 1,
+    }

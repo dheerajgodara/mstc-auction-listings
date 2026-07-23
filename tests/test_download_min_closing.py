@@ -1,4 +1,4 @@
-"""Download eligibility gated on closing >= now + 12h runway."""
+"""Download eligibility gated on closing within the T-N archive window."""
 
 from __future__ import annotations
 
@@ -25,17 +25,12 @@ def _pending(*, aid: str, closing: str | None) -> LedgerItem:
     )
 
 
-def test_download_eligible_requires_12h_runway(monkeypatch):
+def test_download_eligible_allows_under_runway_within_archive_window(monkeypatch):
     frozen = datetime(2026, 7, 20, 12, 0, tzinfo=IST)
-
-    def _resolve(force_min_closing_date=None, *, now=None, hours_ahead=None):
-        from scraper.filters import min_closing_datetime, parse_min_closing_boundary
-
-        if force_min_closing_date:
-            return parse_min_closing_boundary(force_min_closing_date)
-        return min_closing_datetime(now=frozen, hours_ahead=12)
-
-    monkeypatch.setattr("scraper.filters.resolve_min_closing", _resolve)
+    monkeypatch.setattr(
+        "scraper.filters.archive_window_start",
+        lambda *, now=None, retention_days=None: frozen - timedelta(days=30),
+    )
 
     near = _pending(
         aid="near",
@@ -45,22 +40,24 @@ def test_download_eligible_requires_12h_runway(monkeypatch):
         aid="edge",
         closing=(frozen + timedelta(hours=12)).isoformat(),
     )
+    too_old = _pending(
+        aid="old",
+        closing=(frozen - timedelta(days=31)).isoformat(),
+    )
     missing = _pending(aid="missing", closing=None)
 
-    assert download_eligible(near, source="mstc") is False
+    assert download_eligible(near, source="mstc") is True
     assert download_eligible(edge, source="mstc") is True
+    assert download_eligible(too_old, source="mstc") is False
     assert download_eligible(missing, source="mstc") is False
 
 
-def test_gem_download_eligible_uses_same_runway(monkeypatch):
+def test_gem_download_eligible_uses_same_archive_window(monkeypatch):
     frozen = datetime(2026, 7, 20, 12, 0, tzinfo=IST)
-
-    def _resolve(force_min_closing_date=None, *, now=None, hours_ahead=None):
-        from scraper.filters import min_closing_datetime
-
-        return min_closing_datetime(now=frozen, hours_ahead=12)
-
-    monkeypatch.setattr("scraper.filters.resolve_min_closing", _resolve)
+    monkeypatch.setattr(
+        "scraper.filters.archive_window_start",
+        lambda *, now=None, retention_days=None: frozen - timedelta(days=30),
+    )
 
     now = datetime.now(IST).isoformat()
     item = LedgerItem(

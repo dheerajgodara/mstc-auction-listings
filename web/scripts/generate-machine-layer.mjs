@@ -511,6 +511,8 @@ const endpoints = [
   "/api/search/vehicle-scrap.json",
   "/api/search/large-lots.json",
   "/api/search/closing-soon.json",
+  "/api/archive/latest.json",
+  "/api/archive/search-index.json",
   "/api/source/mstc.json",
   "/api/source/gem-forward.json",
   "/api/source/eauction.json",
@@ -524,8 +526,60 @@ const endpoints = [
   "/machine-sitemap.xml",
   "/developers/",
   "/closing-soon/",
+  "/archive/",
   "/large-scrap-lots/",
 ];
+
+// --- T-30 archive machine layer ---
+const archivePath = path.join(outDir, "data", "archive-auctions.json");
+const publicArchivePath = path.join(webRoot, "public", "data", "archive-auctions.json");
+let archiveExport = { auctions: [], generated_at: generatedAt, count: 0 };
+const archiveSrc = fs.existsSync(archivePath)
+  ? archivePath
+  : fs.existsSync(publicArchivePath)
+    ? publicArchivePath
+    : null;
+if (archiveSrc) {
+  archiveExport = readJson(archiveSrc);
+}
+const routeByAuctionId = new Map((routesData.routes || []).map((r) => [r.id, r]));
+const archiveSanitized = [];
+for (const auction of archiveExport.auctions || []) {
+  const route =
+    routeByAuctionId.get(auction.id) || {
+      id: auction.id,
+      route_id: String(auction.source_auction_id || auction.id).replace(/[^a-zA-Z0-9._-]/g, ""),
+      source_slug: sourceSlug(auction.source),
+    };
+  const full = sanitizeAuction(auction, route);
+  full.archive_reason = auction.archive_reason ?? null;
+  full.catalogue_status = auction.catalogue_status ?? null;
+  full.in_archive = true;
+  archiveSanitized.push(full);
+  writeJson(
+    path.join(outDir, "api", "archive", "auction", sourceSlug(full.source), `${full.route_id}.json`),
+    full,
+  );
+}
+const archiveSearchIndex = archiveSanitized.map((full) => ({
+  ...slimRecord(full),
+  search_text: searchTextFrom(full),
+  archive_reason: full.archive_reason ?? null,
+  catalogue_status: full.catalogue_status ?? null,
+  material_tags: full.material_tags ?? [],
+}));
+writeJson(path.join(outDir, "api", "archive", "latest.json"), {
+  generated_at: generatedAt,
+  retention_days: 30,
+  count: archiveSanitized.length,
+  auctions: archiveSanitized.map(slimRecord),
+});
+writeJson(path.join(outDir, "api", "archive", "search-index.json"), {
+  generated_at: generatedAt,
+  retention_days: 30,
+  count: archiveSearchIndex.length,
+  auctions: archiveSearchIndex,
+});
 
 writeJson(path.join(outDir, "api", "manifest.json"), {
   generated_at: generatedAt,
@@ -533,6 +587,7 @@ writeJson(path.join(outDir, "api", "manifest.json"), {
   site: siteUrl("/"),
   counts: {
     indexable_auctions: sanitized.length,
+    archive_auctions: archiveSanitized.length,
     by_source: bySource,
     latest_cap: LATEST_CAP,
     closing_soon: closingSoon.length,
@@ -544,6 +599,7 @@ writeJson(path.join(outDir, "api", "manifest.json"), {
   notes: [
     "HTML SEO sitemap is /sitemap.xml (pages only).",
     "Machine discovery: this manifest, /llms.txt, /api/search-index.json, /api/search/{topic}.json.",
+    "T-30 archive (short-window + recently closed): /archive/, /api/archive/latest.json, /api/archive/search-index.json.",
     "Filter search-index locally — there is no dynamic /api/search.json?q= on static hosting.",
     "/data/ is blocked in robots.txt and is not a crawler API.",
     "listing_only / needs_deep_scrape flag shallow per-auction JSON (empty lots).",
@@ -622,6 +678,8 @@ const machineLocs = new Set([
   siteUrl("/api/latest.json"),
   siteUrl("/api/closing-soon.json"),
   siteUrl("/api/search-index.json"),
+  siteUrl("/api/archive/latest.json"),
+  siteUrl("/api/archive/search-index.json"),
   siteUrl("/api/search/aluminium.json"),
   siteUrl("/api/search/copper.json"),
   siteUrl("/api/search/vehicle-scrap.json"),
@@ -636,12 +694,18 @@ const machineLocs = new Set([
   siteUrl("/feeds/large-lots.csv"),
   siteUrl("/feeds/closing-today.json"),
   siteUrl("/machine-sitemap.xml"),
+  siteUrl("/archive/"),
 ]);
 for (const mat of MATERIAL_SLUGS) {
   machineLocs.add(siteUrl(`/feeds/materials/${mat.slug}.json`));
 }
 for (const full of sanitized) {
   machineLocs.add(siteUrl(`/api/auction/${sourceSlug(full.source)}/${full.route_id}.json`));
+}
+for (const full of archiveSanitized) {
+  machineLocs.add(
+    siteUrl(`/api/archive/auction/${sourceSlug(full.source)}/${full.route_id}.json`),
+  );
 }
 
 const machineBody = `<?xml version="1.0" encoding="UTF-8"?>
@@ -666,5 +730,5 @@ if (missingAuction.length) {
 }
 
 console.log(
-  `generate-machine-layer: ${sanitized.length} indexable auctions → api/ + feeds/ + machine-sitemap.xml`,
+  `generate-machine-layer: ${sanitized.length} indexable + ${archiveSanitized.length} archive → api/ + feeds/ + machine-sitemap.xml`,
 );

@@ -209,6 +209,8 @@ PIPELINE_DISCOVER_MSTC_CAP = int(os.getenv("PIPELINE_DISCOVER_MSTC_CAP", "2000")
 PIPELINE_DISCOVER_GEM_CAP = int(os.getenv("PIPELINE_DISCOVER_GEM_CAP", "2000"))
 # Discover/download/publish: keep auctions with closing >= now + this many hours (IST).
 MIN_CLOSING_HOURS_AHEAD = int(os.getenv("MIN_CLOSING_HOURS_AHEAD", "12"))
+# Rolling archive window for under-runway / recently closed auctions (days).
+ARCHIVE_RETENTION_DAYS = int(os.getenv("ARCHIVE_RETENTION_DAYS", "30"))
 PIPELINE_JOB_TIMEBOX_MIN = int(os.getenv("PIPELINE_JOB_TIMEBOX_MIN", "330"))
 DOWNLOAD_FAIL_BUDGET_PCT = float(os.getenv("DOWNLOAD_FAIL_BUDGET_PCT", "0.02"))
 DOWNLOAD_FAIL_BUDGET_ABS = int(os.getenv("DOWNLOAD_FAIL_BUDGET_ABS", "25"))

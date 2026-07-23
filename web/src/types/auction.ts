@@ -205,6 +205,10 @@ export interface AuctionRecord {
   ai_schema_version?: string | null;
   ai_input_hash?: string | null;
   ai_rejection_reasons?: string[];
+  /** Present on T-30 archive export rows only. */
+  archive_reason?: "under_runway" | "aged_out" | "closed" | string | null;
+  catalogue_status?: "none" | "pending" | "ready" | string | null;
+  in_archive?: boolean | null;
 }
 
 export interface AuctionsExport {

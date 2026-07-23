@@ -24,8 +24,10 @@ export interface StaticRouteParam {
 }
 const DATA_DIR = path.join(process.cwd(), "public", "data");
 const AUCTIONS_PATH = path.join(DATA_DIR, "auctions.json");
+const ARCHIVE_PATH = path.join(DATA_DIR, "archive-auctions.json");
 const ROUTES_PATH = path.join(DATA_DIR, "auction-routes.json");
 let cachedExport: AuctionsExport | null = null;
+let cachedArchive: AuctionsExport | null = null;
 let cachedRoutes: AuctionRoutesExport | null = null;
 let routeByKey: Map<string, AuctionRouteEntry> | null = null;
 let auctionById: Map<string, AuctionRecord> | null = null;
@@ -39,6 +41,19 @@ function loadAuctionsExport(): AuctionsExport {
   }
   cachedExport = readJsonFile<AuctionsExport>(AUCTIONS_PATH);
   return cachedExport;
+}
+function loadArchiveExport(): AuctionsExport {
+  if (cachedArchive) return cachedArchive;
+  if (!fs.existsSync(ARCHIVE_PATH)) {
+    cachedArchive = {
+      generated_at: new Date().toISOString(),
+      count: 0,
+      auctions: [],
+    };
+    return cachedArchive;
+  }
+  cachedArchive = readJsonFile<AuctionsExport>(ARCHIVE_PATH);
+  return cachedArchive;
 }
 function buildRoutesFromAuctions(
   exportData: AuctionsExport,
@@ -82,10 +97,17 @@ function loadRoutesExport(): AuctionRoutesExport {
 function ensureIndexes(): void {
   if (routeByKey && auctionById) return;
   const exportData = loadAuctionsExport();
+  const archiveData = loadArchiveExport();
   const routesData = loadRoutesExport();
   auctionById = new Map();
   for (const auction of exportData.auctions ?? []) {
     auctionById.set(auction.id, auction);
+  }
+  // Archive fills gaps (same-day / aged-out) without replacing live rows.
+  for (const auction of archiveData.auctions ?? []) {
+    if (!auctionById.has(auction.id)) {
+      auctionById.set(auction.id, auction);
+    }
   }
   routeByKey = new Map();
   for (const route of routesData.routes ?? []) {
@@ -125,4 +147,9 @@ export function getRouteEntry(
 } /** Full auctions export (build-time only). */
 export function loadAuctionsAtBuild(): AuctionsExport {
   return loadAuctionsExport();
+}
+
+/** T-30 archive export (build-time only). */
+export function loadArchiveAuctionsAtBuild(): AuctionsExport {
+  return loadArchiveExport();
 }

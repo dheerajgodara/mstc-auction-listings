@@ -1,5 +1,61 @@
+# Scrap Auction India — crawl policy
+# Public HTML + machine layer (/api/, /feeds/, llms) are open to search and AI crawlers.
+# Bulk app export under /auctions/data/ is blocked (not a crawler surface).
+# Allowing GPTBot / ClaudeBot is intentional for AI visibility (training + search).
+
+User-agent: Googlebot
+Allow: /auctions/
+Disallow: /auctions/data/
+
+User-agent: Bingbot
+Allow: /auctions/
+Disallow: /auctions/data/
+
+User-agent: Applebot
+Allow: /auctions/
+Disallow: /auctions/data/
+
+User-agent: OAI-SearchBot
+Allow: /auctions/
+Disallow: /auctions/data/
+
+User-agent: GPTBot
+Allow: /auctions/
+Disallow: /auctions/data/
+
+User-agent: ChatGPT-User
+Allow: /auctions/
+Disallow: /auctions/data/
+
+User-agent: ClaudeBot
+Allow: /auctions/
+Disallow: /auctions/data/
+
+User-agent: Claude-SearchBot
+Allow: /auctions/
+Disallow: /auctions/data/
+
+User-agent: Claude-User
+Allow: /auctions/
+Disallow: /auctions/data/
+
+User-agent: PerplexityBot
+Allow: /auctions/
+Disallow: /auctions/data/
+
 User-agent: *
 Allow: /auctions/
+Allow: /auctions/api/
+Allow: /auctions/feeds/
+Allow: /auctions/llms.txt
+Allow: /auctions/llms-full.txt
+Allow: /auctions/developers/
+Allow: /auctions/sitemap.xml
+Allow: /auctions/sitemap-auctions.xml
+Allow: /auctions/sitemap-sources.xml
+Allow: /auctions/sitemap-states.xml
+Allow: /auctions/sitemap-materials.xml
+Allow: /auctions/machine-sitemap.xml
 Disallow: /auctions/data/
 
 Sitemap: https://scrapauctionindia.com/auctions/sitemap.xml
